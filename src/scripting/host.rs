@@ -98,16 +98,16 @@ impl ScriptHost {
     pub fn exec(&mut self, source: &str) -> Result<Vec<Value>, ScriptError> {
         let script = Parser::from_source("<inline>", source)
             .map_err(|e| ScriptError::new(e.to_string()))?;
-        let proto = Compiler::compile_script(&script);
-        self.vm.execute(proto)
+        let chunk = Compiler::compile_script(&script);
+        self.vm.execute(chunk)
     }
 
     /// Execute a named script (for better error messages).
     pub fn exec_named(&mut self, name: &str, source: &str) -> Result<Vec<Value>, ScriptError> {
         let script = Parser::from_source(name, source)
             .map_err(|e| ScriptError::new(e.to_string()))?;
-        let proto = Compiler::compile_script(&script);
-        self.vm.execute(proto)
+        let chunk = Compiler::compile_script(&script);
+        self.vm.execute(chunk)
     }
 
     /// Call a previously defined script function by name.
