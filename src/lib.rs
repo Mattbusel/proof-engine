@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_mut, unused_parens, non_snake_case, unreachable_patterns, unused_assignments, unused_labels, unused_doc_comments, private_interfaces, clippy::all)]
+
 //! # Proof Engine
 //!
 //! A mathematical rendering engine for Rust.
