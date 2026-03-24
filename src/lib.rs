@@ -45,6 +45,8 @@ pub mod physics;
 pub mod combat;
 pub mod spatial;
 pub mod effects;
+pub mod anim;
+pub mod animation;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
