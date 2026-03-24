@@ -2,6 +2,8 @@
 
 A mathematical rendering engine for Rust. **221,000+ lines of fully implemented systems across 248 source files.**
 
+> Compiles clean on `cargo check` with zero errors.
+
 Every visual is the output of a mathematical function. Every animation is a continuous function over time. Every particle follows a real equation. Characters are rendered as textured quads in 3D space with bloom, distortion, motion blur, and force field physics.
 
 ## Philosophy
@@ -279,6 +281,43 @@ The screen is never still. Every element is a living mathematical function that 
 - Statistics: 12 distributions (PDF/CDF/inverse CDF/sampling), 6 hypothesis tests, polynomial/ridge/logistic regression, Beta-Bernoulli conjugate Bayesian inference; DTW, KL-divergence, mutual information
 - Simulation: all 256 Wolfram 1D cellular automaton rules, Conway/WireWorld/ForestFire/BriansBrain/LangtonsAnt; Barnes-Hut O(n log n) N-body; Gray-Scott reaction-diffusion (6 presets); SIR/SEIRD epidemiology; Nagel-Schreckenberg traffic CA; IDM
 
+### Weather and Environment
+
+- Atmospheric simulation: pressure layers, humidity fields, 3D temperature profiles, wind vector grids, jet streams, fog density, visibility calculation, barometric gradients
+- Precipitation: rain/snow/hail/sleet droplet physics, surface accumulation, puddle formation, snowpack depth, ice formation, thunder/lightning timing
+- Climate zones: biome-mapped seasonal cycles, day/night temperature curves, weather pattern transitions, storm fronts, heat waves, cold snaps
+- Internal value noise and FBM for all procedural weather fields (no external deps)
+
+### VFX Particle Effects
+
+- Emitter shapes: Point, Line, Box, Sphere, Disc, Cone, Torus, MeshSurface with burst/continuous spawn modes and spawn rate curves
+- LOD system: distance-based particle count/rate/size scaling with sorted LOD level entries
+- 10 built-in effect presets: Explosion, Fire, Smoke, Sparks, BloodSplatter, MagicAura (7 elements), PortalSwirl, LightningArc, WaterSplash, DustCloud
+- Force fields: GravityWell, VortexField, TurbulenceField (FBM 3D), WindZone with gusts, AttractorRepulsor, DragField, BuoyancyField
+- Force composition: Additive/Override/Multiply/Average blend modes with tag-based masking
+
+### AI Behavior Trees
+
+- Full behavior tree: Sequence, Selector, Parallel, Decorator, Leaf nodes with Running/Success/Failure status
+- Blackboard key-value store with typed accessors
+- Built-in node library: Wait, MoveTo, LookAt, PlayAnimation, CheckDistance, CheckHealth, CheckLineOfSight, SetBlackboard, InvertDecorator, RepeatDecorator, TimeoutDecorator, RandomSelector, WeightedSelector
+- GOAP planner: WorldState, Action with preconditions/effects/cost, A* plan search, plan execution with replanning on state drift, action interruption
+
+### Pathfinding and Navigation
+
+- Navigation mesh: NavPoly convex polygons, portal-edge graph, point-in-poly test, closest point on navmesh, Simple Stupid Funnel Algorithm path smoothing
+- Dynamic obstacle cutting (Recast-style), area flags, cost modifiers, region flood-fill
+- A* and variants: generic A* graph, Jump Point Search (8-direction), hierarchical A* with cluster precomputation, Dijkstra flow fields for crowd simulation
+- Path caching with LRU and version-stamped invalidation
+- Steering behaviors: Seek, Flee, Arrive, Pursuit, Evade, Wander, ObstacleAvoidance, WallFollowing, Flocking (separation/alignment/cohesion), FormationMovement, PathFollowing with lookahead
+- Context steering: interest/danger slot maps with resolve()
+
+### Economy and Trading
+
+- Dynamic market simulation: supply/demand pricing, price elasticity, market manipulation detection, arbitrage, auction system (English/Dutch/sealed-bid), order book, trade history
+- Faction economy: treasury, taxation, trade routes, embargo/sanctions, war reparations, tribute, economic espionage, wealth ranking
+- Production chains: resource nodes (mine/farm/forest), processing buildings with input→output transforms, production quotas, worker assignment, efficiency modifiers, supply chain disruption, stockpile management
+
 ### Config and Debug
 
 - Hot-reloadable TOML config with command-line overrides; physics/input/debug/gameplay/accessibility config sections
@@ -453,10 +492,39 @@ proof-engine/src/
     inspector.rs        per-component property editor
     hierarchy.rs        scene node tree view
     console.rs          command input, history, autocomplete
+  weather/
+    mod.rs              Vec3, lerp, smoothstep, value noise, FBM utilities
+    atmosphere.rs       pressure layers, humidity, wind grids, fog, visibility
+    precipitation.rs    rain/snow/hail physics, accumulation, thunder/lightning
+    climate.rs          biome zones, seasonal cycles, storm fronts
+  vfx/
+    mod.rs              VFX module coordinator
+    emitter.rs          emitter shapes, spawn modes, LOD, transform animation
+    effects.rs          10 preset effects (explosion, fire, smoke, magic, etc.)
+    forces.rs           force fields: gravity well, vortex, turbulence, wind, drag
+  behavior/
+    mod.rs              behavior tree module coordinator
+    tree.rs             BehaviorNode, NodeStatus, Blackboard, tick execution
+    nodes.rs            built-in node library (Wait, MoveTo, CheckDistance, etc.)
+    planner.rs          GOAP: WorldState, Action, A* plan search, replanning
+  pathfinding/
+    mod.rs              pathfinding module coordinator
+    navmesh.rs          NavPoly, NavMesh, portal graph, funnel smoothing
+    astar.rs            A*, JPS, hierarchical A*, flow fields, path cache
+    steering.rs         seek/flee/arrive/pursuit/flocking/formation steering
+  economy/
+    mod.rs              economy module coordinator
+    market.rs           supply/demand pricing, auctions, order book
+    factions.rs         faction treasury, trade routes, embargo, espionage
+    production.rs       resource nodes, processing chains, stockpiles
   save/
     serializer.rs       SerializedValue, Serialize/Deserialize traits
     snapshot.rs         WorldSnapshot, EntitySnapshot, SnapshotDiff
     format.rs           SaveFile, SaveHeader, SaveManager, slot management
+    compression.rs      RLE, LZ4-like, Huffman, delta encoding, auto-compress
+    migrations.rs       schema versioning, 10 concrete migrations v0→v10
+    cloud.rs            cloud save sync, conflict resolution, encryption, backups
+    profile.rs          user profiles, statistics, leaderboards, prestige system
     checkpoint.rs       Checkpoint, CheckpointManager, RespawnSystem
   math/
     simulation.rs       N-body simulation, octree, Barnes-Hut, fluid grids
