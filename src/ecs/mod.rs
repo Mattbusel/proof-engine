@@ -1,109 +1,62 @@
 //! # Entity Component System (ECS)
 //!
-//! A standalone archetype-based ECS implementation for the Proof Engine.
-//! Components are grouped by their type signature into `Archetype` tables,
-//! providing cache-friendly iteration and efficient query dispatch.
+//! A standalone archetype-based ECS for the Proof Engine.
+//! All types live in this single module — no external submodules required.
 //!
-//! ## Core Concepts
+//! ## Design
 //!
-//! - [`Entity`]: A generational ID (index + generation) representing a live object.
-//! - [`World`]: The central store for all entities, components, resources, and events.
-//! - [`Archetype`]: A table of entities that all share the same set of component types.
-//! - [`QueryIter`]: An iterator over entities matching a given component filter.
-//! - [`Commands`]: Deferred mutations (spawn / despawn / insert / remove).
-//! - [`Schedule`]: An ordered list of [`System`]s with labels and run conditions.
-//! - [`Events<E>`]: A typed event queue with independent reader cursors.
-//! - [`Resources`]: A type-map for global singleton data.
+//! Components are grouped by type signature into `Archetype` tables for
+//! cache-friendly iteration. Fetch markers (`Read<T>`, `Write<T>`,
+//! `OptionRead<T>`) carry no lifetimes so they satisfy `WorldQuery: 'static`.
 //!
-//! ## Design notes
+//! ## Quick start
 //!
-//! Components are fetched using marker wrapper types:
-//! - [`Read<T>`]  — yields `&T`
-//! - [`Write<T>`] — yields `&mut T`
-//! - [`OptionRead<T>`] — yields `Option<&T>` (entity need not have `T`)
-//!
-//! ## Example
-//!
-//! ```rust
+//! ```rust,ignore
 //! use proof_engine::ecs::*;
 //!
-//! #[derive(Clone)]
-//! struct Position { x: f32, y: f32 }
-//! impl Component for Position {}
-//!
-//! #[derive(Clone)]
-//! struct Velocity { dx: f32, dy: f32 }
-//! impl Component for Velocity {}
+//! #[derive(Clone)] struct Pos(f32, f32);
+//! impl Component for Pos {}
 //!
 //! let mut world = World::new();
-//! let e = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
-//!
-//! // iterate all entities with Position + Velocity
-//! for (pos, vel) in world.query::<(Read<Position>, Read<Velocity>), ()>() {
-//!     let _ = (pos.x + vel.dx, pos.y + vel.dy);
-//! }
+//! let e = world.spawn(Pos(0.0, 0.0));
+//! for pos in world.query::<Read<Pos>, ()>() { let _ = pos.0; }
 //! ```
 
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-};
+#![allow(dead_code)]
 
-// ─────────────────────────────────────────────────────────────────────────────
+use std::{any::{Any, TypeId}, collections::HashMap};
+
+// ---------------------------------------------------------------------------
 // Component trait
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// Marker trait for all ECS components.
-///
-/// Any type that is `'static + Send + Sync + Clone` can be a component.
-/// Derive or manually implement this trait to opt a type into the ECS.
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::Component;
-///
-/// #[derive(Clone)]
-/// struct Health(f32);
-/// impl Component for Health {}
-/// ```
+/// Marker trait for ECS components. Implement this for any `'static + Send +
+/// Sync + Clone` type to use it as a component.
 pub trait Component: 'static + Send + Sync + Clone {}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entity
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Entity (generational ID)
+// ---------------------------------------------------------------------------
 
-/// A lightweight generational handle to an entity.
+/// A lightweight generational handle identifying a live entity.
 ///
-/// The `index` field is the slot in the entity allocator. The `generation`
-/// field is incremented each time that slot is reused after a despawn, so
-/// holding an old `Entity` with a stale generation will correctly fail
-/// liveness checks.
+/// `index` is the slot in the allocator; `generation` differentiates reused
+/// slots so stale handles can be detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Entity {
-    /// Slot index in the entity table.
+    /// Slot index.
     pub index: u32,
-    /// Generation counter — incremented each time the slot is recycled.
+    /// Generation counter (incremented on free).
     pub generation: u32,
 }
 
 impl Entity {
-    /// Creates an entity handle from raw parts. Prefer using [`World::spawn`].
-    #[inline]
-    pub fn from_raw(index: u32, generation: u32) -> Self {
-        Self { index, generation }
-    }
-
-    /// Returns a sentinel "null" entity that is never considered alive.
-    #[inline]
-    pub fn null() -> Self {
-        Self { index: u32::MAX, generation: u32::MAX }
-    }
-
-    /// Returns `true` if this is the null sentinel value.
-    #[inline]
-    pub fn is_null(self) -> bool {
-        self.index == u32::MAX
-    }
+    /// Constructs an entity from raw parts.
+    #[inline] pub fn from_raw(index: u32, generation: u32) -> Self { Self { index, generation } }
+    /// Returns the null sentinel (never alive).
+    #[inline] pub fn null() -> Self { Self { index: u32::MAX, generation: u32::MAX } }
+    /// True if this is the null sentinel.
+    #[inline] pub fn is_null(self) -> bool { self.index == u32::MAX }
 }
 
 impl std::fmt::Display for Entity {
@@ -112,190 +65,116 @@ impl std::fmt::Display for Entity {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entity allocator (generational free-list)
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Entity allocator
+// ---------------------------------------------------------------------------
 
-/// Internal record kept per entity slot.
 #[derive(Debug, Clone)]
-struct EntityRecord {
-    generation: u32,
-    /// Where this entity's component data lives, if it is alive.
-    location: Option<EntityLocation>,
-}
+struct EntityRecord { generation: u32, location: Option<EntityLocation> }
 
-/// Identifies exactly where an entity's row of component data is stored.
 #[derive(Debug, Clone, Copy)]
-struct EntityLocation {
-    /// Index into [`World::archetypes`].
-    archetype_id: ArchetypeId,
-    /// Row within that archetype's column storage.
-    row: usize,
-}
+struct EntityLocation { archetype_id: ArchetypeId, row: usize }
 
-/// Dense generational free-list entity allocator.
 #[derive(Debug, Default)]
-struct EntityAllocator {
-    records: Vec<EntityRecord>,
-    free: Vec<u32>,
-}
+struct EntityAllocator { records: Vec<EntityRecord>, free: Vec<u32> }
 
 impl EntityAllocator {
-    /// Allocates a new entity, reusing a freed slot when possible.
     fn alloc(&mut self) -> Entity {
-        if let Some(index) = self.free.pop() {
-            let rec = &mut self.records[index as usize];
-            Entity { index, generation: rec.generation }
+        if let Some(idx) = self.free.pop() {
+            let gen = self.records[idx as usize].generation;
+            Entity { index: idx, generation: gen }
         } else {
-            let index = self.records.len() as u32;
+            let idx = self.records.len() as u32;
             self.records.push(EntityRecord { generation: 0, location: None });
-            Entity { index, generation: 0 }
+            Entity { index: idx, generation: 0 }
         }
     }
-
-    /// Frees an entity slot, bumping its generation so old handles become stale.
-    fn free(&mut self, entity: Entity) {
-        let rec = &mut self.records[entity.index as usize];
-        rec.generation = rec.generation.wrapping_add(1);
-        rec.location = None;
-        self.free.push(entity.index);
+    fn free(&mut self, e: Entity) {
+        let r = &mut self.records[e.index as usize];
+        r.generation = r.generation.wrapping_add(1);
+        r.location = None;
+        self.free.push(e.index);
     }
-
-    /// Returns `true` if the entity handle matches a live slot.
-    fn is_alive(&self, entity: Entity) -> bool {
-        self.records
-            .get(entity.index as usize)
-            .map(|r| r.generation == entity.generation && r.location.is_some())
+    fn is_alive(&self, e: Entity) -> bool {
+        self.records.get(e.index as usize)
+            .map(|r| r.generation == e.generation && r.location.is_some())
             .unwrap_or(false)
     }
-
-    /// Returns the current storage location for a live entity.
-    fn location(&self, entity: Entity) -> Option<EntityLocation> {
-        self.records
-            .get(entity.index as usize)
-            .filter(|r| r.generation == entity.generation)
+    fn location(&self, e: Entity) -> Option<EntityLocation> {
+        self.records.get(e.index as usize)
+            .filter(|r| r.generation == e.generation)
             .and_then(|r| r.location)
     }
-
-    /// Updates the storage location for a live entity.
-    fn set_location(&mut self, entity: Entity, loc: EntityLocation) {
-        if let Some(rec) = self.records.get_mut(entity.index as usize) {
-            if rec.generation == entity.generation {
-                rec.location = Some(loc);
-            }
-        }
-    }
-
-    /// Clears the storage location without bumping the generation.
-    fn clear_location(&mut self, entity: Entity) {
-        if let Some(rec) = self.records.get_mut(entity.index as usize) {
-            if rec.generation == entity.generation {
-                rec.location = None;
-            }
+    fn set_location(&mut self, e: Entity, loc: EntityLocation) {
+        if let Some(r) = self.records.get_mut(e.index as usize) {
+            if r.generation == e.generation { r.location = Some(loc); }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AnyVec — type-erased heap vector
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// AnyVec — type-erased dense vector
+// ---------------------------------------------------------------------------
 
-/// A type-erased, heap-allocated `Vec` that stores values of a single concrete
-/// type. All operations are performed through function pointers captured at
-/// construction time, so the concrete type does not need to be known at call
-/// sites that manipulate the vector generically.
 struct AnyVec {
-    /// The concrete component `TypeId`.
     type_id: TypeId,
-    /// Number of live elements.
     len: usize,
-    /// Raw byte storage (size = element_size * capacity).
     data: Vec<u8>,
-    /// Size in bytes of one element.
     element_size: usize,
-    /// Runs the destructor for the element at the given pointer.
     drop_fn: unsafe fn(*mut u8),
-    /// Clones the element at `src` and writes the clone to `dst`.
     clone_fn: unsafe fn(*const u8, *mut u8),
 }
-
 unsafe impl Send for AnyVec {}
 unsafe impl Sync for AnyVec {}
 
 impl AnyVec {
-    /// Constructs a new empty `AnyVec` for component type `T`.
     fn new<T: Component>() -> Self {
         Self {
             type_id: TypeId::of::<T>(),
             len: 0,
             data: Vec::new(),
             element_size: std::mem::size_of::<T>(),
-            drop_fn: |ptr| unsafe { std::ptr::drop_in_place(ptr as *mut T) },
-            clone_fn: |src, dst| unsafe {
-                let cloned = (&*(src as *const T)).clone();
-                std::ptr::write(dst as *mut T, cloned);
-            },
+            drop_fn: |p| unsafe { std::ptr::drop_in_place(p as *mut T) },
+            clone_fn: |s, d| unsafe { std::ptr::write(d as *mut T, (*(s as *const T)).clone()) },
         }
     }
 
-    /// Ensures the backing buffer can hold at least `min_cap` elements.
     fn reserve_one(&mut self) {
-        let size = self.element_size;
-        if size == 0 {
-            return;
-        }
-        let needed = (self.len + 1) * size;
-        if self.data.len() < needed {
-            let new_cap = needed.max(self.data.len() * 2).max(size * 4);
-            self.data.resize(new_cap, 0);
+        let sz = self.element_size;
+        if sz == 0 { return; }
+        let need = (self.len + 1) * sz;
+        if self.data.len() < need {
+            self.data.resize(need.max(self.data.len() * 2).max(sz * 4), 0);
         }
     }
 
-    /// Appends `value` of type `T` to the end.
-    fn push<T: Component>(&mut self, value: T) {
-        debug_assert_eq!(TypeId::of::<T>(), self.type_id);
+    fn push<T: Component>(&mut self, v: T) {
         self.reserve_one();
-        unsafe {
-            let dst = self.data.as_mut_ptr().add(self.len * self.element_size);
-            std::ptr::write(dst as *mut T, value);
-        }
+        unsafe { std::ptr::write(self.data.as_mut_ptr().add(self.len * self.element_size) as *mut T, v); }
         self.len += 1;
     }
 
-    /// Returns a shared reference to the element at `row`.
     fn get<T: Component>(&self, row: usize) -> &T {
-        debug_assert!(row < self.len);
         unsafe { &*(self.data.as_ptr().add(row * self.element_size) as *const T) }
     }
 
-    /// Returns a mutable reference to the element at `row`.
     fn get_mut<T: Component>(&mut self, row: usize) -> &mut T {
-        debug_assert!(row < self.len);
         unsafe { &mut *(self.data.as_mut_ptr().add(row * self.element_size) as *mut T) }
     }
 
-    /// Returns a raw const pointer to the element at `row`.
     fn get_ptr(&self, row: usize) -> *const u8 {
-        debug_assert!(row < self.len);
         unsafe { self.data.as_ptr().add(row * self.element_size) }
     }
 
-    /// Swap-removes the element at `row`, dropping the evicted value.
-    ///
-    /// The last element is moved into `row`. Call sites are responsible for
-    /// updating entity-location bookkeeping.
     fn swap_remove_raw(&mut self, row: usize) {
-        assert!(row < self.len);
         let last = self.len - 1;
-        let size = self.element_size;
+        let sz = self.element_size;
         unsafe {
-            let dst = self.data.as_mut_ptr().add(row * size);
-            // Drop the element being removed.
+            let dst = self.data.as_mut_ptr().add(row * sz);
             (self.drop_fn)(dst);
             if row != last {
-                // Bit-copy the last element into the vacated slot.
-                let src = self.data.as_ptr().add(last * size);
-                std::ptr::copy_nonoverlapping(src, dst, size);
+                let src = self.data.as_ptr().add(last * sz);
+                std::ptr::copy_nonoverlapping(src, dst, sz);
             }
         }
         self.len -= 1;
@@ -304,258 +183,156 @@ impl AnyVec {
 
 impl Drop for AnyVec {
     fn drop(&mut self) {
-        let size = self.element_size;
         for i in 0..self.len {
-            unsafe {
-                let ptr = self.data.as_mut_ptr().add(i * size);
-                (self.drop_fn)(ptr);
-            }
+            unsafe { (self.drop_fn)(self.data.as_mut_ptr().add(i * self.element_size)); }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ComponentStorage — column with change-detection ticks
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// ComponentStorage — column + change-detection ticks
+// ---------------------------------------------------------------------------
 
-/// A single component column within an [`Archetype`].
-///
-/// Wraps an [`AnyVec`] data column and tracks per-row change-detection ticks:
-/// - `added_ticks[row]` — the world tick when the component was first inserted.
-/// - `changed_ticks[row]` — the world tick of the most recent mutable access.
 struct ComponentStorage {
     column: AnyVec,
-    /// Tick at which each row was added (for `Added<T>` detection).
     added_ticks: Vec<u32>,
-    /// Tick at which each row was last mutably touched (for `Changed<T>`).
     changed_ticks: Vec<u32>,
 }
 
 impl ComponentStorage {
-    /// Creates a new empty column for component type `T`.
     fn new<T: Component>() -> Self {
-        Self {
-            column: AnyVec::new::<T>(),
-            added_ticks: Vec::new(),
-            changed_ticks: Vec::new(),
-        }
+        Self { column: AnyVec::new::<T>(), added_ticks: Vec::new(), changed_ticks: Vec::new() }
     }
 
-    /// Appends a value, recording `tick` as both the added and changed tick.
-    fn push<T: Component>(&mut self, value: T, tick: u32) {
-        self.column.push(value);
+    fn push<T: Component>(&mut self, v: T, tick: u32) {
+        self.column.push(v);
         self.added_ticks.push(tick);
         self.changed_ticks.push(tick);
     }
 
-    /// Swap-removes row `row`, keeping tick vectors in sync.
     fn swap_remove(&mut self, row: usize) {
         self.column.swap_remove_raw(row);
         let last = self.added_ticks.len() - 1;
-        self.added_ticks.swap(row, last);
-        self.added_ticks.pop();
+        self.added_ticks.swap(row, last); self.added_ticks.pop();
         let last = self.changed_ticks.len() - 1;
-        self.changed_ticks.swap(row, last);
-        self.changed_ticks.pop();
+        self.changed_ticks.swap(row, last); self.changed_ticks.pop();
     }
 
-    /// Clones the element at `row` into `dst`, pushing it as a new row.
+    /// Clone row `row` from this storage into `dst`, appending it.
     fn clone_row_into(&self, row: usize, dst: &mut ComponentStorage, tick: u32) {
-        // Grow dst backing buffer if needed.
-        let size = self.column.element_size;
-        let needed = (dst.column.len + 1) * size;
-        if dst.column.data.len() < needed {
-            let new_cap = needed.max(dst.column.data.len() * 2).max(size * 4);
-            dst.column.data.resize(new_cap, 0);
+        let sz = self.column.element_size;
+        let need = (dst.column.len + 1) * sz;
+        if dst.column.data.len() < need {
+            dst.column.data.resize(need.max(dst.column.data.len() * 2).max(sz * 4), 0);
         }
         unsafe {
-            let src_ptr = self.column.data.as_ptr().add(row * size);
-            let dst_ptr = dst.column.data.as_mut_ptr().add(dst.column.len * size);
-            (self.column.clone_fn)(src_ptr, dst_ptr);
+            let s = self.column.data.as_ptr().add(row * sz);
+            let d = dst.column.data.as_mut_ptr().add(dst.column.len * sz);
+            (self.column.clone_fn)(s, d);
         }
         dst.column.len += 1;
         dst.added_ticks.push(self.added_ticks[row]);
         dst.changed_ticks.push(tick);
     }
-
-    fn len(&self) -> usize {
-        self.column.len
-    }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Archetype
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A unique index into [`World::archetypes`].
+/// Unique index into [`World::archetypes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArchetypeId(pub u32);
 
-/// An archetype stores all entities that share *exactly* the same set of
-/// component types.
-///
-/// Components are stored in dense, parallel columns (`HashMap<TypeId,
-/// ComponentStorage>`), one per component type. A parallel `entities` vec
-/// records which [`Entity`] lives at each row, enabling O(1) row → entity
-/// lookup.
+/// A table of entities that share exactly the same component type set.
 pub struct Archetype {
     /// Unique id for this archetype.
     pub id: ArchetypeId,
-    /// The sorted, deduplicated set of `TypeId`s that define this archetype.
+    /// Sorted, deduplicated component `TypeId`s.
     pub component_types: Vec<TypeId>,
-    /// One column per component type.
     columns: HashMap<TypeId, ComponentStorage>,
-    /// Entity at each row.
+    /// Entity handle at each row.
     pub entities: Vec<Entity>,
 }
 
 impl Archetype {
-    fn new(id: ArchetypeId, component_types: Vec<TypeId>) -> Self {
-        Self {
-            id,
-            component_types,
-            columns: HashMap::new(),
-            entities: Vec::new(),
-        }
+    fn new(id: ArchetypeId, types: Vec<TypeId>) -> Self {
+        Self { id, component_types: types, columns: HashMap::new(), entities: Vec::new() }
     }
 
-    /// Registers a component column for `T`. No-op if already registered.
     fn register_column<T: Component>(&mut self) {
-        self.columns
-            .entry(TypeId::of::<T>())
-            .or_insert_with(ComponentStorage::new::<T>);
+        self.columns.entry(TypeId::of::<T>()).or_insert_with(ComponentStorage::new::<T>);
     }
 
-    /// Returns `true` if this archetype has a column for `type_id`.
-    pub fn contains(&self, type_id: TypeId) -> bool {
-        self.columns.contains_key(&type_id)
-    }
+    /// Returns `true` if this archetype has a column for `tid`.
+    pub fn contains(&self, tid: TypeId) -> bool { self.columns.contains_key(&tid) }
 
-    fn column(&self, type_id: TypeId) -> Option<&ComponentStorage> {
-        self.columns.get(&type_id)
-    }
+    /// Number of entities in this archetype.
+    pub fn len(&self) -> usize { self.entities.len() }
 
-    fn column_mut(&mut self, type_id: TypeId) -> Option<&mut ComponentStorage> {
-        self.columns.get_mut(&type_id)
-    }
+    /// `true` if empty.
+    pub fn is_empty(&self) -> bool { self.entities.is_empty() }
 
-    /// Number of entities stored in this archetype.
-    pub fn len(&self) -> usize {
-        self.entities.len()
-    }
-
-    /// Returns `true` if no entities are stored.
-    pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
-    }
-
-    /// Swap-removes the entity at `row`.
-    ///
-    /// Returns the entity that was swapped *into* `row` (i.e. the previous
-    /// last entity), or `None` if `row` was already the last row.
+    /// Swap-removes row `row`. Returns the entity swapped into that row, if any.
     fn swap_remove(&mut self, row: usize) -> Option<Entity> {
         let last = self.entities.len() - 1;
-        for col in self.columns.values_mut() {
-            col.swap_remove(row);
-        }
+        for col in self.columns.values_mut() { col.swap_remove(row); }
         self.entities.swap(row, last);
         self.entities.pop();
-        if row < self.entities.len() {
-            Some(self.entities[row])
-        } else {
-            None
-        }
+        if row < self.entities.len() { Some(self.entities[row]) } else { None }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Bundle
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A heterogeneous collection of components that can be inserted together.
-///
-/// The ECS provides blanket implementations for tuples up to 8 elements.
-/// You can also implement `Bundle` manually for named structs.
+/// A heterogeneous set of components spawned together.
 pub trait Bundle: 'static + Send + Sync {
-    /// Returns the sorted `TypeId`s of every component in this bundle.
+    /// Sorted `TypeId`s of all components.
     fn type_ids() -> Vec<TypeId>;
-
-    /// Registers all columns required by this bundle on `arch`.
+    /// Ensure all columns exist on `arch`.
     fn register_columns(arch: &mut Archetype);
-
-    /// Pushes all components into `arch`, consuming `self`.
+    /// Push all components into `arch`.
     fn insert_into(self, arch: &mut Archetype, tick: u32);
 }
 
-// Single-component bundle
 impl<C: Component> Bundle for C {
-    fn type_ids() -> Vec<TypeId> {
-        vec![TypeId::of::<C>()]
-    }
-    fn register_columns(arch: &mut Archetype) {
-        arch.register_column::<C>();
-    }
-    fn insert_into(self, arch: &mut Archetype, tick: u32) {
-        arch.columns
-            .get_mut(&TypeId::of::<C>())
-            .expect("column not registered")
-            .push(self, tick);
+    fn type_ids() -> Vec<TypeId> { vec![TypeId::of::<C>()] }
+    fn register_columns(a: &mut Archetype) { a.register_column::<C>(); }
+    fn insert_into(self, a: &mut Archetype, tick: u32) {
+        a.columns.get_mut(&TypeId::of::<C>()).expect("col missing").push(self, tick);
     }
 }
 
-/// Macro generating `Bundle` implementations for N-tuples.
-macro_rules! impl_bundle_tuple {
-    ($($C:ident),*) => {
+macro_rules! impl_bundle {
+    ($($C:ident),+) => {
         #[allow(non_snake_case)]
-        impl<$($C: Component),*> Bundle for ($($C,)*) {
+        impl<$($C: Component),+> Bundle for ($($C,)+) {
             fn type_ids() -> Vec<TypeId> {
-                let mut ids = vec![$(TypeId::of::<$C>()),*];
-                ids.sort();
-                ids.dedup();
-                ids
+                let mut v = vec![$(TypeId::of::<$C>()),+]; v.sort(); v.dedup(); v
             }
-            fn register_columns(arch: &mut Archetype) {
-                $(arch.register_column::<$C>();)*
-            }
-            fn insert_into(self, arch: &mut Archetype, tick: u32) {
-                let ($($C,)*) = self;
-                $(
-                    arch.columns
-                        .get_mut(&TypeId::of::<$C>())
-                        .expect("column not registered")
-                        .push($C, tick);
-                )*
+            fn register_columns(a: &mut Archetype) { $(a.register_column::<$C>();)+ }
+            fn insert_into(self, a: &mut Archetype, tick: u32) {
+                let ($($C,)+) = self;
+                $(a.columns.get_mut(&TypeId::of::<$C>()).expect("col missing").push($C, tick);)+
             }
         }
     };
 }
+impl_bundle!(A, B);
+impl_bundle!(A, B, C);
+impl_bundle!(A, B, C, D);
+impl_bundle!(A, B, C, D, E);
+impl_bundle!(A, B, C, D, E, F);
+impl_bundle!(A, B, C, D, E, F, G);
+impl_bundle!(A, B, C, D, E, F, G, H);
 
-impl_bundle_tuple!(A, B);
-impl_bundle_tuple!(A, B, C);
-impl_bundle_tuple!(A, B, C, D);
-impl_bundle_tuple!(A, B, C, D, E);
-impl_bundle_tuple!(A, B, C, D, E, F);
-impl_bundle_tuple!(A, B, C, D, E, F, G);
-impl_bundle_tuple!(A, B, C, D, E, F, G, H);
-
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Resources
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A type-map holding global singleton resources.
-///
-/// Resources are retrieved by type and are independent of any entity.
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::Resources;
-///
-/// struct DeltaTime(f32);
-///
-/// let mut res = Resources::new();
-/// res.insert(DeltaTime(0.016));
-/// assert!((res.get::<DeltaTime>().unwrap().0 - 0.016).abs() < 1e-6);
-/// ```
+/// Type-map of global singleton resources.
 #[derive(Default)]
 pub struct Resources {
     map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -563,605 +340,339 @@ pub struct Resources {
 
 impl Resources {
     /// Creates an empty resource map.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Self { Self::default() }
+    /// Inserts (or replaces) a resource.
+    pub fn insert<T: 'static + Send + Sync>(&mut self, v: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(v));
     }
-
-    /// Inserts a resource, replacing any existing value of the same type.
-    pub fn insert<T: 'static + Send + Sync>(&mut self, value: T) {
-        self.map.insert(TypeId::of::<T>(), Box::new(value));
-    }
-
-    /// Returns a shared reference to the resource of type `T`.
+    /// Returns `&T` if present.
     pub fn get<T: 'static + Send + Sync>(&self) -> Option<&T> {
-        self.map.get(&TypeId::of::<T>())?.downcast_ref::<T>()
+        self.map.get(&TypeId::of::<T>())?.downcast_ref()
     }
-
-    /// Returns a mutable reference to the resource of type `T`.
+    /// Returns `&mut T` if present.
     pub fn get_mut<T: 'static + Send + Sync>(&mut self) -> Option<&mut T> {
-        self.map.get_mut(&TypeId::of::<T>())?.downcast_mut::<T>()
+        self.map.get_mut(&TypeId::of::<T>())?.downcast_mut()
     }
-
-    /// Removes and returns the resource of type `T`.
+    /// Removes and returns `T`.
     pub fn remove<T: 'static + Send + Sync>(&mut self) -> Option<T> {
-        self.map
-            .remove(&TypeId::of::<T>())
-            .and_then(|b| b.downcast::<T>().ok())
-            .map(|b| *b)
+        self.map.remove(&TypeId::of::<T>())
+            .and_then(|b| b.downcast::<T>().ok()).map(|b| *b)
     }
-
-    /// Returns `true` if a resource of type `T` is present.
+    /// `true` if resource `T` is present.
     pub fn contains<T: 'static + Send + Sync>(&self) -> bool {
         self.map.contains_key(&TypeId::of::<T>())
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Res<T> / ResMut<T>
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// An immutable borrow of a resource `T`.
-///
-/// Returned by [`World::resource`] and usable as a [`SystemParam`].
-pub struct Res<'a, T: 'static + Send + Sync> {
-    inner: &'a T,
-}
+/// Immutable resource borrow.
+pub struct Res<'a, T: 'static + Send + Sync> { inner: &'a T }
 impl<'a, T: 'static + Send + Sync> Res<'a, T> {
-    /// Wraps a shared reference as a `Res`.
-    pub fn new(inner: &'a T) -> Self {
-        Self { inner }
-    }
+    /// Wraps a reference.
+    pub fn new(inner: &'a T) -> Self { Self { inner } }
 }
 impl<'a, T: 'static + Send + Sync> std::ops::Deref for Res<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.inner
-    }
+    type Target = T; fn deref(&self) -> &T { self.inner }
 }
 
-/// A mutable borrow of a resource `T`.
-///
-/// Returned by [`World::resource_mut`] and usable as a [`SystemParam`].
-pub struct ResMut<'a, T: 'static + Send + Sync> {
-    inner: &'a mut T,
-}
+/// Mutable resource borrow.
+pub struct ResMut<'a, T: 'static + Send + Sync> { inner: &'a mut T }
 impl<'a, T: 'static + Send + Sync> ResMut<'a, T> {
-    /// Wraps a mutable reference as a `ResMut`.
-    pub fn new(inner: &'a mut T) -> Self {
-        Self { inner }
-    }
+    /// Wraps a mutable reference.
+    pub fn new(inner: &'a mut T) -> Self { Self { inner } }
 }
 impl<'a, T: 'static + Send + Sync> std::ops::Deref for ResMut<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.inner
-    }
+    type Target = T; fn deref(&self) -> &T { self.inner }
 }
 impl<'a, T: 'static + Send + Sync> std::ops::DerefMut for ResMut<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.inner
-    }
+    fn deref_mut(&mut self) -> &mut T { self.inner }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Local<T>
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// System-local state that persists across invocations of the same system
-/// instance but is invisible outside the system.
-///
-/// Unlike a resource, each system instance has its own `Local<T>`. The
-/// value is initialised with `T::default()` on first use.
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::Local;
-///
-/// let mut counter: Local<u32> = Local::default_value();
-/// *counter += 1;
-/// assert_eq!(*counter, 1);
-/// ```
-pub struct Local<T: Default + 'static> {
-    value: T,
-}
+/// System-local persistent state.
+pub struct Local<T: Default + 'static> { value: T }
 impl<T: Default + 'static> Local<T> {
-    /// Creates a `Local` wrapping `value`.
-    pub fn new(value: T) -> Self {
-        Self { value }
-    }
-    /// Creates a `Local` using `T::default()`.
-    pub fn default_value() -> Self {
-        Self { value: T::default() }
-    }
+    /// Initialises with `value`.
+    pub fn new(value: T) -> Self { Self { value } }
+    /// Initialises with `T::default()`.
+    pub fn default_value() -> Self { Self { value: T::default() } }
 }
 impl<T: Default + 'static> std::ops::Deref for Local<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
-    }
+    type Target = T; fn deref(&self) -> &T { &self.value }
 }
 impl<T: Default + 'static> std::ops::DerefMut for Local<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
+    fn deref_mut(&mut self) -> &mut T { &mut self.value }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Events<E>
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A typed double-buffered event queue.
-///
-/// Events are written via [`EventWriter`] and consumed via [`EventReader`] or
-/// manual [`EventCursor`] iteration. The queue is double-buffered so that
-/// events survive for at least one full frame (one call to [`Events::update`]).
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::{Events, EventWriter, EventReader};
-///
-/// struct Explosion { pos: (f32, f32) }
-///
-/// let mut events: Events<Explosion> = Events::new();
-/// events.send(Explosion { pos: (1.0, 2.0) });
-/// ```
+/// Double-buffered typed event queue.
 pub struct Events<E: 'static + Send + Sync> {
-    /// Two alternating buffers: buffers[current] receives new events.
     buffers: [Vec<E>; 2],
-    /// Index of the buffer currently being written (0 or 1).
     current: usize,
-    /// Monotonically increasing count of total events ever sent.
     event_count: usize,
-    /// `event_count` value at the start of the current double-buffer epoch.
     start_event_count: usize,
 }
 
 impl<E: 'static + Send + Sync> Default for Events<E> {
     fn default() -> Self {
-        Self {
-            buffers: [Vec::new(), Vec::new()],
-            current: 0,
-            event_count: 0,
-            start_event_count: 0,
-        }
+        Self { buffers: [Vec::new(), Vec::new()], current: 0, event_count: 0, start_event_count: 0 }
     }
 }
 
 impl<E: 'static + Send + Sync> Events<E> {
-    /// Creates an empty event queue.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Appends a single event.
-    pub fn send(&mut self, event: E) {
-        self.buffers[self.current].push(event);
-        self.event_count += 1;
-    }
-
-    /// Advances the double-buffer: swaps to the other buffer and clears the
-    /// stale one. Call once per frame.
+    /// Creates a new empty queue.
+    pub fn new() -> Self { Self::default() }
+    /// Appends an event.
+    pub fn send(&mut self, e: E) { self.buffers[self.current].push(e); self.event_count += 1; }
+    /// Swaps buffers and clears the stale one (call once per frame).
     pub fn update(&mut self) {
         let next = 1 - self.current;
         self.buffers[next].clear();
-        self.start_event_count =
-            self.event_count - self.buffers[self.current].len();
+        self.start_event_count = self.event_count - self.buffers[self.current].len();
         self.current = next;
     }
-
-    /// Returns a cursor that starts at the current end (reads only future events).
-    pub fn get_reader(&self) -> EventCursor {
-        EventCursor { last_event_count: self.event_count }
-    }
-
-    /// Returns a cursor that starts at the oldest buffered event.
-    pub fn get_reader_current(&self) -> EventCursor {
-        EventCursor { last_event_count: self.start_event_count }
-    }
-
-    /// Reads all events since `cursor` and advances `cursor`.
+    /// Returns a cursor at the current end (reads only future events).
+    pub fn get_reader(&self) -> EventCursor { EventCursor { last: self.event_count } }
+    /// Returns a cursor at the oldest buffered event.
+    pub fn get_reader_current(&self) -> EventCursor { EventCursor { last: self.start_event_count } }
+    /// Reads all events since `cursor`, advancing it.
     pub fn read<'a>(&'a self, cursor: &mut EventCursor) -> impl Iterator<Item = &'a E> {
-        let start = cursor.last_event_count;
-        cursor.last_event_count = self.event_count;
-
-        let buf_old = &self.buffers[1 - self.current];
-        let buf_new = &self.buffers[self.current];
+        let start = cursor.last;
+        cursor.last = self.event_count;
+        let old = &self.buffers[1 - self.current];
+        let new = &self.buffers[self.current];
         let base = self.start_event_count;
-
-        let skip0 = start.saturating_sub(base);
-        let take0 = buf_old.len().saturating_sub(skip0);
-        let skip1 = start.saturating_sub(base + buf_old.len());
-        let take1 = buf_new.len().saturating_sub(skip1);
-
-        buf_old
-            .iter()
-            .skip(skip0)
-            .take(take0)
-            .chain(buf_new.iter().skip(skip1).take(take1))
+        let sk0 = start.saturating_sub(base);
+        let tk0 = old.len().saturating_sub(sk0);
+        let sk1 = start.saturating_sub(base + old.len());
+        let tk1 = new.len().saturating_sub(sk1);
+        old.iter().skip(sk0).take(tk0).chain(new.iter().skip(sk1).take(tk1))
     }
-
     /// Total events sent since creation.
-    pub fn len(&self) -> usize {
-        self.event_count
-    }
-
+    pub fn len(&self) -> usize { self.event_count }
     /// `true` if both buffers are empty.
-    pub fn is_empty(&self) -> bool {
-        self.buffers[0].is_empty() && self.buffers[1].is_empty()
-    }
-
+    pub fn is_empty(&self) -> bool { self.buffers[0].is_empty() && self.buffers[1].is_empty() }
     /// Clears all buffered events.
-    pub fn clear(&mut self) {
-        self.buffers[0].clear();
-        self.buffers[1].clear();
-    }
+    pub fn clear(&mut self) { self.buffers[0].clear(); self.buffers[1].clear(); }
 }
 
-/// An independent read cursor into an [`Events<E>`] queue.
-///
-/// Each system that reads events should maintain its own `EventCursor` so that
-/// multiple systems can each read the same events independently.
+/// An independent read cursor into [`Events<E>`].
 #[derive(Debug, Clone, Default)]
-pub struct EventCursor {
-    last_event_count: usize,
-}
+pub struct EventCursor { last: usize }
 
-/// A write handle for an [`Events<E>`] queue.
-pub struct EventWriter<'a, E: 'static + Send + Sync> {
-    events: &'a mut Events<E>,
-}
+/// Write handle for [`Events<E>`].
+pub struct EventWriter<'a, E: 'static + Send + Sync> { events: &'a mut Events<E> }
 impl<'a, E: 'static + Send + Sync> EventWriter<'a, E> {
-    /// Creates a new writer.
-    pub fn new(events: &'a mut Events<E>) -> Self {
-        Self { events }
-    }
-    /// Sends a single event.
-    pub fn send(&mut self, event: E) {
-        self.events.send(event);
-    }
-    /// Sends all events from an iterator.
-    pub fn send_batch(&mut self, events: impl IntoIterator<Item = E>) {
-        for e in events {
-            self.events.send(e);
-        }
-    }
+    /// Creates a writer.
+    pub fn new(events: &'a mut Events<E>) -> Self { Self { events } }
+    /// Sends an event.
+    pub fn send(&mut self, e: E) { self.events.send(e); }
+    /// Sends events from an iterator.
+    pub fn send_batch(&mut self, it: impl IntoIterator<Item = E>) { for e in it { self.events.send(e); } }
 }
 
-/// A read handle for an [`Events<E>`] queue with its own [`EventCursor`].
-pub struct EventReader<'a, E: 'static + Send + Sync> {
-    events: &'a Events<E>,
-    cursor: EventCursor,
-}
+/// Read handle for [`Events<E>`] with its own cursor.
+pub struct EventReader<'a, E: 'static + Send + Sync> { events: &'a Events<E>, cursor: EventCursor }
 impl<'a, E: 'static + Send + Sync> EventReader<'a, E> {
-    /// Creates a reader that sees only events sent *after* this point.
-    pub fn new(events: &'a Events<E>) -> Self {
-        Self { cursor: events.get_reader(), events }
-    }
-    /// Creates a reader that sees all currently buffered events.
-    pub fn new_current(events: &'a Events<E>) -> Self {
-        Self { cursor: events.get_reader_current(), events }
-    }
-    /// Returns an iterator over all unread events, advancing the cursor.
-    pub fn read(&mut self) -> impl Iterator<Item = &E> {
-        self.events.read(&mut self.cursor)
-    }
+    /// Reads only future events.
+    pub fn new(events: &'a Events<E>) -> Self { Self { cursor: events.get_reader(), events } }
+    /// Reads all buffered events.
+    pub fn new_current(events: &'a Events<E>) -> Self { Self { cursor: events.get_reader_current(), events } }
+    /// Returns an iterator over unread events.
+    pub fn read(&mut self) -> impl Iterator<Item = &E> { self.events.read(&mut self.cursor) }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Commands
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// The kind of a deferred world command.
-enum CommandKind {
+enum Cmd {
     Spawn(Box<dyn FnOnce(&mut World) + Send + Sync>),
     Despawn(Entity),
-    InsertComponent(Box<dyn FnOnce(&mut World) + Send + Sync>),
-    RemoveComponent(Entity, TypeId),
-    InsertResource(Box<dyn FnOnce(&mut World) + Send + Sync>),
-    RemoveResource(TypeId),
+    Insert(Box<dyn FnOnce(&mut World) + Send + Sync>),
+    Remove(Entity, TypeId),
+    InsertRes(Box<dyn FnOnce(&mut World) + Send + Sync>),
+    RemoveRes(TypeId),
 }
 
-/// A queue of deferred world mutations.
-///
-/// Systems accumulate structural changes (spawn, despawn, insert, remove) into
-/// a `Commands` queue and apply them in bulk after the system finishes. This
-/// avoids holding exclusive borrows on the world during iteration.
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::{World, Commands, Component};
-///
-/// #[derive(Clone)] struct Marker;
-/// impl Component for Marker {}
-///
-/// let mut world = World::new();
-/// let mut commands = Commands::new();
-/// commands.spawn(Marker);
-/// commands.apply(&mut world);
-/// assert_eq!(world.entity_count(), 1);
-/// ```
-pub struct Commands {
-    queue: Vec<CommandKind>,
-}
-
+/// Deferred world mutations applied at end-of-frame.
+pub struct Commands { queue: Vec<Cmd> }
 impl Commands {
     /// Creates an empty command queue.
-    pub fn new() -> Self {
-        Self { queue: Vec::new() }
-    }
-
+    pub fn new() -> Self { Self { queue: Vec::new() } }
     /// Queues a bundle spawn.
-    pub fn spawn<B: Bundle>(&mut self, bundle: B) {
-        self.queue.push(CommandKind::Spawn(Box::new(move |w| {
-            w.spawn(bundle);
-        })));
+    pub fn spawn<B: Bundle>(&mut self, b: B) {
+        self.queue.push(Cmd::Spawn(Box::new(move |w| { w.spawn(b); })));
     }
-
     /// Queues a despawn.
-    pub fn despawn(&mut self, entity: Entity) {
-        self.queue.push(CommandKind::Despawn(entity));
+    pub fn despawn(&mut self, e: Entity) { self.queue.push(Cmd::Despawn(e)); }
+    /// Queues a component insertion.
+    pub fn insert<C: Component>(&mut self, e: Entity, c: C) {
+        self.queue.push(Cmd::Insert(Box::new(move |w| w.insert(e, c))));
     }
-
-    /// Queues insertion of component `C` onto `entity`.
-    pub fn insert<C: Component>(&mut self, entity: Entity, component: C) {
-        self.queue.push(CommandKind::InsertComponent(Box::new(move |w| {
-            w.insert(entity, component);
-        })));
+    /// Queues a component removal.
+    pub fn remove<C: Component>(&mut self, e: Entity) {
+        self.queue.push(Cmd::Remove(e, TypeId::of::<C>()));
     }
-
-    /// Queues removal of component `C` from `entity`.
-    pub fn remove<C: Component>(&mut self, entity: Entity) {
-        self.queue.push(CommandKind::RemoveComponent(entity, TypeId::of::<C>()));
+    /// Queues a resource insertion.
+    pub fn insert_resource<T: 'static + Send + Sync>(&mut self, v: T) {
+        self.queue.push(Cmd::InsertRes(Box::new(move |w| w.resources.insert(v))));
     }
-
-    /// Queues insertion of a resource.
-    pub fn insert_resource<T: 'static + Send + Sync>(&mut self, value: T) {
-        self.queue.push(CommandKind::InsertResource(Box::new(move |w| {
-            w.resources.insert(value);
-        })));
-    }
-
-    /// Queues removal of a resource.
+    /// Queues a resource removal.
     pub fn remove_resource<T: 'static + Send + Sync>(&mut self) {
-        self.queue.push(CommandKind::RemoveResource(TypeId::of::<T>()));
+        self.queue.push(Cmd::RemoveRes(TypeId::of::<T>()));
     }
-
-    /// Applies all queued commands to `world` in order and clears the queue.
+    /// Applies all queued commands and clears the queue.
     pub fn apply(&mut self, world: &mut World) {
         for cmd in self.queue.drain(..) {
             match cmd {
-                CommandKind::Spawn(f) => f(world),
-                CommandKind::Despawn(e) => { world.despawn(e); }
-                CommandKind::InsertComponent(f) => f(world),
-                CommandKind::RemoveComponent(e, tid) => world.remove_by_type_id(e, tid),
-                CommandKind::InsertResource(f) => f(world),
-                CommandKind::RemoveResource(tid) => { world.resources.map.remove(&tid); }
+                Cmd::Spawn(f) => f(world),
+                Cmd::Despawn(e) => { world.despawn(e); }
+                Cmd::Insert(f) => f(world),
+                Cmd::Remove(e, tid) => world.remove_by_type_id(e, tid),
+                Cmd::InsertRes(f) => f(world),
+                Cmd::RemoveRes(tid) => { world.resources.map.remove(&tid); }
             }
         }
     }
-
-    /// Returns `true` if no commands are queued.
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
+    /// `true` if no commands are queued.
+    pub fn is_empty(&self) -> bool { self.queue.is_empty() }
 }
+impl Default for Commands { fn default() -> Self { Self::new() } }
 
-impl Default for Commands {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Query filters
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A filter requiring an entity to have component `T` (without reading it).
-///
-/// # Example
-/// ```rust,ignore
-/// world.query::<Read<Position>, With<Player>>()
-/// ```
+/// Requires component `T` to be present (not fetched).
 pub struct With<T: Component>(std::marker::PhantomData<T>);
-
-/// A filter requiring an entity to *not* have component `T`.
-///
-/// # Example
-/// ```rust,ignore
-/// world.query::<Read<Health>, Without<Dead>>()
-/// ```
+/// Requires component `T` to be absent.
 pub struct Without<T: Component>(std::marker::PhantomData<T>);
-
-/// A structural change-detection filter — passes only entities where `T` was
-/// added since `since_tick`. Used with [`query_added`].
+/// Change-detection filter: component `T` was added.
 pub struct Added<T: Component>(std::marker::PhantomData<T>);
-
-/// A structural change-detection filter — passes only entities where `T` was
-/// mutably accessed since `since_tick`. Used with [`query_changed`].
+/// Change-detection filter: component `T` was mutably accessed.
 pub struct Changed<T: Component>(std::marker::PhantomData<T>);
 
-/// Trait implemented by query filter types to test whether an archetype matches.
+/// Archetype-level filter for queries.
 pub trait QueryFilter {
-    /// Returns `true` if the given archetype passes this filter.
+    /// `true` if the archetype passes this filter.
     fn matches_archetype(arch: &Archetype) -> bool;
 }
-
-impl QueryFilter for () {
-    fn matches_archetype(_: &Archetype) -> bool { true }
-}
-
+impl QueryFilter for () { fn matches_archetype(_: &Archetype) -> bool { true } }
 impl<T: Component> QueryFilter for With<T> {
-    fn matches_archetype(arch: &Archetype) -> bool {
-        arch.contains(TypeId::of::<T>())
-    }
+    fn matches_archetype(a: &Archetype) -> bool { a.contains(TypeId::of::<T>()) }
 }
-
 impl<T: Component> QueryFilter for Without<T> {
-    fn matches_archetype(arch: &Archetype) -> bool {
-        !arch.contains(TypeId::of::<T>())
-    }
+    fn matches_archetype(a: &Archetype) -> bool { !a.contains(TypeId::of::<T>()) }
 }
-
 impl<A: QueryFilter, B: QueryFilter> QueryFilter for (A, B) {
-    fn matches_archetype(arch: &Archetype) -> bool {
-        A::matches_archetype(arch) && B::matches_archetype(arch)
-    }
+    fn matches_archetype(a: &Archetype) -> bool { A::matches_archetype(a) && B::matches_archetype(a) }
 }
-
 impl<A: QueryFilter, B: QueryFilter, C: QueryFilter> QueryFilter for (A, B, C) {
-    fn matches_archetype(arch: &Archetype) -> bool {
-        A::matches_archetype(arch) && B::matches_archetype(arch) && C::matches_archetype(arch)
+    fn matches_archetype(a: &Archetype) -> bool {
+        A::matches_archetype(a) && B::matches_archetype(a) && C::matches_archetype(a)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WorldQuery — fetch marker types and trait
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// WorldQuery fetch markers and trait
+// ---------------------------------------------------------------------------
 
-/// Marker type: fetch component `T` immutably → yields `&T`.
-///
-/// Use as a type parameter in [`World::query`]:
-/// ```rust,ignore
-/// for pos in world.query::<Read<Position>, ()>() { ... }
-/// ```
+/// Fetch marker: yields `&'w T`.
 pub struct Read<T: Component>(std::marker::PhantomData<T>);
-
-/// Marker type: fetch component `T` mutably → yields `&mut T`.
-///
-/// Use as a type parameter in [`World::query`]:
-/// ```rust,ignore
-/// for vel in world.query::<Write<Velocity>, ()>() { vel.dx *= 0.9; }
-/// ```
+/// Fetch marker: yields `&'w mut T`.
 pub struct Write<T: Component>(std::marker::PhantomData<T>);
-
-/// Marker type: optionally fetch component `T` → yields `Option<&T>`.
-///
-/// Entities that do not have `T` yield `None` rather than being skipped.
+/// Fetch marker: yields `Option<&'w T>` (entity need not have T).
 pub struct OptionRead<T: Component>(std::marker::PhantomData<T>);
 
-/// Describes how to fetch data from a single archetype row.
-///
-/// The `'static` bound on the trait (but not the `Item` GAT) is satisfied by
-/// the marker types [`Read<T>`], [`Write<T>`], [`OptionRead<T>`], and
-/// [`Entity`] — none of which carry lifetimes.
+/// Trait for types that describe how to fetch data from an archetype row.
 pub trait WorldQuery: 'static {
-    /// The type yielded per entity (may borrow from the archetype).
+    /// The type yielded per entity.
     type Item<'w>;
-
-    /// Returns the component `TypeId`s that *must* be present in an archetype.
+    /// Required component `TypeId`s (must all be present in the archetype).
     fn required_types() -> Vec<TypeId>;
-
-    /// Returns `true` if `arch` provides all necessary columns.
+    /// `true` if `arch` satisfies this query.
     fn matches(arch: &Archetype) -> bool;
-
-    /// Fetches the item for the entity at `row` in `arch`.
+    /// Fetches the item for `row` in `arch`.
     ///
     /// # Safety
-    /// `row` must be a valid row index. The caller must uphold aliasing rules
-    /// (no other mutable references to the same row must exist for `Write<T>`).
+    /// `row` must be valid; aliasing rules must be upheld by the caller.
     unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Self::Item<'w>;
 }
 
-// --- Read<T> → &'w T ----------------------------------------------------------
 impl<T: Component> WorldQuery for Read<T> {
     type Item<'w> = &'w T;
-
     fn required_types() -> Vec<TypeId> { vec![TypeId::of::<T>()] }
-
-    fn matches(arch: &Archetype) -> bool { arch.contains(TypeId::of::<T>()) }
-
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> &'w T {
-        arch.columns[&TypeId::of::<T>()].column.get::<T>(row)
+    fn matches(a: &Archetype) -> bool { a.contains(TypeId::of::<T>()) }
+    unsafe fn fetch<'w>(a: &'w Archetype, row: usize) -> &'w T {
+        a.columns[&TypeId::of::<T>()].column.get::<T>(row)
     }
 }
 
-// --- Write<T> → &'w mut T ----------------------------------------------------
 impl<T: Component> WorldQuery for Write<T> {
     type Item<'w> = &'w mut T;
-
     fn required_types() -> Vec<TypeId> { vec![TypeId::of::<T>()] }
-
-    fn matches(arch: &Archetype) -> bool { arch.contains(TypeId::of::<T>()) }
-
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> &'w mut T {
-        // SAFETY: exclusive access guaranteed by caller.
-        let col = arch.columns.get(&TypeId::of::<T>()).unwrap();
-        let ptr = col.column.get_ptr(row) as *mut T;
+    fn matches(a: &Archetype) -> bool { a.contains(TypeId::of::<T>()) }
+    unsafe fn fetch<'w>(a: &'w Archetype, row: usize) -> &'w mut T {
+        let ptr = a.columns.get(&TypeId::of::<T>()).unwrap().column.get_ptr(row) as *mut T;
         &mut *ptr
     }
 }
 
-// --- OptionRead<T> → Option<&'w T> -------------------------------------------
 impl<T: Component> WorldQuery for OptionRead<T> {
     type Item<'w> = Option<&'w T>;
-
     fn required_types() -> Vec<TypeId> { vec![] }
-
     fn matches(_: &Archetype) -> bool { true }
-
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Option<&'w T> {
-        arch.columns
-            .get(&TypeId::of::<T>())
-            .map(|col| col.column.get::<T>(row))
+    unsafe fn fetch<'w>(a: &'w Archetype, row: usize) -> Option<&'w T> {
+        a.columns.get(&TypeId::of::<T>()).map(|c| c.column.get::<T>(row))
     }
 }
 
-// --- Entity ------------------------------------------------------------------
 impl WorldQuery for Entity {
     type Item<'w> = Entity;
-
     fn required_types() -> Vec<TypeId> { vec![] }
-
     fn matches(_: &Archetype) -> bool { true }
-
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Entity {
-        arch.entities[row]
-    }
+    unsafe fn fetch<'w>(a: &'w Archetype, row: usize) -> Entity { a.entities[row] }
 }
 
-// --- Tuple impls -------------------------------------------------------------
-macro_rules! impl_world_query_tuple {
-    ($($Q:ident),*) => {
+macro_rules! impl_wq_tuple {
+    ($($Q:ident),+) => {
         #[allow(non_snake_case)]
-        impl<$($Q: WorldQuery),*> WorldQuery for ($($Q,)*) {
-            type Item<'w> = ($($Q::Item<'w>,)*);
-
+        impl<$($Q: WorldQuery),+> WorldQuery for ($($Q,)+) {
+            type Item<'w> = ($($Q::Item<'w>,)+);
             fn required_types() -> Vec<TypeId> {
-                let mut ids = Vec::new();
-                $(ids.extend($Q::required_types());)*
-                ids.sort();
-                ids.dedup();
-                ids
+                let mut v = Vec::new(); $(v.extend($Q::required_types());)+ v.sort(); v.dedup(); v
             }
-
-            fn matches(arch: &Archetype) -> bool {
-                $($Q::matches(arch))&&*
-            }
-
-            unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> ($($Q::Item<'w>,)*) {
-                ($($Q::fetch(arch, row),)*)
+            fn matches(a: &Archetype) -> bool { $($Q::matches(a))&&+ }
+            unsafe fn fetch<'w>(a: &'w Archetype, row: usize) -> ($($Q::Item<'w>,)+) {
+                ($($Q::fetch(a, row),)+)
             }
         }
     };
 }
+impl_wq_tuple!(A);
+impl_wq_tuple!(A, B);
+impl_wq_tuple!(A, B, C);
+impl_wq_tuple!(A, B, C, D);
+impl_wq_tuple!(A, B, C, D, E);
+impl_wq_tuple!(A, B, C, D, E, F);
+impl_wq_tuple!(A, B, C, D, E, F, G);
+impl_wq_tuple!(A, B, C, D, E, F, G, H);
 
-impl_world_query_tuple!(A);
-impl_world_query_tuple!(A, B);
-impl_world_query_tuple!(A, B, C);
-impl_world_query_tuple!(A, B, C, D);
-impl_world_query_tuple!(A, B, C, D, E);
-impl_world_query_tuple!(A, B, C, D, E, F);
-impl_world_query_tuple!(A, B, C, D, E, F, G);
-impl_world_query_tuple!(A, B, C, D, E, F, G, H);
-
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // QueryIter
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// An iterator over all entities in a world matching query `Q` and filter `F`.
-///
-/// Obtained via [`World::query`]. Walks through all archetypes in order,
-/// skipping those that do not match, and yields one item per entity row.
+/// Iterator over archetypes matching query `Q` and filter `F`.
 pub struct QueryIter<'w, Q: WorldQuery, F: QueryFilter> {
     archetypes: &'w [Archetype],
     arch_index: usize,
@@ -1169,161 +680,83 @@ pub struct QueryIter<'w, Q: WorldQuery, F: QueryFilter> {
     _q: std::marker::PhantomData<Q>,
     _f: std::marker::PhantomData<F>,
 }
-
 impl<'w, Q: WorldQuery, F: QueryFilter> QueryIter<'w, Q, F> {
     fn new(archetypes: &'w [Archetype]) -> Self {
-        Self {
-            archetypes,
-            arch_index: 0,
-            row: 0,
-            _q: std::marker::PhantomData,
-            _f: std::marker::PhantomData,
-        }
+        Self { archetypes, arch_index: 0, row: 0, _q: std::marker::PhantomData, _f: std::marker::PhantomData }
     }
 }
-
 impl<'w, Q: WorldQuery, F: QueryFilter> Iterator for QueryIter<'w, Q, F> {
     type Item = Q::Item<'w>;
-
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let arch = self.archetypes.get(self.arch_index)?;
             if !Q::matches(arch) || !F::matches_archetype(arch) {
-                self.arch_index += 1;
-                self.row = 0;
-                continue;
+                self.arch_index += 1; self.row = 0; continue;
             }
             if self.row >= arch.len() {
-                self.arch_index += 1;
-                self.row = 0;
-                continue;
+                self.arch_index += 1; self.row = 0; continue;
             }
-            let row = self.row;
-            self.row += 1;
-            // SAFETY: row < arch.len(); shared reference upholds read aliasing rules.
+            let row = self.row; self.row += 1;
             return Some(unsafe { Q::fetch(arch, row) });
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // EntityRef / EntityMut
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// An immutable view into a single entity's components.
-pub struct EntityRef<'w> {
-    archetype: &'w Archetype,
-    row: usize,
-}
-
+/// Read-only view into a single entity's components.
+pub struct EntityRef<'w> { arch: &'w Archetype, row: usize }
 impl<'w> EntityRef<'w> {
-    fn new(archetype: &'w Archetype, row: usize) -> Self {
-        Self { archetype, row }
-    }
-
-    /// Returns the `Entity` handle for this view.
-    pub fn entity(&self) -> Entity {
-        self.archetype.entities[self.row]
-    }
-
+    fn new(arch: &'w Archetype, row: usize) -> Self { Self { arch, row } }
+    /// The entity's handle.
+    pub fn entity(&self) -> Entity { self.arch.entities[self.row] }
     /// Returns `&T` if the entity has component `T`.
     pub fn get<T: Component>(&self) -> Option<&T> {
-        self.archetype
-            .columns
-            .get(&TypeId::of::<T>())
-            .map(|col| col.column.get::<T>(self.row))
+        self.arch.columns.get(&TypeId::of::<T>()).map(|c| c.column.get::<T>(self.row))
     }
-
-    /// Returns `true` if the entity has component `T`.
-    pub fn has<T: Component>(&self) -> bool {
-        self.archetype.contains(TypeId::of::<T>())
-    }
-
-    /// Returns the full list of component type IDs for this entity.
-    pub fn component_types(&self) -> &[TypeId] {
-        &self.archetype.component_types
-    }
+    /// `true` if the entity has component `T`.
+    pub fn has<T: Component>(&self) -> bool { self.arch.contains(TypeId::of::<T>()) }
+    /// All component types on this entity.
+    pub fn component_types(&self) -> &[TypeId] { &self.arch.component_types }
 }
 
-/// A mutable view into a single entity's components.
-pub struct EntityMut<'w> {
-    archetype: &'w mut Archetype,
-    row: usize,
-}
-
+/// Read-write view into a single entity's components.
+pub struct EntityMut<'w> { arch: &'w mut Archetype, row: usize }
 impl<'w> EntityMut<'w> {
-    fn new(archetype: &'w mut Archetype, row: usize) -> Self {
-        Self { archetype, row }
-    }
-
-    /// Returns the `Entity` handle for this view.
-    pub fn entity(&self) -> Entity {
-        self.archetype.entities[self.row]
-    }
-
-    /// Returns `&T` if the entity has component `T`.
+    fn new(arch: &'w mut Archetype, row: usize) -> Self { Self { arch, row } }
+    /// The entity's handle.
+    pub fn entity(&self) -> Entity { self.arch.entities[self.row] }
+    /// Returns `&T` if present.
     pub fn get<T: Component>(&self) -> Option<&T> {
-        self.archetype
-            .columns
-            .get(&TypeId::of::<T>())
-            .map(|col| col.column.get::<T>(self.row))
+        self.arch.columns.get(&TypeId::of::<T>()).map(|c| c.column.get::<T>(self.row))
     }
-
-    /// Returns `&mut T` if the entity has component `T`.
+    /// Returns `&mut T` if present.
     pub fn get_mut<T: Component>(&mut self) -> Option<&mut T> {
-        self.archetype
-            .columns
-            .get_mut(&TypeId::of::<T>())
-            .map(|col| col.column.get_mut::<T>(self.row))
+        self.arch.columns.get_mut(&TypeId::of::<T>()).map(|c| c.column.get_mut::<T>(self.row))
     }
-
-    /// Returns `true` if the entity has component `T`.
-    pub fn has<T: Component>(&self) -> bool {
-        self.archetype.contains(TypeId::of::<T>())
-    }
+    /// `true` if the entity has component `T`.
+    pub fn has<T: Component>(&self) -> bool { self.arch.contains(TypeId::of::<T>()) }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // World
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// The central ECS container.
-///
-/// [`World`] owns:
-/// - All [`Archetype`]s and their component data columns.
-/// - The [`EntityAllocator`] (generational index → location mapping).
-/// - The [`Resources`] type-map.
-/// - The global change-detection tick counter.
-/// - Registered [`Events<E>`] queues.
-///
-/// # Spawning entities
-/// ```rust
-/// use proof_engine::ecs::{World, Component};
-///
-/// #[derive(Clone)] struct Pos(f32, f32);
-/// impl Component for Pos {}
-///
-/// let mut world = World::new();
-/// let entity = world.spawn(Pos(1.0, 2.0));
-/// assert!(world.is_alive(entity));
-/// ```
+/// The central ECS container: archetypes, entity allocator, resources, events.
 pub struct World {
-    /// All archetypes, indexed by position.
     archetypes: Vec<Archetype>,
-    /// Maps sorted component-type-set → archetype index.
     archetype_index: HashMap<Vec<TypeId>, usize>,
-    /// Entity allocator and location tracking.
     entities: EntityAllocator,
     /// Global singleton resources.
     pub resources: Resources,
-    /// Registered event queues, keyed by `TypeId::of::<Events<E>>()`.
     events: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
-    /// Monotonically-increasing tick used for change detection.
     tick: u32,
 }
 
 impl World {
-    /// Creates a new, empty world.
+    /// Creates an empty world.
     pub fn new() -> Self {
         Self {
             archetypes: Vec::new(),
@@ -1336,713 +769,417 @@ impl World {
     }
 
     /// Returns the current change-detection tick.
-    pub fn tick(&self) -> u32 {
-        self.tick
-    }
+    pub fn tick(&self) -> u32 { self.tick }
+    /// Advances the tick counter by 1.
+    pub fn increment_tick(&mut self) { self.tick = self.tick.wrapping_add(1); }
 
-    /// Advances the tick counter by 1 (call once per frame / schedule run).
-    pub fn increment_tick(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
-    }
+    // -- Archetype helpers --------------------------------------------------
 
-    // ── Archetype management ────────────────────────────────────────────
-
-    /// Returns the index of the archetype for `types` (sorted/deduped),
-    /// creating it if it does not yet exist.
     fn get_or_create_archetype(&mut self, mut types: Vec<TypeId>) -> usize {
-        types.sort();
-        types.dedup();
-        if let Some(&idx) = self.archetype_index.get(&types) {
-            return idx;
-        }
+        types.sort(); types.dedup();
+        if let Some(&i) = self.archetype_index.get(&types) { return i; }
         let id = ArchetypeId(self.archetypes.len() as u32);
         let arch = Archetype::new(id, types.clone());
-        let idx = self.archetypes.len();
+        let i = self.archetypes.len();
         self.archetypes.push(arch);
-        self.archetype_index.insert(types, idx);
-        idx
+        self.archetype_index.insert(types, i);
+        i
     }
 
-    // ── Spawn / despawn ─────────────────────────────────────────────────
+    // -- Spawn / despawn ----------------------------------------------------
 
-    /// Spawns a new entity with the given [`Bundle`] of components.
-    ///
-    /// Returns the new [`Entity`] handle.
+    /// Spawns an entity with the given bundle and returns its handle.
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
         let types = B::type_ids();
-        let arch_idx = self.get_or_create_archetype(types);
-
+        let ai = self.get_or_create_archetype(types);
         let entity = self.entities.alloc();
         let tick = self.tick;
-        let arch = &mut self.archetypes[arch_idx];
-
+        let arch = &mut self.archetypes[ai];
         B::register_columns(arch);
         let row = arch.entities.len();
         arch.entities.push(entity);
         bundle.insert_into(arch, tick);
-
-        self.entities.set_location(
-            entity,
-            EntityLocation { archetype_id: ArchetypeId(arch_idx as u32), row },
-        );
+        self.entities.set_location(entity, EntityLocation { archetype_id: ArchetypeId(ai as u32), row });
         entity
     }
 
-    /// Despawns the entity, removing all its components.
-    ///
-    /// Returns `true` if the entity was alive and has been removed.
+    /// Despawns an entity, returning `true` if it was alive.
     pub fn despawn(&mut self, entity: Entity) -> bool {
-        let loc = match self.entities.location(entity) {
-            Some(l) => l,
-            None => return false,
-        };
-        let arch_idx = loc.archetype_id.0 as usize;
-        let swapped = self.archetypes[arch_idx].swap_remove(loc.row);
+        let loc = match self.entities.location(entity) { Some(l) => l, None => return false };
+        let ai = loc.archetype_id.0 as usize;
+        let swapped = self.archetypes[ai].swap_remove(loc.row);
         self.entities.free(entity);
-        if let Some(swapped_entity) = swapped {
-            self.entities.set_location(
-                swapped_entity,
-                EntityLocation { archetype_id: loc.archetype_id, row: loc.row },
-            );
+        if let Some(se) = swapped {
+            self.entities.set_location(se, EntityLocation { archetype_id: loc.archetype_id, row: loc.row });
         }
         true
     }
 
-    /// Returns `true` if `entity` is currently alive in the world.
-    pub fn is_alive(&self, entity: Entity) -> bool {
-        self.entities.is_alive(entity)
-    }
+    /// `true` if entity is currently alive.
+    pub fn is_alive(&self, entity: Entity) -> bool { self.entities.is_alive(entity) }
 
-    // ── Component insert / remove ───────────────────────────────────────
+    // -- Component insert / remove -----------------------------------------
 
-    /// Inserts component `C` onto `entity`.
-    ///
-    /// If the entity already has `C`, the value is replaced in-place.
-    /// If not, the entity is migrated to a new archetype that includes `C`.
+    /// Inserts component `C` onto an entity, migrating its archetype if needed.
     pub fn insert<C: Component>(&mut self, entity: Entity, component: C) {
-        let loc = match self.entities.location(entity) {
-            Some(l) => l,
-            None => return,
-        };
-        let old_arch_idx = loc.archetype_id.0 as usize;
-
-        // Fast path: component already present — update in-place.
-        if self.archetypes[old_arch_idx].contains(TypeId::of::<C>()) {
+        let loc = match self.entities.location(entity) { Some(l) => l, None => return };
+        let ai = loc.archetype_id.0 as usize;
+        // Fast path: replace in-place.
+        if self.archetypes[ai].contains(TypeId::of::<C>()) {
             let tick = self.tick;
-            let arch = &mut self.archetypes[old_arch_idx];
-            let col = arch.columns.get_mut(&TypeId::of::<C>()).unwrap();
+            let col = self.archetypes[ai].columns.get_mut(&TypeId::of::<C>()).unwrap();
             *col.column.get_mut::<C>(loc.row) = component;
             col.changed_ticks[loc.row] = tick;
             return;
         }
-
-        // Slow path: migrate entity to a larger archetype.
-        let mut new_types = self.archetypes[old_arch_idx].component_types.clone();
+        // Slow path: migrate to larger archetype.
+        let mut new_types = self.archetypes[ai].component_types.clone();
         new_types.push(TypeId::of::<C>());
-        let new_arch_idx = self.get_or_create_archetype(new_types);
+        let new_ai = self.get_or_create_archetype(new_types);
         let tick = self.tick;
-        self.migrate_entity_add_component::<C>(entity, loc, new_arch_idx, component, tick);
+        self.migrate_add::<C>(entity, loc, new_ai, component, tick);
     }
 
-    /// Migrates `entity` from its current archetype to `new_arch_idx`,
-    /// also adding component `C` with value `extra`.
-    fn migrate_entity_add_component<C: Component>(
-        &mut self,
-        entity: Entity,
-        loc: EntityLocation,
-        new_arch_idx: usize,
-        extra: C,
-        tick: u32,
+    fn migrate_add<C: Component>(
+        &mut self, entity: Entity, loc: EntityLocation, new_ai: usize, extra: C, tick: u32,
     ) {
-        let old_arch_idx = loc.archetype_id.0 as usize;
+        let old_ai = loc.archetype_id.0 as usize;
         let row = loc.row;
-
-        // Ensure destination has columns for all old types.
-        let old_types: Vec<TypeId> =
-            self.archetypes[old_arch_idx].component_types.clone();
-        self.ensure_columns_from_old(old_arch_idx, new_arch_idx, &old_types);
-
-        // Ensure destination has column for new type C.
-        if !self.archetypes[new_arch_idx].columns.contains_key(&TypeId::of::<C>()) {
-            self.archetypes[new_arch_idx].register_column::<C>();
+        let old_types: Vec<TypeId> = self.archetypes[old_ai].component_types.clone();
+        // Ensure destination columns exist.
+        self.ensure_cols(old_ai, new_ai, &old_types);
+        if !self.archetypes[new_ai].columns.contains_key(&TypeId::of::<C>()) {
+            self.archetypes[new_ai].register_column::<C>();
         }
-
-        // Copy all old component rows into new arch.
-        let new_row = self.archetypes[new_arch_idx].entities.len();
+        let new_row = self.archetypes[new_ai].entities.len();
         for &tid in &old_types {
-            Self::copy_component_row(
-                &mut self.archetypes,
-                old_arch_idx,
-                new_arch_idx,
-                tid,
-                row,
-                tick,
-            );
+            Self::copy_row(&mut self.archetypes, old_ai, new_ai, tid, row, tick);
         }
-
-        // Push the new component.
-        self.archetypes[new_arch_idx]
-            .columns
-            .get_mut(&TypeId::of::<C>())
-            .unwrap()
-            .push(extra, tick);
-
-        // Register entity in new arch, remove from old.
-        self.archetypes[new_arch_idx].entities.push(entity);
-        let swapped = self.archetypes[old_arch_idx].swap_remove(row);
-
-        // Update locations.
-        self.entities.set_location(
-            entity,
-            EntityLocation { archetype_id: ArchetypeId(new_arch_idx as u32), row: new_row },
-        );
-        if let Some(swapped_entity) = swapped {
-            self.entities.set_location(
-                swapped_entity,
-                EntityLocation { archetype_id: loc.archetype_id, row },
-            );
+        self.archetypes[new_ai].columns.get_mut(&TypeId::of::<C>()).unwrap().push(extra, tick);
+        self.archetypes[new_ai].entities.push(entity);
+        let swapped = self.archetypes[old_ai].swap_remove(row);
+        self.entities.set_location(entity, EntityLocation { archetype_id: ArchetypeId(new_ai as u32), row: new_row });
+        if let Some(se) = swapped {
+            self.entities.set_location(se, EntityLocation { archetype_id: loc.archetype_id, row });
         }
     }
 
-    /// Ensures that `new_arch` has columns for every TypeId in `old_types`,
-    /// copying column metadata (element_size, drop_fn, clone_fn) from `old_arch`.
-    fn ensure_columns_from_old(
-        &mut self,
-        old_arch_idx: usize,
-        new_arch_idx: usize,
-        old_types: &[TypeId],
-    ) {
-        for &tid in old_types {
-            if self.archetypes[new_arch_idx].columns.contains_key(&tid) {
-                continue;
-            }
-            // Copy column factory metadata from old arch.
-            let src = &self.archetypes[old_arch_idx].columns[&tid];
-            let new_col = ComponentStorage {
+    fn ensure_cols(&mut self, src: usize, dst: usize, types: &[TypeId]) {
+        for &tid in types {
+            if self.archetypes[dst].columns.contains_key(&tid) { continue; }
+            let s = &self.archetypes[src].columns[&tid];
+            let nc = ComponentStorage {
                 column: AnyVec {
-                    type_id: src.column.type_id,
-                    len: 0,
-                    data: Vec::new(),
-                    element_size: src.column.element_size,
-                    drop_fn: src.column.drop_fn,
-                    clone_fn: src.column.clone_fn,
+                    type_id: s.column.type_id, len: 0, data: Vec::new(),
+                    element_size: s.column.element_size,
+                    drop_fn: s.column.drop_fn, clone_fn: s.column.clone_fn,
                 },
-                added_ticks: Vec::new(),
-                changed_ticks: Vec::new(),
+                added_ticks: Vec::new(), changed_ticks: Vec::new(),
             };
-            self.archetypes[new_arch_idx].columns.insert(tid, new_col);
+            self.archetypes[dst].columns.insert(tid, nc);
         }
     }
 
-    /// Clones the component at `row` in `archetypes[src_idx]` into `archetypes[dst_idx]`.
-    fn copy_component_row(
-        archetypes: &mut Vec<Archetype>,
-        src_idx: usize,
-        dst_idx: usize,
-        tid: TypeId,
-        row: usize,
-        tick: u32,
-    ) {
-        // Split borrow so we can access two archetypes mutably.
-        let (src_arch, dst_arch) = if src_idx < dst_idx {
-            let (left, right) = archetypes.split_at_mut(dst_idx);
-            (&left[src_idx], &mut right[0])
+    fn copy_row(archetypes: &mut Vec<Archetype>, src: usize, dst: usize, tid: TypeId, row: usize, tick: u32) {
+        let (sa, da) = if src < dst {
+            let (l, r) = archetypes.split_at_mut(dst); (&l[src], &mut r[0])
         } else {
-            let (left, right) = archetypes.split_at_mut(src_idx);
-            (&right[0], &mut left[dst_idx])
+            let (l, r) = archetypes.split_at_mut(src); (&r[0], &mut l[dst])
         };
-
-        if let (Some(src_col), Some(dst_col)) = (
-            src_arch.columns.get(&tid),
-            dst_arch.columns.get_mut(&tid),
-        ) {
-            src_col.clone_row_into(row, dst_col, tick);
+        if let (Some(sc), Some(dc)) = (sa.columns.get(&tid), da.columns.get_mut(&tid)) {
+            sc.clone_row_into(row, dc, tick);
         }
     }
 
-    /// Removes component `C` from `entity`, migrating it to a smaller archetype.
-    ///
-    /// Does nothing if the entity does not have `C`.
+    /// Removes component `C` from an entity.
     pub fn remove<C: Component>(&mut self, entity: Entity) {
         self.remove_by_type_id(entity, TypeId::of::<C>());
     }
 
-    /// Removes a component identified by raw `TypeId` from `entity`.
-    pub(crate) fn remove_by_type_id(&mut self, entity: Entity, type_id: TypeId) {
-        let loc = match self.entities.location(entity) {
-            Some(l) => l,
-            None => return,
-        };
-        let old_arch_idx = loc.archetype_id.0 as usize;
-        if !self.archetypes[old_arch_idx].contains(type_id) {
-            return;
-        }
-
+    /// Removes component by raw `TypeId`.
+    pub(crate) fn remove_by_type_id(&mut self, entity: Entity, tid: TypeId) {
+        let loc = match self.entities.location(entity) { Some(l) => l, None => return };
+        let old_ai = loc.archetype_id.0 as usize;
+        if !self.archetypes[old_ai].contains(tid) { return; }
         let row = loc.row;
-        let new_types: Vec<TypeId> = self.archetypes[old_arch_idx]
-            .component_types
-            .iter()
-            .copied()
-            .filter(|&t| t != type_id)
-            .collect();
-        let new_arch_idx = self.get_or_create_archetype(new_types.clone());
+        let new_types: Vec<TypeId> = self.archetypes[old_ai].component_types.iter()
+            .copied().filter(|&t| t != tid).collect();
+        let new_ai = self.get_or_create_archetype(new_types.clone());
         let tick = self.tick;
-
-        // Ensure columns exist in destination.
-        let old_types: Vec<TypeId> =
-            self.archetypes[old_arch_idx].component_types.clone();
-        self.ensure_columns_from_old(old_arch_idx, new_arch_idx, &old_types);
-
-        let new_row = self.archetypes[new_arch_idx].entities.len();
-
-        // Copy all rows except the one being removed.
-        for &tid in &old_types {
-            if tid == type_id { continue; }
-            Self::copy_component_row(
-                &mut self.archetypes,
-                old_arch_idx,
-                new_arch_idx,
-                tid,
-                row,
-                tick,
-            );
+        let old_types: Vec<TypeId> = self.archetypes[old_ai].component_types.clone();
+        self.ensure_cols(old_ai, new_ai, &old_types);
+        let new_row = self.archetypes[new_ai].entities.len();
+        for &t in &old_types {
+            if t == tid { continue; }
+            Self::copy_row(&mut self.archetypes, old_ai, new_ai, t, row, tick);
         }
-
-        self.archetypes[new_arch_idx].entities.push(entity);
-        let swapped = self.archetypes[old_arch_idx].swap_remove(row);
-
-        self.entities.set_location(
-            entity,
-            EntityLocation { archetype_id: ArchetypeId(new_arch_idx as u32), row: new_row },
-        );
-        if let Some(swapped_entity) = swapped {
-            self.entities.set_location(
-                swapped_entity,
-                EntityLocation { archetype_id: loc.archetype_id, row },
-            );
+        self.archetypes[new_ai].entities.push(entity);
+        let swapped = self.archetypes[old_ai].swap_remove(row);
+        self.entities.set_location(entity, EntityLocation { archetype_id: ArchetypeId(new_ai as u32), row: new_row });
+        if let Some(se) = swapped {
+            self.entities.set_location(se, EntityLocation { archetype_id: loc.archetype_id, row });
         }
     }
 
-    // ── Component access ────────────────────────────────────────────────
+    // -- Component access --------------------------------------------------
 
-    /// Returns `&C` for the given entity's component, or `None`.
+    /// Returns `&C` for `entity`, or `None`.
     pub fn get<C: Component>(&self, entity: Entity) -> Option<&C> {
         let loc = self.entities.location(entity)?;
         self.archetypes[loc.archetype_id.0 as usize]
-            .columns
-            .get(&TypeId::of::<C>())
-            .map(|col| col.column.get::<C>(loc.row))
+            .columns.get(&TypeId::of::<C>()).map(|c| c.column.get::<C>(loc.row))
     }
 
-    /// Returns `&mut C` for the given entity's component, or `None`.
-    ///
-    /// Also updates the `changed_tick` for that row.
+    /// Returns `&mut C` for `entity`, updating changed tick.
     pub fn get_mut<C: Component>(&mut self, entity: Entity) -> Option<&mut C> {
         let loc = self.entities.location(entity)?;
         let tick = self.tick;
         let arch = &mut self.archetypes[loc.archetype_id.0 as usize];
-        arch.columns.get_mut(&TypeId::of::<C>()).map(|col| {
-            col.changed_ticks[loc.row] = tick;
-            col.column.get_mut::<C>(loc.row)
+        arch.columns.get_mut(&TypeId::of::<C>()).map(|c| {
+            c.changed_ticks[loc.row] = tick;
+            c.column.get_mut::<C>(loc.row)
         })
     }
 
-    /// Returns an [`EntityRef`] for read-only access to an entity's components.
+    /// Read-only view of an entity's components.
     pub fn entity_ref(&self, entity: Entity) -> Option<EntityRef<'_>> {
         let loc = self.entities.location(entity)?;
-        Some(EntityRef::new(
-            &self.archetypes[loc.archetype_id.0 as usize],
-            loc.row,
-        ))
+        Some(EntityRef::new(&self.archetypes[loc.archetype_id.0 as usize], loc.row))
     }
 
-    /// Returns an [`EntityMut`] for read-write access to an entity's components.
+    /// Read-write view of an entity's components.
     pub fn entity_mut(&mut self, entity: Entity) -> Option<EntityMut<'_>> {
         let loc = self.entities.location(entity)?;
-        let arch_idx = loc.archetype_id.0 as usize;
-        Some(EntityMut::new(&mut self.archetypes[arch_idx], loc.row))
+        let ai = loc.archetype_id.0 as usize;
+        Some(EntityMut::new(&mut self.archetypes[ai], loc.row))
     }
 
-    // ── Queries ─────────────────────────────────────────────────────────
+    // -- Queries -----------------------------------------------------------
 
-    /// Returns an iterator over all entities matching query `Q` and filter `F`.
-    ///
-    /// # Type parameters
-    /// - `Q`: a [`WorldQuery`] (e.g. `Read<Position>`, `(Read<Pos>, Write<Vel>)`).
-    /// - `F`: a [`QueryFilter`] (e.g. `With<Player>`, `Without<Dead>`, `()`).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// for (entity, pos) in world.query::<(Entity, Read<Position>), ()>() {
-    ///     println!("{entity}: ({}, {})", pos.x, pos.y);
-    /// }
-    /// ```
+    /// Returns an iterator over entities matching `Q` and filter `F`.
     pub fn query<Q: WorldQuery, F: QueryFilter>(&self) -> QueryIter<'_, Q, F> {
         QueryIter::new(&self.archetypes)
     }
 
-    /// Returns an iterator over all entities matching `Q` with no filter.
+    /// Query with no filter.
     pub fn query_all<Q: WorldQuery>(&self) -> QueryIter<'_, Q, ()> {
         QueryIter::new(&self.archetypes)
     }
 
-    /// Returns the single entity matching `Q`, or `None` if zero or more than one match.
+    /// Returns the single matching entity, or `None` if zero or multiple.
     pub fn query_single<Q: WorldQuery>(&self) -> Option<Q::Item<'_>> {
-        let mut iter = self.query::<Q, ()>();
-        let first = iter.next()?;
-        if iter.next().is_some() { return None; }
+        let mut it = self.query::<Q, ()>();
+        let first = it.next()?;
+        if it.next().is_some() { return None; }
         Some(first)
     }
 
-    // ── Resources ───────────────────────────────────────────────────────
+    // -- Resources ---------------------------------------------------------
 
-    /// Inserts a resource into the world.
-    pub fn insert_resource<T: 'static + Send + Sync>(&mut self, value: T) {
-        self.resources.insert(value);
-    }
-
-    /// Returns an immutable [`Res`] wrapper for resource `T`.
+    /// Inserts a resource.
+    pub fn insert_resource<T: 'static + Send + Sync>(&mut self, v: T) { self.resources.insert(v); }
+    /// Returns `Res<T>`.
     pub fn resource<T: 'static + Send + Sync>(&self) -> Option<Res<'_, T>> {
         self.resources.get::<T>().map(Res::new)
     }
-
-    /// Returns a mutable [`ResMut`] wrapper for resource `T`.
+    /// Returns `ResMut<T>`.
     pub fn resource_mut<T: 'static + Send + Sync>(&mut self) -> Option<ResMut<'_, T>> {
         self.resources.get_mut::<T>().map(ResMut::new)
     }
+    /// Removes and returns `T`.
+    pub fn remove_resource<T: 'static + Send + Sync>(&mut self) -> Option<T> { self.resources.remove::<T>() }
 
-    /// Removes and returns the resource of type `T`.
-    pub fn remove_resource<T: 'static + Send + Sync>(&mut self) -> Option<T> {
-        self.resources.remove::<T>()
-    }
+    // -- Events ------------------------------------------------------------
 
-    // ── Events ──────────────────────────────────────────────────────────
-
-    /// Registers event type `E`, creating its [`Events<E>`] storage.
+    /// Registers event type `E`.
     pub fn add_event<E: 'static + Send + Sync>(&mut self) {
-        self.events
-            .entry(TypeId::of::<Events<E>>())
+        self.events.entry(TypeId::of::<Events<E>>())
             .or_insert_with(|| Box::new(Events::<E>::new()));
     }
-
-    /// Returns a reference to the [`Events<E>`] queue.
+    /// Returns `&Events<E>`.
     pub fn events<E: 'static + Send + Sync>(&self) -> Option<&Events<E>> {
-        self.events
-            .get(&TypeId::of::<Events<E>>())
-            .and_then(|b| b.downcast_ref::<Events<E>>())
+        self.events.get(&TypeId::of::<Events<E>>())?.downcast_ref()
     }
-
-    /// Returns a mutable reference to the [`Events<E>`] queue.
+    /// Returns `&mut Events<E>`.
     pub fn events_mut<E: 'static + Send + Sync>(&mut self) -> Option<&mut Events<E>> {
-        self.events
-            .get_mut(&TypeId::of::<Events<E>>())
-            .and_then(|b| b.downcast_mut::<Events<E>>())
+        self.events.get_mut(&TypeId::of::<Events<E>>())?.downcast_mut()
     }
-
-    /// Sends a single event, auto-creating the queue if not yet registered.
+    /// Sends event `E` (auto-creates queue).
     pub fn send_event<E: 'static + Send + Sync>(&mut self, event: E) {
-        self.events
-            .entry(TypeId::of::<Events<E>>())
+        self.events.entry(TypeId::of::<Events<E>>())
             .or_insert_with(|| Box::new(Events::<E>::new()))
-            .downcast_mut::<Events<E>>()
-            .unwrap()
-            .send(event);
+            .downcast_mut::<Events<E>>().unwrap().send(event);
     }
 
-    // ── Entity iteration ────────────────────────────────────────────────
+    // -- Entity iteration --------------------------------------------------
 
-    /// Returns an iterator over all live entities.
+    /// Iterator over all live entities.
     pub fn entities(&self) -> impl Iterator<Item = Entity> + '_ {
         self.archetypes.iter().flat_map(|a| a.entities.iter().copied())
     }
-
-    /// Returns the total number of live entities.
-    pub fn entity_count(&self) -> usize {
-        self.archetypes.iter().map(|a| a.len()).sum()
-    }
-
-    /// Returns the number of archetypes currently in the world.
-    pub fn archetype_count(&self) -> usize {
-        self.archetypes.len()
-    }
+    /// Total number of live entities.
+    pub fn entity_count(&self) -> usize { self.archetypes.iter().map(|a| a.len()).sum() }
+    /// Number of archetypes.
+    pub fn archetype_count(&self) -> usize { self.archetypes.len() }
 }
 
-impl Default for World {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+impl Default for World { fn default() -> Self { Self::new() } }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // SystemParam trait
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A type that can be extracted from a [`World`] as a parameter to a system.
-///
-/// Implementations are provided for [`Res<T>`], [`ResMut<T>`], [`Commands`],
-/// and [`Local<T>`]. Custom system parameter types can implement this trait
-/// to participate in the parameter-injection protocol.
+/// Types extractable from a [`World`] as system parameters.
 pub trait SystemParam: Sized {
-    /// Per-system persistent state (e.g. a cursor for an event reader).
+    /// Per-system persistent state.
     type State: Default + Send + Sync + 'static;
-
-    /// Called once to initialise the state when the system is registered.
+    /// Initialises state from the world.
     fn init_state(world: &mut World) -> Self::State;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // System trait
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A unit of logic that reads and/or writes the [`World`].
-///
-/// The simplest way to create a system is via [`into_system`], wrapping a
-/// plain closure. More complex systems can implement this trait directly.
+/// A unit of logic operating on the [`World`].
 pub trait System: Send + Sync + 'static {
-    /// Executes the system against `world`.
+    /// Executes the system.
     fn run(&mut self, world: &mut World);
-
-    /// Returns the human-readable name of this system.
+    /// Human-readable name.
     fn name(&self) -> &str;
 }
 
-/// A [`System`] wrapping a plain closure `FnMut(&mut World)`.
-pub struct FunctionSystem<F>
-where
-    F: FnMut(&mut World) + Send + Sync + 'static,
-{
-    func: F,
-    name: String,
-}
-
+/// A system wrapping a plain closure.
+pub struct FunctionSystem<F: FnMut(&mut World) + Send + Sync + 'static> { f: F, name: String }
 impl<F: FnMut(&mut World) + Send + Sync + 'static> FunctionSystem<F> {
     /// Creates a named function system.
-    pub fn new(name: impl Into<String>, func: F) -> Self {
-        Self { func, name: name.into() }
-    }
+    pub fn new(name: impl Into<String>, f: F) -> Self { Self { f, name: name.into() } }
 }
-
 impl<F: FnMut(&mut World) + Send + Sync + 'static> System for FunctionSystem<F> {
-    fn run(&mut self, world: &mut World) { (self.func)(world); }
+    fn run(&mut self, w: &mut World) { (self.f)(w); }
     fn name(&self) -> &str { &self.name }
 }
 
-/// Wraps a named closure as a boxed [`System`].
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::into_system;
-/// let sys = into_system("noop", |_w| {});
-/// ```
-pub fn into_system(
-    name: impl Into<String>,
-    f: impl FnMut(&mut World) + Send + Sync + 'static,
-) -> Box<dyn System> {
+/// Wraps a closure as a boxed `System`.
+pub fn into_system(name: impl Into<String>, f: impl FnMut(&mut World) + Send + Sync + 'static) -> Box<dyn System> {
     Box::new(FunctionSystem::new(name, f))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Schedule
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// A human-readable identifier for a system within a [`Schedule`].
+/// A human-readable system identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SystemLabel(pub String);
-
 impl SystemLabel {
-    /// Creates a new `SystemLabel` from any string-like value.
+    /// Creates a new label.
     pub fn new(s: impl Into<String>) -> Self { Self(s.into()) }
 }
+impl<S: Into<String>> From<S> for SystemLabel { fn from(s: S) -> Self { Self(s.into()) } }
 
-impl<S: Into<String>> From<S> for SystemLabel {
-    fn from(s: S) -> Self { Self(s.into()) }
-}
-
-/// A boxed run condition closure.
+/// Boxed run-condition closure.
 pub type RunCondition = Box<dyn Fn(&World) -> bool + Send + Sync>;
 
-/// A single system slot in a [`Schedule`].
-struct SystemEntry {
-    system: Box<dyn System>,
-    label: Option<SystemLabel>,
-    run_if: Option<RunCondition>,
-}
+struct SystemEntry { system: Box<dyn System>, label: Option<SystemLabel>, run_if: Option<RunCondition> }
 
-/// An ordered list of systems with optional labels and run conditions.
-///
-/// Each call to [`Schedule::run`] increments the world tick and then
-/// executes every enabled system in insertion order.
-///
-/// # Example
-/// ```rust
-/// use proof_engine::ecs::{Schedule, World, into_system};
-///
-/// let mut world = World::new();
-/// let mut schedule = Schedule::new();
-/// schedule.add_system(into_system("tick", |_w| {}));
-/// schedule.run(&mut world);
-/// ```
-pub struct Schedule {
-    systems: Vec<SystemEntry>,
-}
-
+/// Ordered list of systems with optional labels and run conditions.
+pub struct Schedule { systems: Vec<SystemEntry> }
 impl Schedule {
     /// Creates an empty schedule.
     pub fn new() -> Self { Self { systems: Vec::new() } }
-
-    /// Appends a system (no label, always runs).
-    pub fn add_system(&mut self, system: Box<dyn System>) -> &mut Self {
-        self.systems.push(SystemEntry { system, label: None, run_if: None });
-        self
+    /// Adds a system.
+    pub fn add_system(&mut self, s: Box<dyn System>) -> &mut Self {
+        self.systems.push(SystemEntry { system: s, label: None, run_if: None }); self
     }
-
-    /// Appends a labelled system.
-    pub fn add_system_with_label(
-        &mut self,
-        system: Box<dyn System>,
-        label: impl Into<SystemLabel>,
-    ) -> &mut Self {
-        self.systems.push(SystemEntry {
-            system, label: Some(label.into()), run_if: None,
-        });
-        self
+    /// Adds a labelled system.
+    pub fn add_system_with_label(&mut self, s: Box<dyn System>, label: impl Into<SystemLabel>) -> &mut Self {
+        self.systems.push(SystemEntry { system: s, label: Some(label.into()), run_if: None }); self
     }
-
-    /// Appends a system with a run condition.
+    /// Adds a system with a run condition.
     pub fn add_system_with_condition(
-        &mut self,
-        system: Box<dyn System>,
-        condition: impl Fn(&World) -> bool + Send + Sync + 'static,
+        &mut self, s: Box<dyn System>,
+        cond: impl Fn(&World) -> bool + Send + Sync + 'static,
     ) -> &mut Self {
-        self.systems.push(SystemEntry {
-            system, label: None, run_if: Some(Box::new(condition)),
-        });
-        self
+        self.systems.push(SystemEntry { system: s, label: None, run_if: Some(Box::new(cond)) }); self
     }
-
-    /// Appends a labelled system with a run condition.
+    /// Adds a labelled system with a run condition.
     pub fn add_system_full(
-        &mut self,
-        system: Box<dyn System>,
-        label: impl Into<SystemLabel>,
-        condition: impl Fn(&World) -> bool + Send + Sync + 'static,
+        &mut self, s: Box<dyn System>, label: impl Into<SystemLabel>,
+        cond: impl Fn(&World) -> bool + Send + Sync + 'static,
     ) -> &mut Self {
-        self.systems.push(SystemEntry {
-            system,
-            label: Some(label.into()),
-            run_if: Some(Box::new(condition)),
-        });
-        self
+        self.systems.push(SystemEntry { system: s, label: Some(label.into()), run_if: Some(Box::new(cond)) }); self
     }
-
-    /// Removes all systems with the given label.
+    /// Removes all systems with `label`.
     pub fn remove_system(&mut self, label: &SystemLabel) {
         self.systems.retain(|e| e.label.as_ref() != Some(label));
     }
-
-    /// Returns the number of system slots in this schedule.
+    /// Number of system slots.
     pub fn system_count(&self) -> usize { self.systems.len() }
-
-    /// Runs all systems (incrementing the world tick first).
+    /// Runs all systems, incrementing the world tick first.
     pub fn run(&mut self, world: &mut World) {
         world.increment_tick();
-        for entry in &mut self.systems {
-            let should_run = entry.run_if.as_ref()
-                .map(|cond| cond(world))
-                .unwrap_or(true);
-            if should_run {
-                entry.system.run(world);
-            }
+        for e in &mut self.systems {
+            if e.run_if.as_ref().map(|c| c(world)).unwrap_or(true) { e.system.run(world); }
         }
     }
+    /// Labels of all systems in order.
+    pub fn labels(&self) -> Vec<Option<&SystemLabel>> { self.systems.iter().map(|e| e.label.as_ref()).collect() }
+}
+impl Default for Schedule { fn default() -> Self { Self::new() } }
 
-    /// Returns the labels of all systems in order (`None` for unlabelled).
-    pub fn labels(&self) -> Vec<Option<&SystemLabel>> {
-        self.systems.iter().map(|e| e.label.as_ref()).collect()
-    }
+// ---------------------------------------------------------------------------
+// Change-detection helpers
+// ---------------------------------------------------------------------------
+
+/// `true` if component `C` on `entity` was added after tick `since`.
+pub fn was_added<C: Component>(w: &World, entity: Entity, since: u32) -> bool {
+    let loc = match w.entities.location(entity) { Some(l) => l, None => return false };
+    w.archetypes[loc.archetype_id.0 as usize].columns
+        .get(&TypeId::of::<C>()).map(|c| c.added_ticks[loc.row] > since).unwrap_or(false)
 }
 
-impl Default for Schedule {
-    fn default() -> Self { Self::new() }
+/// `true` if component `C` on `entity` was changed after tick `since`.
+pub fn was_changed<C: Component>(w: &World, entity: Entity, since: u32) -> bool {
+    let loc = match w.entities.location(entity) { Some(l) => l, None => return false };
+    w.archetypes[loc.archetype_id.0 as usize].columns
+        .get(&TypeId::of::<C>()).map(|c| c.changed_ticks[loc.row] > since).unwrap_or(false)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Change detection helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Returns `true` if component `C` on `entity` was added after tick `since`.
-///
-/// Returns `false` if the entity is dead or does not have `C`.
-pub fn was_added<C: Component>(world: &World, entity: Entity, since: u32) -> bool {
-    let loc = match world.entities.location(entity) {
-        Some(l) => l,
-        None => return false,
-    };
-    world.archetypes[loc.archetype_id.0 as usize]
-        .columns
-        .get(&TypeId::of::<C>())
-        .map(|col| col.added_ticks[loc.row] > since)
-        .unwrap_or(false)
-}
-
-/// Returns `true` if component `C` on `entity` was mutably accessed after tick `since`.
-pub fn was_changed<C: Component>(world: &World, entity: Entity, since: u32) -> bool {
-    let loc = match world.entities.location(entity) {
-        Some(l) => l,
-        None => return false,
-    };
-    world.archetypes[loc.archetype_id.0 as usize]
-        .columns
-        .get(&TypeId::of::<C>())
-        .map(|col| col.changed_ticks[loc.row] > since)
-        .unwrap_or(false)
-}
-
-/// Returns an iterator over entities that have `C` and where `C` was added
-/// strictly after tick `since`.
-pub fn query_added<C: Component>(world: &World, since: u32) -> impl Iterator<Item = Entity> + '_ {
-    world.archetypes.iter().flat_map(move |arch| {
+/// Entities with `C` added after tick `since`.
+pub fn query_added<C: Component>(w: &World, since: u32) -> impl Iterator<Item = Entity> + '_ {
+    w.archetypes.iter().flat_map(move |arch| {
         if !arch.contains(TypeId::of::<C>()) { return vec![]; }
         let col = &arch.columns[&TypeId::of::<C>()];
-        arch.entities
-            .iter()
-            .enumerate()
-            .filter(move |(row, _)| col.added_ticks[*row] > since)
-            .map(|(_, &e)| e)
-            .collect::<Vec<_>>()
+        arch.entities.iter().enumerate()
+            .filter(move |(r, _)| col.added_ticks[*r] > since)
+            .map(|(_, &e)| e).collect::<Vec<_>>()
     })
 }
 
-/// Returns an iterator over entities that have `C` and where `C` was changed
-/// strictly after tick `since`.
-pub fn query_changed<C: Component>(world: &World, since: u32) -> impl Iterator<Item = Entity> + '_ {
-    world.archetypes.iter().flat_map(move |arch| {
+/// Entities with `C` changed after tick `since`.
+pub fn query_changed<C: Component>(w: &World, since: u32) -> impl Iterator<Item = Entity> + '_ {
+    w.archetypes.iter().flat_map(move |arch| {
         if !arch.contains(TypeId::of::<C>()) { return vec![]; }
         let col = &arch.columns[&TypeId::of::<C>()];
-        arch.entities
-            .iter()
-            .enumerate()
-            .filter(move |(row, _)| col.changed_ticks[*row] > since)
-            .map(|(_, &e)| e)
-            .collect::<Vec<_>>()
+        arch.entities.iter().enumerate()
+            .filter(move |(r, _)| col.changed_ticks[*r] > since)
+            .map(|(_, &e)| e).collect::<Vec<_>>()
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Prelude
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// Common re-exports for working with the ECS.
+/// Common ECS re-exports.
 pub mod prelude {
     pub use super::{
         Component, Entity, World, Bundle,
-        Archetype, ArchetypeId,
-        EntityRef, EntityMut,
-        Resources, Res, ResMut,
-        Local,
+        Archetype, ArchetypeId, EntityRef, EntityMut,
+        Resources, Res, ResMut, Local,
         Events, EventCursor, EventWriter, EventReader,
-        Commands,
-        With, Without, Added, Changed,
+        Commands, With, Without, Added, Changed,
         Read, Write, OptionRead,
         WorldQuery, QueryFilter, QueryIter,
         System, SystemParam, FunctionSystem, into_system,
@@ -2051,608 +1188,326 @@ pub mod prelude {
     };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Component definitions ─────────────────────────────────────────────
-
-    #[derive(Debug, Clone, PartialEq)]
-    struct Position { x: f32, y: f32 }
+    #[derive(Debug, Clone, PartialEq)] struct Position { x: f32, y: f32 }
     impl Component for Position {}
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct Velocity { dx: f32, dy: f32 }
+    #[derive(Debug, Clone, PartialEq)] struct Velocity { dx: f32, dy: f32 }
     impl Component for Velocity {}
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct Health(f32);
+    #[derive(Debug, Clone, PartialEq)] struct Health(f32);
     impl Component for Health {}
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct Name(String);
-    impl Component for Name {}
+    #[derive(Debug, Clone)] struct Tag; impl Component for Tag {}
+    #[derive(Debug, Clone)] struct Enemy; impl Component for Enemy {}
+    #[derive(Debug, Clone)] struct Player; impl Component for Player {}
 
-    #[derive(Debug, Clone)]
-    struct Tag;
-    impl Component for Tag {}
+    // Entity lifecycle
+    #[test] fn test_spawn_alive() {
+        let mut w = World::new();
+        let e = w.spawn(Position { x: 1.0, y: 2.0 });
+        assert!(w.is_alive(e)); assert_eq!(w.entity_count(), 1);
+    }
+    #[test] fn test_despawn() {
+        let mut w = World::new();
+        let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        assert!(w.despawn(e)); assert!(!w.is_alive(e)); assert_eq!(w.entity_count(), 0);
+    }
+    #[test] fn test_despawn_nonexistent() {
+        let mut w = World::new(); assert!(!w.despawn(Entity::from_raw(99, 99)));
+    }
+    #[test] fn test_null_entity() {
+        assert!(Entity::null().is_null()); assert!(!Entity::from_raw(0,0).is_null());
+    }
+    #[test] fn test_generation_reuse() {
+        let mut w = World::new();
+        let e1 = w.spawn(Position { x: 0.0, y: 0.0 }); w.despawn(e1);
+        let e2 = w.spawn(Position { x: 1.0, y: 0.0 });
+        assert_eq!(e1.index, e2.index); assert_ne!(e1.generation, e2.generation);
+        assert!(!w.is_alive(e1)); assert!(w.is_alive(e2));
+    }
+    #[test] fn test_entity_display() { assert_eq!(format!("{}", Entity::from_raw(5,2)), "Entity(5v2)"); }
 
-    #[derive(Debug, Clone)]
-    struct Enemy;
-    impl Component for Enemy {}
-
-    #[derive(Debug, Clone)]
-    struct Player;
-    impl Component for Player {}
-
-    #[derive(Debug, Clone)]
-    struct Dead;
-    impl Component for Dead {}
-
-    // ── Entity lifecycle ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_spawn_and_alive() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 1.0, y: 2.0 });
-        assert!(world.is_alive(e));
-        assert_eq!(world.entity_count(), 1);
+    // Component access
+    #[test] fn test_get_component() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 3.0, y: 4.0 });
+        assert_eq!(w.get::<Position>(e).unwrap().x, 3.0);
+    }
+    #[test] fn test_get_mut_component() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        w.get_mut::<Position>(e).unwrap().x = 10.0;
+        assert_eq!(w.get::<Position>(e).unwrap().x, 10.0);
+    }
+    #[test] fn test_missing_component_none() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        assert!(w.get::<Velocity>(e).is_none());
+    }
+    #[test] fn test_entity_ref() {
+        let mut w = World::new(); let e = w.spawn((Position { x: 1.0, y: 2.0 }, Health(100.0)));
+        let er = w.entity_ref(e).unwrap();
+        assert_eq!(er.get::<Position>().unwrap(), &Position { x: 1.0, y: 2.0 });
+        assert!(er.has::<Position>()); assert!(!er.has::<Velocity>());
+    }
+    #[test] fn test_entity_mut() {
+        let mut w = World::new(); let e = w.spawn(Health(50.0));
+        w.entity_mut(e).unwrap().get_mut::<Health>().unwrap().0 = 75.0;
+        assert_eq!(w.get::<Health>(e).unwrap().0, 75.0);
     }
 
-    #[test]
-    fn test_despawn() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        assert!(world.despawn(e));
-        assert!(!world.is_alive(e));
-        assert_eq!(world.entity_count(), 0);
+    // Bundle
+    #[test] fn test_spawn_tuple_bundle() {
+        let mut w = World::new();
+        let e = w.spawn((Position { x: 1.0, y: 0.0 }, Velocity { dx: 0.5, dy: 0.0 }, Health(100.0)));
+        assert!(w.get::<Position>(e).is_some()); assert!(w.get::<Velocity>(e).is_some()); assert!(w.get::<Health>(e).is_some());
+    }
+    #[test] fn test_same_archetype() {
+        let mut w = World::new();
+        let e1 = w.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
+        let e2 = w.spawn((Position { x: 5.0, y: 5.0 }, Velocity { dx: -1.0, dy: 0.0 }));
+        assert_eq!(w.archetype_count(), 1);
+        assert_eq!(w.get::<Position>(e1).unwrap().x, 0.0);
+        assert_eq!(w.get::<Position>(e2).unwrap().x, 5.0);
     }
 
-    #[test]
-    fn test_despawn_nonexistent_returns_false() {
-        let mut world = World::new();
-        assert!(!world.despawn(Entity::from_raw(99, 99)));
+    // Insert / remove
+    #[test] fn test_insert_new_component() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        w.insert(e, Velocity { dx: 1.0, dy: 0.0 });
+        assert!(w.get::<Velocity>(e).is_some()); assert!(w.get::<Position>(e).is_some());
+    }
+    #[test] fn test_insert_replaces() {
+        let mut w = World::new(); let e = w.spawn(Health(100.0));
+        w.insert(e, Health(50.0)); assert_eq!(w.get::<Health>(e).unwrap().0, 50.0);
+    }
+    #[test] fn test_remove_component() {
+        let mut w = World::new();
+        let e = w.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
+        w.remove::<Velocity>(e);
+        assert!(w.get::<Velocity>(e).is_none()); assert!(w.get::<Position>(e).is_some());
+    }
+    #[test] fn test_remove_missing_noop() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        w.remove::<Velocity>(e); assert!(w.is_alive(e));
+    }
+    #[test] fn test_insert_remove_roundtrip() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 1.0, y: 2.0 });
+        w.insert(e, Health(99.0)); assert_eq!(w.get::<Health>(e).unwrap().0, 99.0);
+        w.remove::<Health>(e); assert!(w.get::<Health>(e).is_none());
+        assert_eq!(w.get::<Position>(e).unwrap().x, 1.0);
     }
 
-    #[test]
-    fn test_entity_null_sentinel() {
-        let null = Entity::null();
-        assert!(null.is_null());
-        assert!(!Entity::from_raw(0, 0).is_null());
+    // Queries
+    #[test] fn test_query_single_component() {
+        let mut w = World::new();
+        w.spawn(Position { x: 1.0, y: 0.0 }); w.spawn(Position { x: 2.0, y: 0.0 }); w.spawn(Position { x: 3.0, y: 0.0 });
+        assert_eq!(w.query::<Read<Position>, ()>().count(), 3);
+    }
+    #[test] fn test_query_tuple() {
+        let mut w = World::new();
+        w.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
+        w.spawn(Position { x: 5.0, y: 0.0 });
+        assert_eq!(w.query::<(Read<Position>, Read<Velocity>), ()>().count(), 1);
+    }
+    #[test] fn test_query_with_filter() {
+        let mut w = World::new();
+        w.spawn((Position { x: 0.0, y: 0.0 }, Tag)); w.spawn(Position { x: 1.0, y: 0.0 });
+        assert_eq!(w.query::<Read<Position>, With<Tag>>().count(), 1);
+    }
+    #[test] fn test_query_without_filter() {
+        let mut w = World::new();
+        w.spawn((Position { x: 0.0, y: 0.0 }, Enemy));
+        w.spawn((Position { x: 1.0, y: 0.0 }, Player));
+        w.spawn(Position { x: 2.0, y: 0.0 });
+        assert_eq!(w.query::<Read<Position>, Without<Enemy>>().count(), 2);
+    }
+    #[test] fn test_query_option_read() {
+        let mut w = World::new();
+        w.spawn((Position { x: 0.0, y: 0.0 }, Health(100.0))); w.spawn(Position { x: 1.0, y: 0.0 });
+        let r: Vec<_> = w.query::<(Read<Position>, OptionRead<Health>), ()>().collect();
+        assert_eq!(r.len(), 2); assert_eq!(r.iter().filter(|(_, h)| h.is_some()).count(), 1);
+    }
+    #[test] fn test_query_entity() {
+        let mut w = World::new();
+        let e1 = w.spawn(Position { x: 0.0, y: 0.0 }); let e2 = w.spawn(Position { x: 1.0, y: 0.0 });
+        let es: Vec<Entity> = w.query::<Entity, ()>().collect();
+        assert!(es.contains(&e1)); assert!(es.contains(&e2));
+    }
+    #[test] fn test_query_mutable() {
+        let mut w = World::new();
+        w.spawn(Position { x: 0.0, y: 0.0 }); w.spawn(Position { x: 1.0, y: 0.0 });
+        for p in w.query::<Write<Position>, ()>() { p.x += 10.0; }
+        assert!(w.query::<Read<Position>, ()>().all(|p| p.x >= 10.0));
+    }
+    #[test] fn test_query_single() {
+        let mut w = World::new(); w.spawn(Player);
+        assert!(w.query_single::<Read<Player>>().is_some());
+    }
+    #[test] fn test_query_single_none_multiple() {
+        let mut w = World::new(); w.spawn(Player); w.spawn(Player);
+        assert!(w.query_single::<Read<Player>>().is_none());
     }
 
-    #[test]
-    fn test_generational_slot_reuse() {
-        let mut world = World::new();
-        let e1 = world.spawn(Position { x: 0.0, y: 0.0 });
-        world.despawn(e1);
-        let e2 = world.spawn(Position { x: 1.0, y: 0.0 });
-        assert_eq!(e1.index, e2.index);
-        assert_ne!(e1.generation, e2.generation);
-        assert!(!world.is_alive(e1));
-        assert!(world.is_alive(e2));
+    // Resources
+    #[test] fn test_resource_insert_get() {
+        let mut w = World::new(); w.insert_resource(42u32);
+        assert_eq!(*w.resource::<u32>().unwrap(), 42);
+    }
+    #[test] fn test_resource_mut() {
+        let mut w = World::new(); w.insert_resource(0u32);
+        *w.resource_mut::<u32>().unwrap() = 99;
+        assert_eq!(*w.resource::<u32>().unwrap(), 99);
+    }
+    #[test] fn test_resource_remove() {
+        let mut w = World::new(); w.insert_resource(42u32);
+        assert_eq!(w.remove_resource::<u32>(), Some(42));
+        assert!(w.resource::<u32>().is_none());
+    }
+    #[test] fn test_resources_standalone() {
+        let mut r = Resources::new(); r.insert(42u32);
+        assert!(r.contains::<u32>()); assert!(!r.contains::<i32>());
+        r.remove::<u32>(); assert!(!r.contains::<u32>());
     }
 
-    #[test]
-    fn test_entity_display() {
-        let e = Entity::from_raw(5, 2);
-        assert_eq!(format!("{e}"), "Entity(5v2)");
+    // Commands
+    #[test] fn test_commands_spawn() {
+        let mut w = World::new(); let mut c = Commands::new();
+        c.spawn(Position { x: 7.0, y: 8.0 }); c.apply(&mut w);
+        assert_eq!(w.query_single::<Read<Position>>().unwrap().x, 7.0);
+    }
+    #[test] fn test_commands_despawn() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        let mut c = Commands::new(); c.despawn(e); c.apply(&mut w); assert!(!w.is_alive(e));
+    }
+    #[test] fn test_commands_insert() {
+        let mut w = World::new(); let e = w.spawn(Position { x: 0.0, y: 0.0 });
+        let mut c = Commands::new(); c.insert(e, Health(50.0)); c.apply(&mut w);
+        assert_eq!(w.get::<Health>(e).unwrap().0, 50.0);
+    }
+    #[test] fn test_commands_remove() {
+        let mut w = World::new(); let e = w.spawn((Position { x: 0.0, y: 0.0 }, Health(100.0)));
+        let mut c = Commands::new(); c.remove::<Health>(e); c.apply(&mut w);
+        assert!(w.get::<Health>(e).is_none());
+    }
+    #[test] fn test_commands_insert_resource() {
+        let mut w = World::new(); let mut c = Commands::new();
+        c.insert_resource(100i32); c.apply(&mut w);
+        assert_eq!(*w.resource::<i32>().unwrap(), 100);
     }
 
-    // ── Component access ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_get_component() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 3.0, y: 4.0 });
-        let pos = world.get::<Position>(e).unwrap();
-        assert_eq!(pos.x, 3.0);
-        assert_eq!(pos.y, 4.0);
+    // Events
+    #[derive(Debug, Clone, PartialEq)] struct Dmg { amount: f32 }
+    #[test] fn test_events_send_read() {
+        let mut ev: Events<Dmg> = Events::new(); let mut cur = ev.get_reader_current();
+        ev.send(Dmg { amount: 10.0 }); ev.send(Dmg { amount: 20.0 });
+        let r: Vec<_> = ev.read(&mut cur).collect();
+        assert_eq!(r.len(), 2); assert_eq!(r[0].amount, 10.0);
+    }
+    #[test] fn test_events_update_clears() {
+        let mut ev: Events<Dmg> = Events::new(); ev.send(Dmg { amount: 5.0 });
+        ev.update(); ev.update(); assert!(ev.is_empty());
+    }
+    #[test] fn test_event_writer_reader() {
+        let mut ev: Events<Dmg> = Events::new();
+        EventWriter::new(&mut ev).send(Dmg { amount: 42.0 });
+        let r: Vec<_> = EventReader::new_current(&ev).read().collect();
+        assert_eq!(r.len(), 1); assert_eq!(r[0].amount, 42.0);
+    }
+    #[test] fn test_world_events() {
+        let mut w = World::new(); w.add_event::<Dmg>();
+        w.send_event(Dmg { amount: 99.0 }); assert!(!w.events::<Dmg>().unwrap().is_empty());
     }
 
-    #[test]
-    fn test_get_mut_component() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        world.get_mut::<Position>(e).unwrap().x = 10.0;
-        assert_eq!(world.get::<Position>(e).unwrap().x, 10.0);
+    // Schedule
+    #[test] fn test_schedule_runs_systems() {
+        let mut w = World::new(); w.insert_resource(0u32);
+        let mut s = Schedule::new();
+        s.add_system(into_system("inc", |w| { *w.resource_mut::<u32>().unwrap() += 1; }));
+        s.run(&mut w); s.run(&mut w); assert_eq!(*w.resource::<u32>().unwrap(), 2);
     }
-
-    #[test]
-    fn test_missing_component_returns_none() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        assert!(world.get::<Velocity>(e).is_none());
-    }
-
-    #[test]
-    fn test_entity_ref() {
-        let mut world = World::new();
-        let e = world.spawn((Position { x: 1.0, y: 2.0 }, Health(100.0)));
-        let eref = world.entity_ref(e).unwrap();
-        assert_eq!(eref.get::<Position>().unwrap(), &Position { x: 1.0, y: 2.0 });
-        assert_eq!(eref.get::<Health>().unwrap(), &Health(100.0));
-        assert!(eref.has::<Position>());
-        assert!(!eref.has::<Velocity>());
-    }
-
-    #[test]
-    fn test_entity_mut() {
-        let mut world = World::new();
-        let e = world.spawn(Health(50.0));
-        world.entity_mut(e).unwrap().get_mut::<Health>().unwrap().0 = 75.0;
-        assert_eq!(world.get::<Health>(e).unwrap().0, 75.0);
-    }
-
-    // ── Bundle spawning ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_spawn_tuple_bundle() {
-        let mut world = World::new();
-        let e = world.spawn((
-            Position { x: 1.0, y: 0.0 },
-            Velocity { dx: 0.5, dy: 0.0 },
-            Health(100.0),
-        ));
-        assert!(world.get::<Position>(e).is_some());
-        assert!(world.get::<Velocity>(e).is_some());
-        assert!(world.get::<Health>(e).is_some());
-    }
-
-    #[test]
-    fn test_spawn_multiple_same_archetype() {
-        let mut world = World::new();
-        let e1 = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
-        let e2 = world.spawn((Position { x: 5.0, y: 5.0 }, Velocity { dx: -1.0, dy: 0.0 }));
-        assert_eq!(world.archetype_count(), 1);
-        assert_eq!(world.get::<Position>(e1).unwrap().x, 0.0);
-        assert_eq!(world.get::<Position>(e2).unwrap().x, 5.0);
-    }
-
-    // ── Component insert / remove ─────────────────────────────────────────
-
-    #[test]
-    fn test_insert_new_component_migrates_archetype() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        world.insert(e, Velocity { dx: 1.0, dy: 0.0 });
-        assert!(world.get::<Velocity>(e).is_some());
-        assert!(world.get::<Position>(e).is_some());
-    }
-
-    #[test]
-    fn test_insert_replaces_existing_component() {
-        let mut world = World::new();
-        let e = world.spawn(Health(100.0));
-        world.insert(e, Health(50.0));
-        assert_eq!(world.get::<Health>(e).unwrap().0, 50.0);
-    }
-
-    #[test]
-    fn test_remove_component_migrates_archetype() {
-        let mut world = World::new();
-        let e = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
-        world.remove::<Velocity>(e);
-        assert!(world.get::<Velocity>(e).is_none());
-        assert!(world.get::<Position>(e).is_some());
-        assert!(world.is_alive(e));
-    }
-
-    #[test]
-    fn test_remove_nonexistent_component_is_noop() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        world.remove::<Velocity>(e); // should not panic
-        assert!(world.is_alive(e));
-    }
-
-    #[test]
-    fn test_insert_then_remove_roundtrip() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 1.0, y: 2.0 });
-        world.insert(e, Health(99.0));
-        assert_eq!(world.get::<Health>(e).unwrap().0, 99.0);
-        world.remove::<Health>(e);
-        assert!(world.get::<Health>(e).is_none());
-        assert_eq!(world.get::<Position>(e).unwrap().x, 1.0);
-    }
-
-    // ── Queries ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_query_single_component() {
-        let mut world = World::new();
-        world.spawn(Position { x: 1.0, y: 0.0 });
-        world.spawn(Position { x: 2.0, y: 0.0 });
-        world.spawn(Position { x: 3.0, y: 0.0 });
-        let xs: Vec<f32> = world.query::<Read<Position>, ()>().map(|p| p.x).collect();
-        assert_eq!(xs.len(), 3);
-    }
-
-    #[test]
-    fn test_query_tuple() {
-        let mut world = World::new();
-        world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 0.0 }));
-        world.spawn(Position { x: 5.0, y: 0.0 }); // no velocity
-        let count = world.query::<(Read<Position>, Read<Velocity>), ()>().count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn test_query_with_filter() {
-        let mut world = World::new();
-        world.spawn((Position { x: 0.0, y: 0.0 }, Tag));
-        world.spawn(Position { x: 1.0, y: 0.0 });
-        let count = world.query::<Read<Position>, With<Tag>>().count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn test_query_without_filter() {
-        let mut world = World::new();
-        world.spawn((Position { x: 0.0, y: 0.0 }, Enemy));
-        world.spawn((Position { x: 1.0, y: 0.0 }, Player));
-        world.spawn(Position { x: 2.0, y: 0.0 });
-        let count = world.query::<Read<Position>, Without<Enemy>>().count();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn test_query_option_read() {
-        let mut world = World::new();
-        world.spawn((Position { x: 0.0, y: 0.0 }, Health(100.0)));
-        world.spawn(Position { x: 1.0, y: 0.0 });
-        let results: Vec<_> = world
-            .query::<(Read<Position>, OptionRead<Health>), ()>()
-            .collect();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results.iter().filter(|(_, h)| h.is_some()).count(), 1);
-    }
-
-    #[test]
-    fn test_query_entity() {
-        let mut world = World::new();
-        let e1 = world.spawn(Position { x: 0.0, y: 0.0 });
-        let e2 = world.spawn(Position { x: 1.0, y: 0.0 });
-        let entities: Vec<Entity> = world.query::<Entity, ()>().collect();
-        assert!(entities.contains(&e1));
-        assert!(entities.contains(&e2));
-    }
-
-    #[test]
-    fn test_query_mutable() {
-        let mut world = World::new();
-        world.spawn(Position { x: 0.0, y: 0.0 });
-        world.spawn(Position { x: 1.0, y: 0.0 });
-        for pos in world.query::<Write<Position>, ()>() {
-            pos.x += 10.0;
-        }
-        let xs: Vec<f32> = world.query::<Read<Position>, ()>().map(|p| p.x).collect();
-        assert!(xs.iter().all(|&x| x >= 10.0));
-    }
-
-    #[test]
-    fn test_query_single() {
-        let mut world = World::new();
-        world.spawn(Player);
-        assert!(world.query_single::<Read<Player>>().is_some());
-    }
-
-    #[test]
-    fn test_query_single_none_when_multiple() {
-        let mut world = World::new();
-        world.spawn(Player);
-        world.spawn(Player);
-        assert!(world.query_single::<Read<Player>>().is_none());
-    }
-
-    // ── Resources ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_resource_insert_get() {
-        let mut world = World::new();
-        world.insert_resource(42u32);
-        assert_eq!(*world.resource::<u32>().unwrap(), 42);
-    }
-
-    #[test]
-    fn test_resource_get_mut() {
-        let mut world = World::new();
-        world.insert_resource(0u32);
-        *world.resource_mut::<u32>().unwrap() = 99;
-        assert_eq!(*world.resource::<u32>().unwrap(), 99);
-    }
-
-    #[test]
-    fn test_resource_remove() {
-        let mut world = World::new();
-        world.insert_resource(42u32);
-        assert_eq!(world.remove_resource::<u32>(), Some(42));
-        assert!(world.resource::<u32>().is_none());
-    }
-
-    #[test]
-    fn test_resource_missing_returns_none() {
-        let world = World::new();
-        assert!(world.resource::<u32>().is_none());
-    }
-
-    #[test]
-    fn test_resources_standalone() {
-        let mut res = Resources::new();
-        res.insert(42u32);
-        assert!(res.contains::<u32>());
-        assert!(!res.contains::<i32>());
-        assert_eq!(*res.get::<u32>().unwrap(), 42);
-        res.remove::<u32>();
-        assert!(!res.contains::<u32>());
-    }
-
-    // ── Commands ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_commands_spawn() {
-        let mut world = World::new();
-        let mut cmds = Commands::new();
-        cmds.spawn(Position { x: 7.0, y: 8.0 });
-        cmds.apply(&mut world);
-        assert_eq!(world.entity_count(), 1);
-        let pos = world.query_single::<Read<Position>>().unwrap();
-        assert_eq!(pos.x, 7.0);
-    }
-
-    #[test]
-    fn test_commands_despawn() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        let mut cmds = Commands::new();
-        cmds.despawn(e);
-        cmds.apply(&mut world);
-        assert!(!world.is_alive(e));
-    }
-
-    #[test]
-    fn test_commands_insert() {
-        let mut world = World::new();
-        let e = world.spawn(Position { x: 0.0, y: 0.0 });
-        let mut cmds = Commands::new();
-        cmds.insert(e, Health(50.0));
-        cmds.apply(&mut world);
-        assert_eq!(world.get::<Health>(e).unwrap().0, 50.0);
-    }
-
-    #[test]
-    fn test_commands_remove() {
-        let mut world = World::new();
-        let e = world.spawn((Position { x: 0.0, y: 0.0 }, Health(100.0)));
-        let mut cmds = Commands::new();
-        cmds.remove::<Health>(e);
-        cmds.apply(&mut world);
-        assert!(world.get::<Health>(e).is_none());
-    }
-
-    #[test]
-    fn test_commands_insert_resource() {
-        let mut world = World::new();
-        let mut cmds = Commands::new();
-        cmds.insert_resource(100i32);
-        cmds.apply(&mut world);
-        assert_eq!(*world.resource::<i32>().unwrap(), 100);
-    }
-
-    // ── Events ────────────────────────────────────────────────────────────
-
-    #[derive(Debug, Clone, PartialEq)]
-    struct DamageEvent { amount: f32 }
-
-    #[test]
-    fn test_events_send_and_read() {
-        let mut events: Events<DamageEvent> = Events::new();
-        let mut cursor = events.get_reader_current();
-        events.send(DamageEvent { amount: 10.0 });
-        events.send(DamageEvent { amount: 20.0 });
-        let read: Vec<_> = events.read(&mut cursor).collect();
-        assert_eq!(read.len(), 2);
-        assert_eq!(read[0].amount, 10.0);
-        assert_eq!(read[1].amount, 20.0);
-    }
-
-    #[test]
-    fn test_events_update_clears_stale() {
-        let mut events: Events<DamageEvent> = Events::new();
-        events.send(DamageEvent { amount: 5.0 });
-        events.update();
-        events.update();
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn test_event_writer_and_reader() {
-        let mut events: Events<DamageEvent> = Events::new();
-        EventWriter::new(&mut events).send(DamageEvent { amount: 42.0 });
-        let mut reader = EventReader::new_current(&events);
-        let v: Vec<_> = reader.read().collect();
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].amount, 42.0);
-    }
-
-    #[test]
-    fn test_world_events() {
-        let mut world = World::new();
-        world.add_event::<DamageEvent>();
-        world.send_event(DamageEvent { amount: 99.0 });
-        assert!(!world.events::<DamageEvent>().unwrap().is_empty());
-    }
-
-    // ── Schedule ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_schedule_runs_systems_in_order() {
-        let mut world = World::new();
-        world.insert_resource(0u32);
-        let mut schedule = Schedule::new();
-        schedule.add_system(into_system("inc", |w| {
-            *w.resource_mut::<u32>().unwrap() += 1;
-        }));
-        schedule.run(&mut world);
-        schedule.run(&mut world);
-        assert_eq!(*world.resource::<u32>().unwrap(), 2);
-    }
-
-    #[test]
-    fn test_schedule_run_condition() {
-        let mut world = World::new();
-        world.insert_resource(0u32);
-        world.insert_resource(false);
-        let mut schedule = Schedule::new();
-        schedule.add_system_with_condition(
-            into_system("gated", |w| { *w.resource_mut::<u32>().unwrap() += 1; }),
+    #[test] fn test_schedule_run_condition() {
+        let mut w = World::new(); w.insert_resource(0u32); w.insert_resource(false);
+        let mut s = Schedule::new();
+        s.add_system_with_condition(
+            into_system("g", |w| { *w.resource_mut::<u32>().unwrap() += 1; }),
             |w| *w.resource::<bool>().unwrap(),
         );
-        schedule.run(&mut world);
-        assert_eq!(*world.resource::<u32>().unwrap(), 0);
-        *world.resource_mut::<bool>().unwrap() = true;
-        schedule.run(&mut world);
-        assert_eq!(*world.resource::<u32>().unwrap(), 1);
+        s.run(&mut w); assert_eq!(*w.resource::<u32>().unwrap(), 0);
+        *w.resource_mut::<bool>().unwrap() = true;
+        s.run(&mut w); assert_eq!(*w.resource::<u32>().unwrap(), 1);
+    }
+    #[test] fn test_schedule_remove_label() {
+        let mut s = Schedule::new();
+        s.add_system_with_label(into_system("n", |_|{}), "lbl");
+        assert_eq!(s.system_count(), 1);
+        s.remove_system(&SystemLabel::new("lbl"));
+        assert_eq!(s.system_count(), 0);
+    }
+    #[test] fn test_schedule_tick_increment() {
+        let mut w = World::new(); let mut s = Schedule::new();
+        s.run(&mut w); assert_eq!(w.tick(), 1); s.run(&mut w); assert_eq!(w.tick(), 2);
     }
 
-    #[test]
-    fn test_schedule_remove_by_label() {
-        let mut schedule = Schedule::new();
-        schedule.add_system_with_label(into_system("noop", |_| {}), "my_label");
-        assert_eq!(schedule.system_count(), 1);
-        schedule.remove_system(&SystemLabel::new("my_label"));
-        assert_eq!(schedule.system_count(), 0);
+    // Change detection
+    #[test] fn test_was_added() {
+        let mut w = World::new(); w.increment_tick();
+        let e = w.spawn(Health(100.0));
+        assert!(was_added::<Health>(&w, e, 0)); assert!(!was_added::<Health>(&w, e, 1));
+    }
+    #[test] fn test_was_changed() {
+        let mut w = World::new(); w.increment_tick();
+        let e = w.spawn(Health(100.0)); w.increment_tick();
+        w.get_mut::<Health>(e).unwrap().0 = 50.0;
+        assert!(was_changed::<Health>(&w, e, 1)); assert!(!was_changed::<Health>(&w, e, 2));
+    }
+    #[test] fn test_query_added() {
+        let mut w = World::new(); w.increment_tick();
+        let e1 = w.spawn(Health(100.0)); w.increment_tick(); let _e2 = w.spawn(Health(50.0));
+        let added: Vec<_> = query_added::<Health>(&w, 1).collect();
+        assert_eq!(added.len(), 1); assert!(!added.contains(&e1));
     }
 
-    #[test]
-    fn test_schedule_increments_tick() {
-        let mut world = World::new();
-        let mut schedule = Schedule::new();
-        schedule.run(&mut world);
-        assert_eq!(world.tick(), 1);
-        schedule.run(&mut world);
-        assert_eq!(world.tick(), 2);
+    // Local
+    #[test] fn test_local() {
+        let mut l: Local<u32> = Local::default_value();
+        assert_eq!(*l, 0); *l += 5; assert_eq!(*l, 5);
     }
 
-    // ── Change detection ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_was_added() {
-        let mut world = World::new();
-        world.increment_tick(); // tick = 1
-        let e = world.spawn(Health(100.0));
-        assert!(was_added::<Health>(&world, e, 0));
-        assert!(!was_added::<Health>(&world, e, 1));
+    // Structural
+    #[test] fn test_swap_remove_updates_location() {
+        let mut w = World::new();
+        let e1 = w.spawn(Position { x: 1.0, y: 0.0 });
+        let _e2 = w.spawn(Position { x: 2.0, y: 0.0 });
+        let e3 = w.spawn(Position { x: 3.0, y: 0.0 });
+        w.despawn(e1);
+        assert!(w.is_alive(e3)); assert_eq!(w.get::<Position>(e3).unwrap().x, 3.0);
     }
-
-    #[test]
-    fn test_was_changed() {
-        let mut world = World::new();
-        world.increment_tick(); // tick = 1
-        let e = world.spawn(Health(100.0));
-        world.increment_tick(); // tick = 2
-        world.get_mut::<Health>(e).unwrap().0 = 50.0;
-        assert!(was_changed::<Health>(&world, e, 1));
-        assert!(!was_changed::<Health>(&world, e, 2));
+    #[test] fn test_spawn_many() {
+        let mut w = World::new();
+        for i in 0..1000u32 { w.spawn(Position { x: i as f32, y: 0.0 }); }
+        assert_eq!(w.entity_count(), 1000);
+        assert_eq!(w.query::<Read<Position>, ()>().count(), 1000);
     }
-
-    #[test]
-    fn test_query_added_filter() {
-        let mut world = World::new();
-        world.increment_tick(); // tick = 1
-        let e1 = world.spawn(Health(100.0));
-        world.increment_tick(); // tick = 2
-        let _e2 = world.spawn(Health(50.0));
-        let added: Vec<_> = query_added::<Health>(&world, 1).collect();
-        assert_eq!(added.len(), 1);
-        assert!(!added.contains(&e1));
+    #[test] fn test_world_default() { let w = World::default(); assert_eq!(w.entity_count(), 0); }
+    #[test] fn test_multiple_archetypes() {
+        let mut w = World::new();
+        w.spawn(Position { x: 0.0, y: 0.0 }); w.spawn(Health(100.0));
+        w.spawn((Position { x: 1.0, y: 0.0 }, Health(50.0)));
+        assert_eq!(w.archetype_count(), 3);
+        assert_eq!(w.query::<Read<Position>, ()>().count(), 2);
+        assert_eq!(w.query::<Read<Health>, ()>().count(), 2);
+        assert_eq!(w.query::<(Read<Position>, Read<Health>), ()>().count(), 1);
     }
-
-    #[test]
-    fn test_query_changed_filter() {
-        let mut world = World::new();
-        world.increment_tick();
-        let e1 = world.spawn(Health(100.0));
-        let e2 = world.spawn(Health(50.0));
-        world.increment_tick();
-        world.get_mut::<Health>(e1).unwrap().0 = 90.0;
-        let changed: Vec<_> = query_changed::<Health>(&world, 1).collect();
-        assert_eq!(changed.len(), 1);
-        assert!(changed.contains(&e1));
-        assert!(!changed.contains(&e2));
-    }
-
-    // ── Local<T> ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_local_default_and_mutate() {
-        let mut local: Local<u32> = Local::default_value();
-        assert_eq!(*local, 0);
-        *local += 5;
-        assert_eq!(*local, 5);
-    }
-
-    #[test]
-    fn test_local_new() {
-        let local: Local<String> = Local::new("hello".to_string());
-        assert_eq!(*local, "hello");
-    }
-
-    // ── Structural integrity ──────────────────────────────────────────────
-
-    #[test]
-    fn test_swap_remove_updates_location() {
-        let mut world = World::new();
-        let e1 = world.spawn(Position { x: 1.0, y: 0.0 });
-        let e2 = world.spawn(Position { x: 2.0, y: 0.0 });
-        let e3 = world.spawn(Position { x: 3.0, y: 0.0 });
-        world.despawn(e1); // e3 moves to row 0
-        assert!(!world.is_alive(e1));
-        assert!(world.is_alive(e2));
-        assert!(world.is_alive(e3));
-        assert_eq!(world.get::<Position>(e3).unwrap().x, 3.0);
-    }
-
-    #[test]
-    fn test_spawn_many_entities() {
-        let mut world = World::new();
-        for i in 0..1000u32 {
-            world.spawn(Position { x: i as f32, y: 0.0 });
-        }
-        assert_eq!(world.entity_count(), 1000);
-        assert_eq!(world.query::<Read<Position>, ()>().count(), 1000);
-    }
-
-    #[test]
-    fn test_world_default_is_empty() {
-        let world = World::default();
-        assert_eq!(world.entity_count(), 0);
-        assert_eq!(world.archetype_count(), 0);
-    }
-
-    #[test]
-    fn test_entity_count_after_despawns() {
-        let mut world = World::new();
-        let entities: Vec<Entity> = (0..10).map(|i| world.spawn(Health(i as f32))).collect();
-        for &e in &entities[0..5] { world.despawn(e); }
-        assert_eq!(world.entity_count(), 5);
-    }
-
-    #[test]
-    fn test_multiple_component_types_different_archetypes() {
-        let mut world = World::new();
-        world.spawn(Position { x: 0.0, y: 0.0 });
-        world.spawn(Health(100.0));
-        world.spawn((Position { x: 1.0, y: 0.0 }, Health(50.0)));
-        // Three distinct archetypes
-        assert_eq!(world.archetype_count(), 3);
-        assert_eq!(world.query::<Read<Position>, ()>().count(), 2);
-        assert_eq!(world.query::<Read<Health>, ()>().count(), 2);
-        assert_eq!(world.query::<(Read<Position>, Read<Health>), ()>().count(), 1);
+    #[test] fn test_entity_count_after_despawn() {
+        let mut w = World::new();
+        let es: Vec<Entity> = (0..10).map(|i| w.spawn(Health(i as f32))).collect();
+        for &e in &es[..5] { w.despawn(e); }
+        assert_eq!(w.entity_count(), 5);
     }
 }
