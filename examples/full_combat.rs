@@ -101,7 +101,7 @@ fn main() {
                         EmitterPreset::HitSparks { color: Vec4::new(1.0, 0.6, 0.2, 1.0), count: 12 },
                         Vec3::new(8.0, 0.0, 0.0),
                     );
-                    engine.add_camera_trauma(0.15);
+                    engine.add_trauma(0.15);
                     if let Some((_, e)) = engine.scene.entities.iter_mut().find(|(id, _)| *id == enemy) {
                         e.take_damage(20.0);
                     }
@@ -116,7 +116,7 @@ fn main() {
                         Vec3::new(8.0, 0.0, 0.0),
                     );
                     engine.emit_particles(EmitterPreset::CritBurst, Vec3::new(8.0, 0.0, 0.0));
-                    engine.add_camera_trauma(0.5);
+                    engine.add_trauma(0.5);
                     if let Some((_, e)) = engine.scene.entities.iter_mut().find(|(id, _)| *id == enemy) {
                         e.take_damage(40.0);
                     }
@@ -134,7 +134,7 @@ fn main() {
                         EmitterPreset::DeathExplosion { color: Vec4::new(0.8, 0.2, 0.2, 1.0) },
                         Vec3::new(8.0, 0.0, 0.0),
                     );
-                    engine.add_camera_trauma(0.4);
+                    engine.add_trauma(0.4);
                     if let Some((_, e)) = engine.scene.entities.iter_mut().find(|(id, _)| *id == enemy) {
                         e.hp = 0.0;
                     }

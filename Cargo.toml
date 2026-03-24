@@ -12,31 +12,33 @@ categories = ["game-engines", "graphics", "rendering"]
 readme = "README.md"
 
 [dependencies]
-# OpenGL / windowing
-glutin = "0.31"
-glow = "0.13"
-winit = "0.29"
+# OpenGL / windowing — glutin-winit bridges the two and handles version alignment
+glutin     = "0.31"
+glutin-winit = "0.4"
+glow       = "0.13"
+winit      = { version = "0.29", features = ["rwh_05"] }
+raw-window-handle = "0.5"
 
 # Math
-glam = "0.25"
+glam  = "0.25"
 noise = "0.9"
+
+# Font rasterization (pure Rust, no system deps)
+ab_glyph = "0.2"
 
 # Audio
 rodio = { version = "0.17", default-features = false, features = ["wav"] }
-cpal = "0.15"
+cpal  = "0.15"
 
-# Image loading (for font atlas)
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-# Bytemuck for GPU buffer casting (glyph instances)
+# Bytemuck for safe GPU buffer casting (glyph instances)
 bytemuck = { version = "1", features = ["derive"] }
 
 # Serialization (config)
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml  = "0.8"
 
 # Logging
-log = "0.4"
+log        = "0.4"
 env_logger = "0.11"
 
 [dev-dependencies]

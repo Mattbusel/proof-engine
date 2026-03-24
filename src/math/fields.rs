@@ -69,7 +69,7 @@ impl ForceField {
             }
 
             ForceField::Flow { direction, strength, turbulence: _ } => {
-                direction.normalize_or_zero() * strength
+                direction.normalize_or_zero() * *strength
             }
 
             ForceField::Vortex { center, axis, strength, radius } => {
@@ -77,7 +77,7 @@ impl ForceField {
                 let dist = delta.length();
                 if dist > *radius || dist < 0.001 { return Vec3::ZERO; }
                 let tangent = axis.normalize().cross(delta).normalize_or_zero();
-                tangent * strength * (1.0 - dist / radius)
+                tangent * *strength * (1.0 - dist / radius)
             }
 
             ForceField::Repulsion { center, strength, radius } => {
@@ -85,7 +85,7 @@ impl ForceField {
                 let dist = delta.length();
                 if dist > *radius || dist < 0.001 { return Vec3::ZERO; }
                 let dir = delta / dist;
-                dir * strength * (1.0 - dist / radius)
+                dir * *strength * (1.0 - dist / radius)
             }
 
             ForceField::Electromagnetic { center, charge: field_charge, strength } => {
@@ -94,7 +94,7 @@ impl ForceField {
                 let dir = delta / dist;
                 // Same sign = repel, opposite = attract
                 let sign = if charge * field_charge > 0.0 { 1.0 } else { -1.0 };
-                dir * sign * strength / (dist * dist)
+                dir * sign * *strength / (dist * dist)
             }
 
             ForceField::HeatSource { .. } | ForceField::EntropyField { .. } => {
@@ -111,8 +111,7 @@ impl ForceField {
 
             ForceField::StrangeAttractor { attractor_type, scale, strength, center } => {
                 let local = (pos - *center) / scale.max(0.001);
-                let (nx, ny, nz) = attractor_type.step(local.x, local.y, local.z, 1, 0.016);
-                let delta = Vec3::new(nx - local.x, ny - local.y, nz - local.z);
+                let (_next, delta) = super::attractors::step(*attractor_type, local, 0.016);
                 delta * *strength
             }
         }

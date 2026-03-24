@@ -125,23 +125,27 @@ impl MathFunction {
             }
 
             // ── Organic ───────────────────────────────────────────────────────
-            MathFunction::Lorenz { sigma, rho, beta, scale } => {
+            MathFunction::Lorenz { sigma: _, rho: _, beta: _, scale } => {
                 // Run 40 iterations of Lorenz from a seed derived from t
-                let (x, _, _) = attractors::lorenz_step(
+                let init = glam::Vec3::new(
                     (t * 0.1).sin() * 10.0,
                     (t * 0.07).cos() * 10.0,
                     20.0 + (t * 0.05).sin() * 5.0,
-                    *sigma, *rho, *beta, 40
                 );
-                x * scale
+                let mut state = init;
+                for _ in 0..40 {
+                    let (next, _) = attractors::step(attractors::AttractorType::Lorenz, state, 0.01);
+                    state = next;
+                }
+                state.x * scale
             }
             MathFunction::Perlin { frequency, octaves, amplitude } => {
-                use crate::math::noise::perlin_1d;
-                perlin_1d(t * frequency, *octaves) * amplitude
+                use crate::math::noise::fbm;
+                fbm(t * frequency, 0.0, *octaves, 0.5, 2.0) * amplitude
             }
             MathFunction::Simplex { frequency, amplitude } => {
-                use crate::math::noise::simplex_1d;
-                simplex_1d(t * frequency) * amplitude
+                use crate::math::noise::noise1;
+                noise1(t * frequency) * amplitude
             }
 
             // ── Convergence ───────────────────────────────────────────────────
@@ -189,12 +193,18 @@ impl MathFunction {
 
             // ── Strange attractor ──────────────────────────────────────────────
             MathFunction::StrangeAttractor { attractor_type, scale, strength } => {
-                let (ix, iy, iz) = attractor_type.initial_conditions();
+                let init = attractors::initial_state(*attractor_type);
                 let seed_t = (t * 0.05).sin() * 5.0;
-                let (nx, _, _) = attractor_type.step(
-                    ix + seed_t, iy + (t * 0.03).cos() * 5.0, iz, 20, 0.01
+                let mut state = glam::Vec3::new(
+                    init.x + seed_t,
+                    init.y + (t * 0.03).cos() * 5.0,
+                    init.z,
                 );
-                nx * scale * strength
+                for _ in 0..20 {
+                    let (next, _) = attractors::step(*attractor_type, state, 0.01);
+                    state = next;
+                }
+                state.x * scale * strength
             }
 
             // ── Fractal ───────────────────────────────────────────────────────

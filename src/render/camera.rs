@@ -81,7 +81,7 @@ impl ProofCamera {
         // Spring-step position, target, fov
         let pos = self.position.tick(dt) + shake_offset;
         let tgt = self.target.tick(dt);
-        let fov = self.fov.tick(dt);
+        let fov = self.fov.tick_get(dt);
 
         let view = Mat4::look_at_rh(pos, tgt, Vec3::Y);
         let projection = Mat4::perspective_rh(

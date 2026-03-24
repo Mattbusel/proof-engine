@@ -44,7 +44,7 @@ fn main() {
             6 => MathFunction::Orbit { center: Vec3::ZERO, radius: 0.5 + (i % 8) as f32 * 0.1, speed: 0.2 + (i % 5) as f32 * 0.04, eccentricity: 0.3 },
             7 => MathFunction::MandelbrotEscape { c_real: -0.7 + (i % 10) as f32 * 0.03, c_imag: 0.27, scale: 0.1 },
             8 => MathFunction::Perlin { frequency: 0.5 + (i % 4) as f32 * 0.1, octaves: 3, amplitude: 0.2 },
-            _ => MathFunction::Exponential { rate: 0.3 + (i % 7) as f32 * 0.05, target: (i as f32 * 0.23).sin() },
+            _ => MathFunction::Exponential { start: 0.0, rate: 0.3 + (i % 7) as f32 * 0.05, target: (i as f32 * 0.23).sin() },
         };
 
         // Brightness tiers: background = dim, mid = medium, near = brighter
