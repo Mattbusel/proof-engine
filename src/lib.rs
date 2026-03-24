@@ -73,6 +73,8 @@ pub mod rendergraph;
 pub mod compute;
 pub mod shader_graph;
 pub mod lighting;
+pub mod surfaces;
+pub mod deferred;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
