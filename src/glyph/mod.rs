@@ -104,6 +104,7 @@ impl Glyph {
 }
 
 /// Pre-allocated pool of Glyphs for efficient batch rendering.
+#[allow(dead_code)]
 pub struct GlyphPool {
     glyphs: Vec<Option<Glyph>>,
     free_slots: Vec<u32>,

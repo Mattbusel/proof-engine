@@ -25,6 +25,7 @@ struct ActiveSource {
 }
 
 /// State owned by the audio callback closure.
+#[allow(dead_code)]
 struct AudioState {
     sources:       Vec<ActiveSource>,
     rx:            Receiver<AudioEvent>,
@@ -186,7 +187,7 @@ impl AudioOutput {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let mut state = AudioState {
+        let state = AudioState {
             sources:       Vec::new(),
             rx,
             master_volume: 1.0,
