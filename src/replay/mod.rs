@@ -33,6 +33,9 @@
 //!     payload:  [u8; 8]
 //! ```
 
+pub mod rollback;
+pub use rollback::{RollbackSession, PlayerInput, FrameInput, GameState, NetworkStats};
+
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

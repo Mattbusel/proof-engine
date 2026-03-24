@@ -53,7 +53,10 @@ pub mod replay;
 pub mod scripting;
 pub mod terrain;
 pub mod ecs;
+pub mod editor;
 pub mod asset;
+pub mod save;
+pub mod character;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};

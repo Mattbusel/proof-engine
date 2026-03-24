@@ -21,6 +21,12 @@ pub mod websocket;
 pub mod leaderboard;
 pub mod analytics;
 
+pub mod protocol;
+pub mod transport;
+pub mod sync;
+pub mod lobby;
+pub mod rpc;
+
 pub use http::{HttpClient, HttpRequest, HttpResponse, HttpEvent, Method};
 pub use websocket::{WsClient, WsMessage, WsEvent, WsState};
 pub use leaderboard::{LeaderboardClient, ScoreEntry, LeaderboardEvent};

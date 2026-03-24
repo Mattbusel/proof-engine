@@ -13,6 +13,14 @@
 //! - `DpsTracker`      — rolling DPS measurement
 //! - `CombatFormulas`  — all damage formulas in one place
 
+pub mod inventory;
+pub mod abilities;
+pub mod combo;
+
+pub use inventory::{Item, ItemCategory, Inventory, Equipment, Rarity, LootTable, LootDrop};
+pub use abilities::{Ability, AbilityBar, ResourcePool, ResourceType, AbilityEffect};
+pub use combo::{ComboState, ComboDatabase, ComboTracker, ComboInput, InputBuffer};
+
 use glam::Vec3;
 use std::collections::HashMap;
 
