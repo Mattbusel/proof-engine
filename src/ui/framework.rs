@@ -33,6 +33,8 @@ impl Rect {
     pub fn max_x(&self) -> f32 { self.x + self.w }
     pub fn max_y(&self) -> f32 { self.y + self.h }
     pub fn center(&self) -> (f32, f32) { (self.x + self.w * 0.5, self.y + self.h * 0.5) }
+    pub fn center_x(&self) -> f32 { self.x + self.w * 0.5 }
+    pub fn center_y(&self) -> f32 { self.y + self.h * 0.5 }
     pub fn shrink(&self, margin: f32) -> Self {
         Self { x: self.x + margin, y: self.y + margin, w: (self.w - margin * 2.0).max(0.0), h: (self.h - margin * 2.0).max(0.0) }
     }
