@@ -2,6 +2,7 @@
 
 pub mod node;
 pub mod field_manager;
+pub mod spawn_system;
 
 use crate::glyph::{Glyph, GlyphId, GlyphPool};
 use crate::entity::{AmorphousEntity, EntityId};

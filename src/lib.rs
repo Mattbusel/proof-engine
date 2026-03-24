@@ -39,7 +39,12 @@ pub mod config;
 pub mod tween;
 pub mod debug;
 pub mod ui;
+pub mod timeline;
 pub mod procedural;
+pub mod physics;
+pub mod combat;
+pub mod spatial;
+pub mod effects;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};

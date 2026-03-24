@@ -4,5 +4,6 @@ pub mod camera;
 pub mod pipeline;
 pub mod postfx;
 pub mod shaders;
+pub mod text_renderer;
 
 pub use pipeline::Pipeline;

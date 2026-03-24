@@ -7,6 +7,7 @@ pub mod math_source;
 pub mod mixer;
 pub mod synth;
 pub mod output;
+pub mod music_engine;
 
 use glam::Vec3;
 
