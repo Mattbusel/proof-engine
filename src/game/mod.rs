@@ -11,6 +11,8 @@ pub mod debris;
 pub mod cloth_rope;
 pub mod arena_physics;
 pub mod weapon_physics;
+pub mod music;
+pub mod animation;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
