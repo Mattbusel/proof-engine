@@ -139,6 +139,11 @@ impl GlyphPool {
         }
     }
 
+    /// Alias for `remove` — despawn a glyph by ID.
+    pub fn despawn(&mut self, id: GlyphId) {
+        self.remove(id);
+    }
+
     pub fn get(&self, id: GlyphId) -> Option<&Glyph> {
         self.glyphs.get(id.0 as usize)?.as_ref()
     }

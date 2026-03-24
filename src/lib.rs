@@ -36,6 +36,10 @@ pub mod audio;
 pub mod integration;
 pub mod input;
 pub mod config;
+pub mod tween;
+pub mod debug;
+pub mod ui;
+pub mod procedural;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
@@ -44,7 +48,8 @@ pub use entity::AmorphousEntity;
 pub use particle::{MathParticle, ParticleInteraction};
 pub use scene::SceneGraph;
 pub use render::camera::ProofCamera;
-pub use input::InputState;
+pub use input::{InputState, Key};
+pub use render::pipeline::FrameStats;
 pub use audio::AudioEvent;
 
 /// The main engine struct. Create once, run forever.
@@ -181,6 +186,13 @@ impl ProofEngine {
     }
 }
 
+/// Request quit on next frame.
+impl ProofEngine {
+    pub fn request_quit(&mut self) {
+        self.input.quit_requested = true;
+    }
+}
+
 /// Common imports for using Proof Engine.
 pub mod prelude {
     pub use crate::{
@@ -192,9 +204,15 @@ pub mod prelude {
         AudioEvent,
         particle::EmitterPreset,
         render::camera::ProofCamera,
-        input::InputState,
+        input::{InputState, Key},
         scene::{SceneGraph, FieldId},
         audio::MusicVibe,
+        tween::{Tween, Easing, TweenState, Tweens, AnimationGroup},
+        tween::easing::Easing as EasingFn,
+        tween::keyframe::{KeyframeTrack, Keyframe, CameraPath, ExtrapolateMode},
+        tween::sequence::{TweenSequence, TweenTimeline, SequenceBuilder},
+        debug::DebugOverlay,
+        render::pipeline::FrameStats,
     };
     pub use glam::{Vec2, Vec3, Vec4};
 }

@@ -11,9 +11,21 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use glam::Vec3;
 
 use crate::audio::{AudioEvent, MusicVibe};
-use crate::audio::math_source::{MathAudioSource, Waveform};
+use crate::audio::math_source::{MathAudioSource, Waveform as MsWaveform};
 use crate::audio::mixer::{spatial_weight, stereo_pan};
-use crate::audio::synth::{oscillator, Adsr};
+use crate::audio::synth::{oscillator, Adsr, Waveform as SynthWaveform};
+
+fn ms_to_synth_waveform(w: MsWaveform) -> SynthWaveform {
+    match w {
+        MsWaveform::Sine       => SynthWaveform::Sine,
+        MsWaveform::Triangle   => SynthWaveform::Triangle,
+        MsWaveform::Square     => SynthWaveform::Square,
+        MsWaveform::Sawtooth   => SynthWaveform::Sawtooth,
+        MsWaveform::ReverseSaw => SynthWaveform::ReverseSaw,
+        MsWaveform::Pulse(d)   => SynthWaveform::Pulse(d),
+        MsWaveform::Noise      => SynthWaveform::Noise,
+    }
+}
 
 /// An active synthesized source on the audio thread.
 struct ActiveSource {
@@ -82,11 +94,12 @@ impl AudioState {
                             function: MathFunction::Sine { amplitude: 1.0, frequency: 1.0, phase: 0.0 },
                             frequency_range: (440.0, 880.0),
                             amplitude: volume,
-                            waveform: Waveform::Sine,
+                            waveform: MsWaveform::Sine,
                             filter: None,
                             position,
                             tag: Some("sfx".to_string()),
                             lifetime: 0.15,
+                            ..Default::default()
                         },
                         phase: 0.0,
                         age: 0.0,
@@ -136,7 +149,7 @@ impl AudioState {
             active.phase = (active.phase + freq * dt).fract();
 
             // Synthesize sample
-            let raw = oscillator(active.src.waveform, active.phase);
+            let raw = oscillator(ms_to_synth_waveform(active.src.waveform), active.phase);
             let env = active.adsr.level(active.age, active.note_off);
             let vol = active.src.amplitude * env;
 

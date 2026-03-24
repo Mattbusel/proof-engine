@@ -9,6 +9,7 @@ pub mod attractors;
 pub mod noise;
 pub mod springs;
 pub mod fields;
+pub mod color;
 
 pub use eval::MathFunction;
 pub use fields::{ForceField, Falloff, FieldTarget};

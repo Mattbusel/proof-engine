@@ -85,6 +85,68 @@ pub enum MathFunction {
     /// Traveling wave.
     Wave { wavelength: f32, speed: f32, amplitude: f32, decay: f32 },
 
+    // ── Sawtooth / pulse ──────────────────────────────────────────────────────
+    /// Sawtooth wave (rising ramp that resets to -1).
+    Sawtooth { amplitude: f32, frequency: f32, phase: f32 },
+    /// Ramp: linearly rises from 0 to amplitude over `duration`, then resets.
+    Ramp { amplitude: f32, duration: f32 },
+
+    // ── Signal functions ──────────────────────────────────────────────────────
+    /// Sinc function: sin(π·x) / (π·x). Used for signal reconstruction.
+    Sinc { frequency: f32, amplitude: f32 },
+    /// Gaussian bell curve: amplitude · e^(-((t-center)/width)²).
+    Gaussian { amplitude: f32, center: f32, width: f32 },
+    /// Two-frequency beat: interference between slightly detuned oscillators.
+    BeatFrequency { freq1: f32, freq2: f32, amplitude: f32 },
+    /// Wave packet: Gaussian envelope × carrier sine.
+    WavePacket { carrier_freq: f32, envelope_width: f32, amplitude: f32, center: f32 },
+    /// Fourier series: sum of harmonics with user-specified coefficients.
+    FourierSeries { fundamental: f32, coefficients: Vec<(f32, f32)> }, // (sin_coeff, cos_coeff)
+
+    // ── Activation / shaping ─────────────────────────────────────────────────
+    /// Sigmoid (logistic) function maps any input → (0, 1).
+    Sigmoid { steepness: f32, center: f32 },
+    /// Hyperbolic tangent: amplitude · tanh(steepness · t).
+    Tanh { amplitude: f32, steepness: f32 },
+    /// Soft-plus: amplitude · ln(1 + e^(steepness·t)) / steepness.
+    SoftPlus { amplitude: f32, steepness: f32 },
+    /// Rectified linear: max(0, slope·t + offset).
+    Relu { slope: f32, offset: f32 },
+    /// Power law: sign(t) · |t|^exponent.
+    PowerLaw { exponent: f32, scale: f32 },
+
+    // ── Chaos / dynamical systems ─────────────────────────────────────────────
+    /// Van der Pol oscillator (nonlinear oscillator with limit cycle).
+    VanDerPol { mu: f32, amplitude: f32 },
+    /// Duffing oscillator (chaotic forced nonlinear oscillator).
+    Duffing { alpha: f32, beta: f32, delta: f32, gamma: f32, omega: f32 },
+    /// Tent map iterated n times: exhibits period-doubling route to chaos.
+    TentMap { r: f32, x0: f32 },
+    /// Hénon map: chaotic 2D map (returns x-coordinate).
+    HenonMap { a: f32, b: f32, x0: f32, y0: f32 },
+    /// Rössler system x-coordinate trajectory.
+    Roessler { a: f32, b: f32, c: f32, scale: f32 },
+
+    // ── Physical simulations ──────────────────────────────────────────────────
+    /// Double pendulum: chaotic system of two connected pendulums (angle θ₁).
+    DoublePendulum { l1: f32, l2: f32, m1: f32, m2: f32, theta1_0: f32, theta2_0: f32 },
+    /// Projectile motion: height above ground (y-axis) at time t.
+    Projectile { v0: f32, angle_deg: f32, gravity: f32 },
+    /// Simple harmonic motion with optional initial displacement.
+    SimpleHarmonic { omega: f32, amplitude: f32, phase: f32, decay: f32 },
+    /// Damped sine with exact analytic form.
+    DampedSine { omega: f32, zeta: f32, amplitude: f32, phase: f32 },
+    /// Epicyclic motion: small circle of radius `r2` orbiting at radius `r1`.
+    Epicycle { r1: f32, r2: f32, omega1: f32, omega2: f32 },
+
+    // ── Statistical / noise ───────────────────────────────────────────────────
+    /// Fractional Brownian motion: multi-octave noise with Hurst exponent H.
+    FractionalBrownian { frequency: f32, octaves: u8, hurst: f32, amplitude: f32 },
+    /// Domain-warped noise: the input to the noise is itself displaced by another noise.
+    DomainWarp { frequency: f32, warp_strength: f32, octaves: u8, amplitude: f32 },
+    /// Cellular / Worley noise: distance to nearest point in a Poisson point process.
+    Cellular { frequency: f32, amplitude: f32 },
+
     // ── Composition ───────────────────────────────────────────────────────────
     /// Add two function outputs.
     Sum(Box<MathFunction>, Box<MathFunction>),
@@ -98,6 +160,19 @@ pub enum MathFunction {
     Clamp { inner: Box<MathFunction>, min: f32, max: f32 },
     /// Absolute value of inner.
     Abs(Box<MathFunction>),
+    /// Scale: multiply output of inner by `factor`.
+    Scale { inner: Box<MathFunction>, factor: f32 },
+    /// Offset: add `offset` to output of inner.
+    Offset { inner: Box<MathFunction>, offset: f32 },
+    /// Invert: negate the output of inner.
+    Invert(Box<MathFunction>),
+    /// Normalize inner to [-1, 1] over a given sample window of `t_range` seconds.
+    /// (sampled at `steps` points; expensive — use sparingly.)
+    Normalize { inner: Box<MathFunction>, t_range: f32, steps: u32 },
+    /// Delay: evaluate inner at (t - delay_seconds).
+    Delay { inner: Box<MathFunction>, delay: f32 },
+    /// Mirror: map t → |t mod (2·period) - period| creating a symmetric waveform.
+    Mirror { inner: Box<MathFunction>, period: f32 },
 }
 
 impl MathFunction {
@@ -291,6 +366,210 @@ impl MathFunction {
                 amplitude * phase.sin() * (-decay * t).exp()
             }
 
+            // ── Sawtooth / pulse ─────────────────────────────────────────────
+            MathFunction::Sawtooth { amplitude, frequency, phase } => {
+                let p = (t * frequency + phase / TAU).fract();
+                amplitude * (2.0 * p - 1.0)
+            }
+            MathFunction::Ramp { amplitude, duration } => {
+                let p = (t / duration.max(f32::EPSILON)).fract();
+                amplitude * p
+            }
+
+            // ── Signal functions ──────────────────────────────────────────────
+            MathFunction::Sinc { frequency, amplitude } => {
+                let x = t * frequency * PI;
+                let v = if x.abs() < f32::EPSILON { 1.0 } else { x.sin() / x };
+                amplitude * v
+            }
+            MathFunction::Gaussian { amplitude, center, width } => {
+                let x = (t - center) / width.max(f32::EPSILON);
+                amplitude * (-x * x).exp()
+            }
+            MathFunction::BeatFrequency { freq1, freq2, amplitude } => {
+                amplitude * (t * freq1 * TAU).sin() * (t * freq2 * TAU).sin()
+            }
+            MathFunction::WavePacket { carrier_freq, envelope_width, amplitude, center } => {
+                let carrier  = (t * carrier_freq * TAU).sin();
+                let envelope = {
+                    let x = (t - center) / envelope_width.max(f32::EPSILON);
+                    (-x * x).exp()
+                };
+                amplitude * carrier * envelope
+            }
+            MathFunction::FourierSeries { fundamental, coefficients } => {
+                let mut v = 0.0_f32;
+                for (n, (sin_c, cos_c)) in coefficients.iter().enumerate() {
+                    let harmonic = (n as f32 + 1.0) * fundamental * TAU * t;
+                    v += sin_c * harmonic.sin() + cos_c * harmonic.cos();
+                }
+                v
+            }
+
+            // ── Activation / shaping ─────────────────────────────────────────
+            MathFunction::Sigmoid { steepness, center } => {
+                1.0 / (1.0 + (-steepness * (t - center)).exp())
+            }
+            MathFunction::Tanh { amplitude, steepness } => {
+                amplitude * (steepness * t).tanh()
+            }
+            MathFunction::SoftPlus { amplitude, steepness } => {
+                let s = steepness.max(f32::EPSILON);
+                amplitude * (1.0 + (s * t).exp()).ln() / s
+            }
+            MathFunction::Relu { slope, offset } => {
+                (slope * t + offset).max(0.0)
+            }
+            MathFunction::PowerLaw { exponent, scale } => {
+                scale * t.abs().powf(*exponent) * t.signum()
+            }
+
+            // ── Chaos / dynamical systems ──────────────────────────────────────
+            MathFunction::VanDerPol { mu, amplitude } => {
+                // Numerical integration of Van der Pol: ẍ - μ(1 - x²)ẋ + x = 0
+                let dt_inner = 0.02_f32;
+                let steps    = (t / dt_inner) as u32;
+                let mut x    = *amplitude;
+                let mut v    = 0.0_f32;
+                for _ in 0..steps.min(5000) {
+                    let a = mu * (1.0 - x * x) * v - x;
+                    v += a * dt_inner;
+                    x += v * dt_inner;
+                }
+                x.clamp(-amplitude * 3.0, amplitude * 3.0)
+            }
+            MathFunction::Duffing { alpha, beta, delta, gamma, omega } => {
+                // Forced Duffing oscillator: ẍ + δẋ + αx + βx³ = γcos(ωt)
+                let dt_inner = 0.005_f32;
+                let steps    = (t / dt_inner) as u32;
+                let mut x    = 0.5_f32;
+                let mut v    = 0.0_f32;
+                let mut s    = 0.0_f32;
+                for _ in 0..steps.min(10000) {
+                    let a = -delta * v - alpha * x - beta * x * x * x + gamma * (omega * s).cos();
+                    v += a * dt_inner;
+                    x += v * dt_inner;
+                    s += dt_inner;
+                }
+                x.clamp(-5.0, 5.0)
+            }
+            MathFunction::TentMap { r, x0 } => {
+                let n = (t * 40.0) as u32;
+                let mut x = *x0;
+                for _ in 0..n.min(500) {
+                    x = if x < 0.5 { r * x } else { r * (1.0 - x) };
+                }
+                x * 2.0 - 1.0
+            }
+            MathFunction::HenonMap { a, b, x0, y0 } => {
+                let n = (t * 30.0) as u32;
+                let mut x = *x0;
+                let mut y = *y0;
+                for _ in 0..n.min(1000) {
+                    let new_x = 1.0 - a * x * x + y;
+                    y = b * x;
+                    x = new_x;
+                }
+                x.clamp(-2.0, 2.0)
+            }
+            MathFunction::Roessler { a, b, c, scale } => {
+                let dt_inner = 0.01_f32;
+                let steps    = (t / dt_inner) as u32;
+                let (mut rx, mut ry, mut rz) = (0.1_f32, 0.0_f32, 0.0_f32);
+                for _ in 0..steps.min(5000) {
+                    let dx = -(ry + rz);
+                    let dy = rx + a * ry;
+                    let dz = b + rz * (rx - c);
+                    rx += dx * dt_inner;
+                    ry += dy * dt_inner;
+                    rz += dz * dt_inner;
+                }
+                rx * scale
+            }
+
+            // ── Physical simulations ───────────────────────────────────────────
+            MathFunction::DoublePendulum { l1, l2, m1, m2, theta1_0, theta2_0 } => {
+                // Runge-Kutta 4 integration of double pendulum equations
+                let g     = 9.81_f32;
+                let dt_rk = 0.005_f32;
+                let steps = (t / dt_rk) as u32;
+                let mut th1 = *theta1_0;
+                let mut th2 = *theta2_0;
+                let mut w1  = 0.0_f32;
+                let mut w2  = 0.0_f32;
+
+                let dp_accel = |th1: f32, th2: f32, w1: f32, w2: f32| -> (f32, f32) {
+                    let dth = th1 - th2;
+                    let denom1 = (m1 + m2) * l1 - m2 * l1 * dth.cos() * dth.cos();
+                    let denom2 = (l2 / l1) * denom1;
+                    let a1 = (m2 * l1 * w1 * w1 * dth.sin() * dth.cos()
+                             + m2 * g * th2.sin() * dth.cos()
+                             + m2 * l2 * w2 * w2 * dth.sin()
+                             - (m1 + m2) * g * th1.sin()) / denom1.max(f32::EPSILON);
+                    let a2 = (-(m1 + m2) * (l1 * w1 * w1 * dth.sin()
+                             + g * th1.sin() * dth.cos() - g * th2.sin())
+                             - m2 * l2 * w2 * w2 * dth.sin() * dth.cos()) / denom2.max(f32::EPSILON);
+                    (a1, a2)
+                };
+
+                for _ in 0..steps.min(8000) {
+                    let (a1, a2) = dp_accel(th1, th2, w1, w2);
+                    // Simple Euler (fast enough for visual use)
+                    w1 += a1 * dt_rk;
+                    w2 += a2 * dt_rk;
+                    th1 += w1 * dt_rk;
+                    th2 += w2 * dt_rk;
+                }
+                th1.clamp(-PI * 4.0, PI * 4.0)
+            }
+            MathFunction::Projectile { v0, angle_deg, gravity } => {
+                let angle = angle_deg.to_radians();
+                let vy    = v0 * angle.sin();
+                vy * t - 0.5 * gravity * t * t
+            }
+            MathFunction::SimpleHarmonic { omega, amplitude, phase, decay } => {
+                let env = if *decay > f32::EPSILON { (-decay * t).exp() } else { 1.0 };
+                amplitude * env * (omega * t + phase).sin()
+            }
+            MathFunction::DampedSine { omega, zeta, amplitude, phase } => {
+                let omega_d = omega * (1.0 - zeta * zeta).abs().sqrt();
+                let env     = (-zeta * omega * t).exp();
+                amplitude * env * (omega_d * t + phase).sin()
+            }
+            MathFunction::Epicycle { r1, r2, omega1, omega2 } => {
+                let x = r1 * (omega1 * t).cos() + r2 * (omega2 * t).cos();
+                x // y-coord is evaluate(t+0.5, .) with offset if caller wants 2D
+            }
+
+            // ── Statistical / noise ───────────────────────────────────────────
+            MathFunction::FractionalBrownian { frequency, octaves, hurst, amplitude } => {
+                use crate::math::noise::fbm;
+                // Hurst exponent controls persistence: H=0.5 → Brownian, H>0.5 → smooth
+                let persistence = 2.0_f32.powf(-*hurst);
+                fbm(t * frequency, 0.0, *octaves, persistence, 2.0) * amplitude
+            }
+            MathFunction::DomainWarp { frequency, warp_strength, octaves, amplitude } => {
+                use crate::math::noise::{fbm, noise1};
+                // Displace the domain by a noise field before sampling
+                let warp = noise1(t * frequency * 0.5) * warp_strength;
+                fbm((t + warp) * frequency, 0.0, *octaves, 0.5, 2.0) * amplitude
+            }
+            MathFunction::Cellular { frequency, amplitude } => {
+                // Approximated Worley noise: minimum distance to a grid of random points
+                let cell = (t * frequency).floor();
+                let frac = (t * frequency).fract();
+                let mut min_dist = f32::MAX;
+                for offset in [-1i32, 0, 1] {
+                    let point_cell = cell + offset as f32;
+                    // Deterministic random point within each cell
+                    let hash = (point_cell * 127.321 + 3481.12).sin().abs();
+                    let point = hash; // point position within [0, 1]
+                    let dist  = (frac - point - offset as f32).abs();
+                    min_dist = min_dist.min(dist);
+                }
+                amplitude * min_dist * 2.0
+            }
+
             // ── Composition ───────────────────────────────────────────────────
             MathFunction::Sum(a, b) => a.evaluate(t, input) + b.evaluate(t, input),
             MathFunction::Product(a, b) => a.evaluate(t, input) * b.evaluate(t, input),
@@ -307,7 +586,158 @@ impl MathFunction {
             MathFunction::Clamp { inner, min, max } => {
                 inner.evaluate(t, input).clamp(*min, *max)
             }
-            MathFunction::Abs(inner) => inner.evaluate(t, input).abs(),
+            MathFunction::Abs(inner)      => inner.evaluate(t, input).abs(),
+            MathFunction::Scale  { inner, factor } => inner.evaluate(t, input) * factor,
+            MathFunction::Offset { inner, offset } => inner.evaluate(t, input) + offset,
+            MathFunction::Invert(inner)   => -inner.evaluate(t, input),
+            MathFunction::Normalize { inner, t_range, steps } => {
+                // Sample inner at `steps` points to find the value range, then normalize
+                let n   = (*steps).max(2) as usize;
+                let dt  = t_range / (n - 1) as f32;
+                let mut min_v = f32::MAX;
+                let mut max_v = f32::MIN;
+                for i in 0..n {
+                    let v = inner.evaluate(i as f32 * dt, 0.0);
+                    if v < min_v { min_v = v; }
+                    if v > max_v { max_v = v; }
+                }
+                let range = (max_v - min_v).max(f32::EPSILON);
+                let raw   = inner.evaluate(t, input);
+                (raw - min_v) / range * 2.0 - 1.0
+            }
+            MathFunction::Delay { inner, delay } => {
+                inner.evaluate((t - delay).max(0.0), input)
+            }
+            MathFunction::Mirror { inner, period } => {
+                let p   = period.max(f32::EPSILON);
+                let t2  = (t % (2.0 * p) + 2.0 * p) % (2.0 * p);
+                let t_m = if t2 < p { t2 } else { 2.0 * p - t2 };
+                inner.evaluate(t_m, input)
+            }
+        }
+    }
+
+    // ── Utility methods ────────────────────────────────────────────────────────
+
+    /// Numerical derivative dF/dt at time `t` using central differences.
+    ///
+    /// Epsilon defaults to 1e-4 — reduce for smoother but less accurate results.
+    pub fn derivative(&self, t: f32, epsilon: f32) -> f32 {
+        let hi = self.evaluate(t + epsilon, 0.0);
+        let lo = self.evaluate(t - epsilon, 0.0);
+        (hi - lo) / (2.0 * epsilon.max(f32::EPSILON))
+    }
+
+    /// Numerical integral ∫F dt over [from, to] using Simpson's rule with `steps` intervals.
+    ///
+    /// `steps` must be even (rounded up if not).
+    pub fn integrate(&self, from: f32, to: f32, steps: u32) -> f32 {
+        let n  = ((steps + 1) & !1) as usize; // ensure even
+        let h  = (to - from) / n as f32;
+        let mut sum = self.evaluate(from, 0.0) + self.evaluate(to, 0.0);
+        for i in 1..n {
+            let x = from + i as f32 * h;
+            let w = if i % 2 == 0 { 2.0 } else { 4.0 };
+            sum += w * self.evaluate(x, 0.0);
+        }
+        sum * h / 3.0
+    }
+
+    /// Sample the function at `n` uniformly spaced points over [t_start, t_end].
+    pub fn sample_range(&self, t_start: f32, t_end: f32, n: u32) -> Vec<f32> {
+        let count = n.max(2) as usize;
+        let dt    = (t_end - t_start) / (count - 1) as f32;
+        (0..count).map(|i| self.evaluate(t_start + i as f32 * dt, 0.0)).collect()
+    }
+
+    /// Find the approximate minimum and maximum output over [t_start, t_end].
+    pub fn find_range(&self, t_start: f32, t_end: f32, steps: u32) -> (f32, f32) {
+        let samples = self.sample_range(t_start, t_end, steps.max(2));
+        let min = samples.iter().cloned().fold(f32::MAX, f32::min);
+        let max = samples.iter().cloned().fold(f32::MIN, f32::max);
+        (min, max)
+    }
+
+    /// Find approximate zero-crossings in [t_start, t_end].
+    pub fn zero_crossings(&self, t_start: f32, t_end: f32, steps: u32) -> Vec<f32> {
+        let count = steps.max(2) as usize;
+        let dt    = (t_end - t_start) / (count - 1) as f32;
+        let mut crossings = Vec::new();
+        let mut prev = self.evaluate(t_start, 0.0);
+        for i in 1..count {
+            let t = t_start + i as f32 * dt;
+            let v = self.evaluate(t, 0.0);
+            if (prev < 0.0) != (v < 0.0) {
+                // Linear interpolation of crossing time
+                let frac = -prev / (v - prev).max(f32::EPSILON);
+                crossings.push(t - dt + frac * dt);
+            }
+            prev = v;
+        }
+        crossings
+    }
+
+    /// Evaluate as a 3D trajectory: x = f(t, 0), y = f(t+1, 0), z = f(t+2, 0).
+    ///
+    /// This is the default particle behavior — all three axes driven by the same
+    /// function but offset in time, producing organic non-planar motion.
+    pub fn evaluate_vec3(&self, t: f32) -> glam::Vec3 {
+        glam::Vec3::new(
+            self.evaluate(t,       0.0),
+            self.evaluate(t + 1.0, 0.0),
+            self.evaluate(t + 2.0, 0.0),
+        )
+    }
+
+    /// Evaluate as a 3D trajectory with explicit phase offsets per axis.
+    pub fn evaluate_vec3_phased(&self, t: f32, phase_x: f32, phase_y: f32, phase_z: f32) -> glam::Vec3 {
+        glam::Vec3::new(
+            self.evaluate(t + phase_x, 0.0),
+            self.evaluate(t + phase_y, 0.0),
+            self.evaluate(t + phase_z, 0.0),
+        )
+    }
+
+    /// Create a `Sum` of this function and another.
+    pub fn add(self, other: MathFunction) -> MathFunction {
+        MathFunction::Sum(Box::new(self), Box::new(other))
+    }
+
+    /// Create a `Product` of this function and another.
+    pub fn mul(self, other: MathFunction) -> MathFunction {
+        MathFunction::Product(Box::new(self), Box::new(other))
+    }
+
+    /// Scale the output by `factor`.
+    pub fn scale(self, factor: f32) -> MathFunction {
+        MathFunction::Scale { inner: Box::new(self), factor }
+    }
+
+    /// Add a constant offset to the output.
+    pub fn offset(self, offset: f32) -> MathFunction {
+        MathFunction::Offset { inner: Box::new(self), offset }
+    }
+
+    /// Clamp the output to [min, max].
+    pub fn clamp(self, min: f32, max: f32) -> MathFunction {
+        MathFunction::Clamp { inner: Box::new(self), min, max }
+    }
+
+    /// Delay the function by `seconds`.
+    pub fn delay(self, seconds: f32) -> MathFunction {
+        MathFunction::Delay { inner: Box::new(self), delay: seconds }
+    }
+
+    /// Invert (negate) the output.
+    pub fn invert(self) -> MathFunction {
+        MathFunction::Invert(Box::new(self))
+    }
+
+    /// Modulate by another function (amplitude modulation).
+    pub fn modulate(self, modulator: MathFunction) -> MathFunction {
+        MathFunction::Modulate {
+            carrier:   Box::new(self),
+            modulator: Box::new(modulator),
         }
     }
 }
