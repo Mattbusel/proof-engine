@@ -61,6 +61,7 @@ pub mod dsp;
 pub mod game;
 pub mod profiler;
 pub mod vfx;
+pub mod netcode;
 pub mod network;
 pub mod world;
 pub mod crafting;
