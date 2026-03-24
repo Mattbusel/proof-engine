@@ -10,8 +10,8 @@ use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext,
                       PossiblyCurrentContext, Version};
 use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
-use glutin_winit::DisplayBuilder;
+use glutin::surface::{GlSurface, Surface, WindowSurface};
+use glutin_winit::{DisplayBuilder, GlWindow};
 use glow::HasContext;
 use raw_window_handle::HasWindowHandle;
 use winit::dpi::LogicalSize;
@@ -180,6 +180,7 @@ void main() {
 
 // ── Pipeline ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)] // Some fields held for GL resource lifetime or future use
 pub struct Pipeline {
     pub width:  u32,
     pub height: u32,
@@ -284,11 +285,9 @@ impl Pipeline {
         let w = size.width.max(1);
         let h = size.height.max(1);
 
-        let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            raw_window_handle,
-            NonZeroU32::new(w).unwrap(),
-            NonZeroU32::new(h).unwrap(),
-        );
+        let surface_attrs = window
+            .build_surface_attributes(Default::default())
+            .expect("build_surface_attributes");
         let surface = unsafe {
             display
                 .create_window_surface(&gl_config, &surface_attrs)

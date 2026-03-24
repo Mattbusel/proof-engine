@@ -7,6 +7,9 @@ pub mod motion_blur;
 pub mod chromatic;
 pub mod grain;
 pub mod scanlines;
+pub mod pipeline;
+
+pub use pipeline::PostFxPipeline;
 
 /// Parameters for the full post-processing pipeline this frame.
 #[derive(Clone, Debug)]
