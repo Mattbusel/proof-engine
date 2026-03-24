@@ -1,6 +1,5 @@
 //! Perlin and Simplex noise implementations.
 
-use std::f32::consts::TAU;
 
 /// Hash a 2D integer coordinate to a float gradient.
 fn hash2(ix: i32, iy: i32) -> f32 {

@@ -165,10 +165,7 @@ impl Pipeline {
 
         let window = window.expect("window not created");
 
-        let display = {
-            use glutin::display::GetGlDisplay;
-            gl_config.display()
-        };
+        let display = gl_config.display();
 
         // ── 3. GL context (OpenGL 3.3 Core) ──────────────────────────────────
         let ctx_attrs = ContextAttributesBuilder::new()

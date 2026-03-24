@@ -15,7 +15,6 @@ pub use fields::{ForceField, Falloff, FieldTarget};
 pub use attractors::AttractorType;
 pub use springs::{SpringDamper, Spring3D, SpringDamper3};
 
-use std::f32::consts::{PI, TAU};
 
 /// Evaluate a scalar function of time.
 /// `t` = elapsed seconds since engine start.

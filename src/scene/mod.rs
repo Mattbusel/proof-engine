@@ -5,7 +5,7 @@ pub mod field_manager;
 
 use crate::glyph::{Glyph, GlyphId, GlyphPool};
 use crate::entity::{AmorphousEntity, EntityId};
-use crate::particle::{MathParticle, ParticlePool};
+use crate::particle::ParticlePool;
 use crate::math::ForceField;
 use glam::Vec3;
 

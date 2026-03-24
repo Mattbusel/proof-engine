@@ -7,7 +7,7 @@
 pub mod formation;
 pub mod cohesion;
 
-use crate::glyph::{Glyph, GlyphId, RenderLayer};
+use crate::glyph::GlyphId;
 use crate::math::ForceField;
 use glam::{Vec3, Vec4};
 
@@ -92,7 +92,7 @@ impl AmorphousEntity {
     }
 
     /// Advance entity time. Returns true if the entity should be removed (hp <= 0).
-    pub fn tick(&mut self, dt: f32, time: f32) -> bool {
+    pub fn tick(&mut self, dt: f32, _time: f32) -> bool {
         self.age += dt;
         self.update_cohesion();
         self.hp <= 0.0

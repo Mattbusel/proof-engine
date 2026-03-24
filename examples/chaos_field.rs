@@ -84,9 +84,9 @@ fn main() {
         falloff: Falloff::Linear,
     });
 
-    let mut time = 0.0f32;
+    let mut _time = 0.0f32;
     engine.run(move |_engine, dt| {
-        time += dt;
+        _time += dt;
         // As time progresses, entropy increases (simulating corruption)
         // In the full integration, this tracks misery_index from game state
     });

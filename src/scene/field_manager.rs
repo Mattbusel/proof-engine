@@ -2,7 +2,6 @@
 
 use crate::math::ForceField;
 use crate::scene::FieldId;
-use glam::Vec3;
 
 /// A field with an optional time-to-live.
 pub struct ManagedField {

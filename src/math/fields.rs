@@ -58,7 +58,7 @@ pub enum FieldTarget {
 
 impl ForceField {
     /// Compute the force vector applied to a point at `pos` with `mass` and `charge`.
-    pub fn force_at(&self, pos: Vec3, mass: f32, charge: f32, t: f32) -> Vec3 {
+    pub fn force_at(&self, pos: Vec3, mass: f32, charge: f32, _t: f32) -> Vec3 {
         match self {
             ForceField::Gravity { center, strength, falloff } => {
                 let delta = *center - pos;
@@ -101,7 +101,7 @@ impl ForceField {
                 Vec3::ZERO // These fields modify glyph properties, not position
             }
 
-            ForceField::Damping { center, radius, strength } => {
+            ForceField::Damping { center, radius, strength: _ } => {
                 let dist = (pos - *center).length();
                 if dist > *radius { return Vec3::ZERO; }
                 Vec3::ZERO // Damping is applied as velocity reduction in scene tick

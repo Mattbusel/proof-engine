@@ -8,7 +8,6 @@ pub mod mixer;
 pub mod synth;
 pub mod output;
 
-use crate::math::MathFunction;
 use glam::Vec3;
 
 /// An audio event dispatched from game logic to the audio engine.

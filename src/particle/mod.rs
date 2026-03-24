@@ -6,7 +6,7 @@
 pub mod emitters;
 pub mod flock;
 
-use crate::glyph::{Glyph, GlyphId};
+use crate::glyph::Glyph;
 use crate::math::MathFunction;
 use glam::{Vec3, Vec4};
 
