@@ -15,6 +15,8 @@ pub mod dungeon;
 pub mod spawn;
 pub mod names;
 pub mod loot;
+pub mod world;
+pub mod items;
 
 pub use dungeon::{DungeonFloor, Room, Corridor, DungeonTheme};
 pub use spawn::{SpawnTable, SpawnEntry, SpawnResult};

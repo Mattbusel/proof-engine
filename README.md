@@ -1,6 +1,6 @@
 # Proof Engine
 
-A mathematical rendering engine for Rust. 136,000+ lines of fully implemented systems across 177 source files.
+A mathematical rendering engine for Rust. **171,000+ lines of fully implemented systems across 205 source files.**
 
 Every visual is the output of a mathematical function. Every animation is a continuous function over time. Every particle follows a real equation. Characters are rendered as textured quads in 3D space with bloom, distortion, motion blur, and force field physics.
 
@@ -198,38 +198,86 @@ The screen is never still. Every element is a living mathematical function that 
 - Height-field collider: bilinear height sampling, normal query, ray cast with binary-search refinement, AABB intersection
 - Terrain material: multi-layer albedo blending by altitude and slope (grass, rock, snow, sand)
 
-### Character and Game Systems
+### Character and RPG Systems
 
-- Character stats: base/modified stats with modifiers, leveling, stat dependencies
-- Inventory: item slots, weight, stacking, equip/unequip, item rarity and affixes
-- Skill trees: nodes, prerequisites, unlock cost, passive/active skills
-- Quest system: objectives, stages, rewards, tracked quests
-- Achievement system: unlock conditions, progression trees, reward dispatch
-- Save system: versioned WorldSnapshot with EntitySnapshot, SnapshotDiff; SaveManager with slot management; checkpoint/respawn system; JSON-like serialization with Serialize/Deserialize traits
+- Character stats: 40+ stat kinds with (base + flat) × (1 + pct) × mult formula, ModifierRegistry, derived stats (MaxHP, crit, evasion), ResourcePool with regen
+- Inventory: item slots, weight, stacking, equip/unequip, item rarity/affixes, 60+ affix pool, LootTable, CraftingSystem, TradeSystem with reputation pricing
+- Skill trees: SkillNode with prerequisites, SkillBook, 12-slot AbilityBar, CooldownTracker, ComboSystem, preset Warrior/Mage/Rogue/Healer trees
+- Quest system: objectives, stages, rewards, journal, chain quests, procedural kill/collect/escort/explore generation
+- Achievement system: 32 built-in achievements, progression trees, daily/weekly challenge generation, mastery levels
+- Save system: versioned WorldSnapshot with EntitySnapshot, SnapshotDiff; SaveManager with slot management; checkpoint/respawn system
 
-### DSP and Advanced Audio
+### DSP and Signal Processing
 
-- FFT: Cooley-Tukey radix-2 with Hann/Hamming/Blackman windowing
-- Spectral analysis: STFT, spectral centroid, rolloff, flux, onset detection
-- Pitch detection: autocorrelation YIN algorithm
-- Tempo detection: beat tracking
-- Biquad filters (LP/HP/BP/notch), convolution reverb, dynamic range compression
-- Full audio graph: nodes, cables, real-time processing pipeline
+- FFT: Cooley-Tukey radix-2 from scratch; RealFft (half-spectrum), FftPlanner with twiddle-factor cache
+- STFT, CQT, autocorrelation (direct + FFT-accelerated), YIN pitch detection (parabolic interpolation)
+- MFCC: FFT → Mel filterbank → log → DCT-II; Chroma 12-bin pitch class profile; key estimation (Krumhansl-Schmuckler)
+- 20+ window functions: Hann, Hamming, Blackman, Kaiser(β), FlatTop, Nuttall, Gaussian, Bartlett, Welch
+- Digital filters: RBJ biquad cookbook (6 types), Butterworth, Chebyshev type I, Bessel up to order 8; FIR with windowed-sinc + Kaiser equiripple; SVF, comb, allpass, Kalman, PLL
+- Convolution (direct + FFT overlap-add); LUFS metering (BS.1770-4 K-weighting), transient detection, harmonic analyzer, DTW similarity
+
+### Audio Synthesis and Effects
+
+- Synthesis engine: multi-voice oscillators with unison (8 voices), band-limited BLIT, wavetable; ADSR+hold; state-variable TPT filter with keytrack and env mod; ModMatrix (30+ source/dest routes)
+- Polyphony: 32-voice pool with voice stealing (oldest/quietest/same-note), mono+portamento, Arpeggiator, 32-step sequencer with swing, 16-pad drum machine
+- Effects chain: Compressor (RMS/peak, lookahead, sidechain), Limiter (true-peak 4x oversampled), Gate, Parametric EQ (16 bands), Freeverb reverb, Delay (ping-pong, tap-tempo), Chorus, Flanger, Phaser, Distortion (tanh/hard-clip/foldback/bit-crush/tube), Granular pitch shifter, AutoTune
+- Mixer: 64 channels + 8 aux buses + master; automation lanes; VU meters (peak/RMS/LUFS); crossfader with equal-power curve
+
+### Physics Constraints and Simulation
+
+- Constraint solver: ContactConstraint (normal + friction impulses, Baumgarte, warm-starting), DistanceConstraint (rigid rod + soft spring), HingeConstraint (limits, motor), BallSocketConstraint (cone limit), SliderConstraint (prismatic + motor), WeldConstraint (6-DOF), PulleyConstraint, GearConstraint; XPBD substep mode; union-find island detection
+- 3D rigid bodies: position/velocity/orientation (Quat), inv_inertia tensor (Mat3), force/torque accumulator; CollisionShape (Sphere/Box/Capsule/ConvexHull); 15-axis SAT box-box, sphere-box GJK fallback, capsule-capsule; sweep-and-prune broadphase; sleep system with island wake propagation
+- SPH fluids: WCSPH cubic spline kernel, Tait equation, artificial viscosity, Akinci surface tension, CFL adaptive timestep; shallow-water height-field with Gaussian ripples; buoyancy force with Archimedes upthrust and viscous drag
 
 ### ECS (Entity Component System)
 
-- Archetype-based storage: components packed in contiguous arrays per archetype
-- World: entity creation/deletion, component add/remove with archetype migration
-- Query system: typed component access with optional components and filters
-- System schedule: topological ordering, parallel execution groups
-- Change detection: component modification tracking
+- Archetype-based storage: components packed in dense byte arrays per archetype; AnyVec with drop/clone function pointers
+- World: entity creation/deletion, component add/remove with archetype migration; generational EntityAllocator
+- Query system: Read<T>/Write<T>/OptionRead<T> marker types; QueryIter walking archetypes; With/Without filters; change detection (added_ticks/changed_ticks)
+- Commands: deferred spawn/despawn/insert/remove/resource mutations applied via `apply(&mut World)`
+- Events: double-buffered EventWriter/EventReader/EventCursor; Schedule with RunConditions and system labels
 
-### Editor
+### Editor Tools
 
-- Scene hierarchy panel: tree view of all nodes with expand/collapse
-- Inspector panel: per-entity component editing
-- Gizmos: 3D transform handles (translate, rotate, scale) with screen-space hit testing
-- Console: command input with history, output log, autocomplete
+- Scene hierarchy panel: tree view with drag-drop reparent (cycle guard), multi-select, duplicate subtree, visibility/lock toggles, prefab nodes, text serialization round-trip
+- Inspector panel: 14 field types (Bool/Int/Float/String/Vec2/Vec3/Vec4/Color with HSV/Enum/Slider/AssetRef/Script/List/Map), per-group collapsing, search bar, TransformInspector with snap
+- Gizmos: TranslateHandle (3 axes + 3 planes), RotateHandle (arc circles), ScaleHandle (endpoint cubes); BoundingBox (12 edges), LightGizmo, ColliderGizmo (box/sphere/capsule/cylinder), CameraFrustumGizmo, PathGizmo (Catmull-Rom spline), VectorFieldGizmo, MeasurementTool
+- Console: 10K-line ring buffer, 16 built-in commands, history, Tab-autocomplete, expression evaluator (`eval sin(pi*0.5)`), ConsoleSink
+
+### Multiplayer Networking
+
+- Protocol: 22-byte binary header (magic, version, flags, kind, sequence, ack, ack_bits), varint LEB128 encoding, position delta (i16 fixed-point), boolean bit-packing, 64-bit replay-detection sliding window, bandwidth tracker
+- Transport: ReliableUdp with AIMD congestion control, exponential-backoff retransmit (100ms→8s), RTT/jitter EWMA; Fragmenter (MTU=1400), ReorderBuffer; ConnectionManager with keepalive and timeout
+- Sync: delta snapshots with per-field change detection; StateInterpolator (lerp + velocity dead-reckoning); ClientPrediction with rollback+replay reconciliation; LagCompensation with 1s history; NTP-style NetworkClock
+- Lobby: LobbyManager with matchmaking (Elo expanding radius ±50→±500), TeamSystem auto-balance, VoiceChatManager, ReadyCheck; LobbyBrowser with filter/sort
+- RPC: 12 built-in RPCs (chat, damage numbers, camera shake, force field, particle burst, dialogue, etc.), rate limiting per client, RpcBatcher, RpcReplay record/export
+
+### Scripting
+
+- Lua-like scripting language: lexer → parser → AST → compiler → stack VM with closures, upvalues, metatables
+- Full standard library: `math.*` (40+ functions), `string.*` with Lua-style pattern matching, `table.*`, `io.*`, `os.*`, `bit.*`, `pcall/xpcall`, `pairs/ipairs/next/select`
+- Module system: ModuleRegistry with circular-dependency detection (DFS gray/black coloring), `require`, hot-reload watcher, Namespace with dotted-path lookup
+- Debugger: breakpoints (line/function/conditional/exception), step-in/step-over/step-out, LocalInspector, WatchExpression, DebugSession REPL, CoverageTracker (bit-packed per chunk)
+
+### Procedural Generation
+
+- Dungeon: BSP splitter, room placer with L-shaped corridors, cellular cave generation, Wave Function Collapse tile grid with backtracking, maze generators (backtracker/Eller/Prim/Kruskal), DungeonDecorator with enemy/treasure/trap placement
+- World generation: Whittaker biome classification (12 biomes), FBM heightmap with continent mask, climate simulation (latitude + elevation lapse rate + moisture advection), river system (gradient descent + erosion), road network (A* on terrain cost), settlement placement, Markov chain name generation (5 cultures), world history events
+- Procedural items: 60+ affix pool, ItemGenerator with prefix/suffix rolls, 20 unique items, 5 item sets with progressive bonuses, gems/sockets, LootDropper by enemy type and depth
+
+### Game Systems
+
+- Game state machine: DifficultyPreset, GameConfig, pause-aware GameTimer, SessionStats (18 fields), ComboTracker with decay window, HighScoreTable
+- Menu system: 10 fully implemented screens (main/pause/settings/character-select/level-select/load/game-over/victory/credits/loading), key-rebind capture, animated backgrounds
+- Localization: 10 locales with per-language plural rules (EN/FR/RU/AR/CJK), 90+ built-in keys, NumberFormatter, DateTimeFormatter (relative "3 minutes ago"), ANSI colored text, markup parser (`[b]`, `[color:hex]`, `[wave]`, `[rainbow]`)
+
+### Advanced Mathematics
+
+- Numerical methods: 7 root-finding algorithms (bisect/Newton/secant/Brent/Illinois/Muller/fixed-point), 8 quadrature methods (adaptive Simpson, Gauss-Legendre, Romberg, Monte Carlo N-D), ODE solvers (Euler/RK4/RK45 Dormand-Prince/Adams-Bashforth/Verlet)
+- Linear algebra: full Matrix struct with LU decomposition (partial pivoting), Cholesky, QR, power iteration, 2×2 SVD; Gram-Schmidt; cubic spline interpolation; RBF interpolation
+- Computational geometry: 20+ primitive types, Möller-Trumbore ray-triangle, 15-axis OBB SAT, GJK+EPA, Bowyer-Watson Delaunay, Sutherland-Hodgman clipping, Minkowski sum
+- Statistics: 12 distributions (PDF/CDF/inverse CDF/sampling), 6 hypothesis tests, polynomial/ridge/logistic regression, Beta-Bernoulli conjugate Bayesian inference; DTW, KL-divergence, mutual information
+- Simulation: all 256 Wolfram 1D cellular automaton rules, Conway/WireWorld/ForestFire/BriansBrain/LangtonsAnt; Barnes-Hut O(n log n) N-body; Gray-Scott reaction-diffusion (6 presets); SIR/SEIRD epidemiology; Nagel-Schreckenberg traffic CA; IDM
 
 ### Config and Debug
 
