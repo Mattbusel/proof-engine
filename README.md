@@ -1,6 +1,6 @@
 # Proof Engine
 
-A mathematical rendering engine for Rust. 57,000+ lines of fully implemented systems across 108 source files.
+A mathematical rendering engine for Rust. 136,000+ lines of fully implemented systems across 177 source files.
 
 Every visual is the output of a mathematical function. Every animation is a continuous function over time. Every particle follows a real equation. Characters are rendered as textured quads in 3D space with bloom, distortion, motion blur, and force field physics.
 
@@ -85,8 +85,14 @@ The screen is never still. Every element is a living mathematical function that 
 ### Particles
 
 - Pre-allocated particle pool with 13+ mathematical behaviors driven by MathFunctions
+- Full particle system: emitter shapes (sphere, cone, box, disk, ring, torus, mesh surface), particle forces (turbulence, vortex, bounce, orbit, wind blast, point attractor), trail ribbons
+- 30+ EmitterPreset variants: explosion, death, crit burst, loot sparkle, fire burst, smoke puff, electric discharge, blood splatter, ice shatter, poison cloud, teleport flash, shield hit, coin scatter, rain shower, snow fall, confetti, and more
+- Particle templates: fire, smoke, electric spark, plasma, rain, snow — each fully parameterized with color gradients, size curves, drag, and physics flags
+- ContinuousEmitter with burst events, duration limits, LOD particle system (4-tier quality reduction by camera distance)
+- GPU-ready instance buffer export: flat `[position, size, color, velocity, age_frac]` per particle
+- FloatCurve and ColorGradient keyframe systems for per-particle property animation over lifetime
 - Flocking simulation: Craig Reynolds Boids rules extended with leader following, predator flee, obstacle avoidance, altitude bands, turbulence, subgroup formation
-- Emitter presets: explosion, death dissolve, trail, orbit ring, vortex pull, confetti, sparkle, rain, smoke, beam, attractor swarm
+- ParticleLibrary: named effect registry with campfire, explosion, rain shower presets
 
 ### Audio
 
@@ -109,8 +115,16 @@ The screen is never still. Every element is a living mathematical function that 
 ### Scene and World
 
 - Scene graph with typed nodes, parent-child transforms, dirty flags, world-space baking
+- Full transform hierarchy: SceneNode, Transform3D with lerp/inverse/transform_point; node attach/detach, find-by-name, find-by-tag, glyph attachment
+- BVH spatial index: AABB, median-split construction, sphere query, ray query, AABB overlap query
+- Ambient zones: axis-aligned regions with ambient color, fog density, reverb, wind, gravity scale, smooth edge blending
+- Portal system: linked portal pairs for seamless space transitions
+- Layer system: 8 named render/logic layers with per-layer visibility and shadow control
+- Scene events: SceneEventQueue with EntitySpawned/Despawned, GlyphSpawned/Despawned, FieldAdded/Removed, custom events
+- Scene snapshot/diff: serializable scene state with glyph/entity/field position captures and delta comparison
+- Bulk spawn helpers: spawn_glyph_grid, spawn_glyph_ring, despawn_glyphs
 - FieldManager: permanent and TTL fields, fade-in/out curves, tag-based bulk operations, field interference and resonance queries
-- Spawn system: WaveManager driving SpawnWave sequences; SpawnGroup with rate control and delay; 7 SpawnZone types (Point, Box, Sphere, SphereSurface, Disc, Line, Ring, AroundPlayer); 7 SpawnPattern types (Random, Ring, Grid, V-Formation, Line, Burst, Escort); BlueprintLibrary with default enemy set
+- Spawn system: WaveManager driving SpawnWave sequences; SpawnGroup with rate control and delay; 7 SpawnZone types; 7 SpawnPattern types; BlueprintLibrary with default enemy set
 - Effects coordinator: single EffectsController dispatching all postfx from named EffectEvents -- explosion, boss entrance, death, chaos rift, time slow, lightning, screen clear
 
 ### Scripting Engine
@@ -155,6 +169,67 @@ The screen is never still. Every element is a living mathematical function that 
 - Deferred rendering pipeline: G-buffer pass (albedo, normal, roughness, metallic, depth), lighting pass, postfx
 - Pass dependency graph with automatic resource lifetime and barrier insertion
 - Temporal anti-aliasing integration, shadow map passes, ambient occlusion
+
+### PBR and Lighting
+
+- Cook-Torrance BRDF: GGX NDF (D), Smith geometry function (G), Schlick Fresnel (F), full shading loop
+- Area lights: RectLight and DiskLight with irradiance estimation
+- Animated lights: pulse, flicker, strobe, fade, math-driven, color cycle, heartbeat
+- IES light profiles: bilinear-sampled photometric intensity distribution, downlight and uniform presets
+- Cascaded shadow maps: per-cascade view-projection matrices fit to camera frustum slices
+- Image-based lighting: spherical harmonics irradiance (SH9), BRDF integration LUT via Hammersley sampling, `eval_diffuse`, `shade_ibl`
+- Tone mapping: Linear, Reinhard, ACES, Uncharted2, Hejl, Custom
+- Light baking: hemisphere sampling, `bake_plane` with light map bilinear sampling and box blur
+- PbrMaterial: albedo, metallic, roughness, IOR, anisotropy, clearcoat, subsurface scattering
+- Light presets: torch, fluorescent, candle, LED strip, interior, moonlight, neon, cavern
+
+### Terrain
+
+- Heightmap generation: FBM noise, ridge noise, domain warping, caldera, canyon, island presets
+- Hydraulic erosion: droplet simulation with sediment carry, erosion, and deposition
+- Thermal erosion: talus angle and slide rate
+- Biome classification: 12 biome types by altitude, moisture, and temperature
+- Climate simulation: Perlin-based moisture/temperature maps, seasonal factors, vegetation density
+- Vegetation placement: tree skeletons (segments, branching), grass clusters, rock scatter, LOD impostor billboards
+- Terrain LOD: step-based quad mesh chain at multiple resolutions
+- Marching cubes: isosurface extraction from scalar volume with full 256-entry edge/triangle tables
+- Chunk streaming: async-style load queue, LRU cache, visibility set, prefetch scheduler
+- Terrain deformer: paint, flatten, smooth brush, stamp, carve river
+- Height-field collider: bilinear height sampling, normal query, ray cast with binary-search refinement, AABB intersection
+- Terrain material: multi-layer albedo blending by altitude and slope (grass, rock, snow, sand)
+
+### Character and Game Systems
+
+- Character stats: base/modified stats with modifiers, leveling, stat dependencies
+- Inventory: item slots, weight, stacking, equip/unequip, item rarity and affixes
+- Skill trees: nodes, prerequisites, unlock cost, passive/active skills
+- Quest system: objectives, stages, rewards, tracked quests
+- Achievement system: unlock conditions, progression trees, reward dispatch
+- Save system: versioned WorldSnapshot with EntitySnapshot, SnapshotDiff; SaveManager with slot management; checkpoint/respawn system; JSON-like serialization with Serialize/Deserialize traits
+
+### DSP and Advanced Audio
+
+- FFT: Cooley-Tukey radix-2 with Hann/Hamming/Blackman windowing
+- Spectral analysis: STFT, spectral centroid, rolloff, flux, onset detection
+- Pitch detection: autocorrelation YIN algorithm
+- Tempo detection: beat tracking
+- Biquad filters (LP/HP/BP/notch), convolution reverb, dynamic range compression
+- Full audio graph: nodes, cables, real-time processing pipeline
+
+### ECS (Entity Component System)
+
+- Archetype-based storage: components packed in contiguous arrays per archetype
+- World: entity creation/deletion, component add/remove with archetype migration
+- Query system: typed component access with optional components and filters
+- System schedule: topological ordering, parallel execution groups
+- Change detection: component modification tracking
+
+### Editor
+
+- Scene hierarchy panel: tree view of all nodes with expand/collapse
+- Inspector panel: per-entity component editing
+- Gizmos: 3D transform handles (translate, rotate, scale) with screen-space hit testing
+- Console: command input with history, output log, autocomplete
 
 ### Config and Debug
 
@@ -285,11 +360,79 @@ proof-engine/src/
     mod.rs              core network abstractions
   ai/
     mod.rs              high-level AI module coordinator
+    pathfinding.rs      A*, Dijkstra, JPS, hierarchical pathfinding, NavMesh queries
+    navmesh.rs          NavMesh build from geometry, portal graph, string-pulling
+    steering.rs         steering behaviors: seek, flee, pursue, evade, wander, formation
+    flowfield.rs        Dijkstra-based flow field generation and agent integration
     utility.rs          UtilityAI: scored actions, consideration curves, inertia
   render/
     compute/mod.rs      GPU compute pipeline, typed buffers, built-in kernels
     render_graph.rs     deferred G-buffer, pass graph, barrier management
-    lighting.rs         PBR lighting, shadow maps, ambient occlusion, IBL
+    lighting.rs         PBR lighting, area lights, IES, animated lights, CSM, IBL, tone map
+    pbr/
+      brdf.rs           Cook-Torrance BRDF, GGX, Smith, Schlick, IBL, tone mapping
+      atmosphere.rs     atmospheric scattering (Rayleigh + Mie)
+      probe.rs          environment probes, SH irradiance, reflection parallax, light probe grids
+  terrain/
+    heightmap.rs        FBM/ridge/warped noise, hydraulic erosion, thermal erosion
+    biome.rs            12 biome types, climate simulation, seasonal factors
+    vegetation.rs       tree skeletons, grass clusters, rock scatter, impostor billboards
+    streaming.rs        chunk load queue, LRU cache, visibility set, prefetch scheduler
+    mod_types.rs        ChunkCoord, ChunkState, TerrainConfig, TerrainChunk
+    mod.rs              TerrainManager, TerrainCollider, material layers, marching cubes
+  ecs/
+    mod.rs              archetype-based ECS world
+    entity.rs           entity IDs and generation counters
+    storage.rs          component column storage
+    query.rs            typed query iteration with filters
+    schedule.rs         system topological ordering and parallel groups
+  dsp/
+    mod.rs              FFT, STFT, spectral analysis, pitch/tempo detection
+  render/pbr/
+    brdf.rs             full BRDF library (D, G, F terms), IBL, tone mapping
+  character/
+    stats.rs            base/modified stats, modifiers, leveling
+    inventory.rs        items, slots, weight, rarity, affixes
+    skills.rs           skill trees, prerequisites, passive/active skills
+    quests.rs           objectives, stages, rewards
+  game/
+    mod.rs              GameManager, state machine, score, session stats, timers
+    achievements.rs     unlock trees, progression nodes, reward dispatch
+    localization.rs     string table, locale switching, format templates
+    menu.rs             menu screen stack, transitions, settings UI
+  editor/
+    gizmos.rs           3D transform gizmos with screen-space hit testing
+    inspector.rs        per-component property editor
+    hierarchy.rs        scene node tree view
+    console.rs          command input, history, autocomplete
+  save/
+    serializer.rs       SerializedValue, Serialize/Deserialize traits
+    snapshot.rs         WorldSnapshot, EntitySnapshot, SnapshotDiff
+    format.rs           SaveFile, SaveHeader, SaveManager, slot management
+    checkpoint.rs       Checkpoint, CheckpointManager, RespawnSystem
+  math/
+    simulation.rs       N-body simulation, octree, Barnes-Hut, fluid grids
+    geometry.rs         convex hull, polygon clipping, CSG, distance queries
+    statistics.rs       descriptive stats, distributions, hypothesis tests
+    numerical.rs        Newton-Raphson, bisection, RK4, matrix decompositions
+  scene/
+    bvh.rs              BVH construction, sphere/ray/AABB spatial queries
+    query.rs            RaycastHit, FrustumQuery, frustum plane extraction
+    events.rs           SceneEventQueue, EventKind
+    field_manager.rs    FieldManager: TTL, fade, tags, interference queries
+    mod.rs              SceneGraph: hierarchy, portals, zones, layers, events
+    node.rs             typed scene nodes, parent-child transforms
+    spawn_system.rs     WaveManager, SpawnZone, SpawnPattern, BlueprintLibrary
+  particle/
+    mod.rs              full particle system: shapes, forces, trails, LOD, GPU export
+    emitters.rs         30+ preset emitters: explosion, fire, smoke, electric, rain, snow
+    flock.rs            full Boids flocking + leader/predator/obstacle
+  physics/
+    rigid_body.rs       rigid body 2D/3D, AABB, SAT, impulse resolution, friction
+    constraints.rs      distance/hinge/prismatic/spring constraints
+    joints.rs           joint solver, ragdoll, sequential impulses
+    fluid.rs            Navier-Stokes Eulerian grid fluid
+    soft_body.rs        mass-spring deformable body simulation
   integration.rs        ProofGame trait -- game-to-engine contract
   lib.rs                ProofEngine, prelude, public API
 ```
@@ -370,10 +513,10 @@ Requires Rust stable. OpenGL 3.3 Core context. Tested on Windows 11 with MSVC to
 
 ## Stats
 
-- 57,000+ lines of Rust across 108 source files
+- 136,000+ lines of Rust across 177 source files
 - Zero stubs — every function is fully implemented
 - Compiles clean with no errors
-- 10 major system tiers: rendering, math, physics, audio, AI, scripting, networking, animation, combat, tooling
+- 15+ major system tiers: rendering, math, physics, audio, AI, scripting, networking, animation, combat, terrain, ECS, DSP, PBR, editor, character/game systems
 
 ## License
 
