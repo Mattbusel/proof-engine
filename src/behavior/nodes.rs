@@ -723,39 +723,42 @@ pub fn random_selector(name: &str, mut children: Vec<BehaviorNode>) -> BehaviorN
                 bb.set(ek.as_str(), true);
             }
         })),
-        on_tick: Box::new(move |bb: &mut Blackboard, dt: f32| {
-            let reg = SubtreeRegistry::new();
-            loop {
-                let cursor = bb.get_int(&cursor_key).unwrap_or(0) as usize;
-                if cursor >= n {
-                    return NodeStatus::Failure;
-                }
-                // Get the shuffled index for current cursor position.
-                let child_idx = match bb.get(&order_key) {
-                    Some(BlackboardValue::List(list)) => {
-                        list.get(cursor)
-                            .and_then(|v| v.as_int())
-                            .unwrap_or(cursor as i64) as usize
+        on_tick: Box::new({
+            let order_key_tick = order_key.clone();
+            let cursor_key_tick = cursor_key.clone();
+            move |bb: &mut Blackboard, dt: f32| {
+                let reg = SubtreeRegistry::new();
+                loop {
+                    let cursor = bb.get_int(&cursor_key_tick).unwrap_or(0) as usize;
+                    if cursor >= n {
+                        return NodeStatus::Failure;
                     }
-                    _ => cursor,
-                };
+                    let child_idx = match bb.get(&order_key_tick) {
+                        Some(BlackboardValue::List(list)) => {
+                            list.get(cursor)
+                                .and_then(|v| v.as_int())
+                                .unwrap_or(cursor as i64) as usize
+                        }
+                        _ => cursor,
+                    };
 
-                if child_idx >= n { return NodeStatus::Failure; }
+                    if child_idx >= n { return NodeStatus::Failure; }
 
-                let status = children[child_idx].tick(dt, bb, &reg);
-                match status {
-                    NodeStatus::Success => return NodeStatus::Success,
-                    NodeStatus::Failure => {
-                        bb.set(cursor_key.as_str(), (cursor + 1) as i64);
+                    let status = children[child_idx].tick(dt, bb, &reg);
+                    match status {
+                        NodeStatus::Success => return NodeStatus::Success,
+                        NodeStatus::Failure => {
+                            bb.set(cursor_key_tick.as_str(), (cursor + 1) as i64);
+                        }
+                        NodeStatus::Running => return NodeStatus::Running,
                     }
-                    NodeStatus::Running => return NodeStatus::Running,
                 }
             }
         }),
         on_exit: Some(Box::new({
-            let ok = order_key.clone();
-            let ck = cursor_key.clone();
-            let ek = entered_key.clone();
+            let ok = order_key;
+            let ck = cursor_key;
+            let ek = entered_key;
             move |bb: &mut Blackboard, _: NodeStatus| {
                 bb.remove(ok.as_str());
                 bb.remove(ck.as_str());

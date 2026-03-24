@@ -9,12 +9,12 @@ use glam::{Vec2, Vec3};
 // ── Seeded RNG (xoshiro256** — no external deps) ──────────────────────────────
 
 #[derive(Clone, Debug)]
-struct Rng {
+pub struct Rng {
     state: [u64; 4],
 }
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         let mut s = seed;
         let mut next = || {
             s = s.wrapping_add(0x9e3779b97f4a7c15);
@@ -50,6 +50,11 @@ impl Rng {
 
     fn next_usize(&mut self, n: usize) -> usize {
         (self.next_u64() % n as u64) as usize
+    }
+
+    pub fn next_i32_range(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo { return lo; }
+        lo + (self.next_u64() % (hi - lo) as u64) as i32
     }
 }
 
@@ -150,6 +155,17 @@ impl HeightMap {
         } else {
             0.0
         }
+    }
+
+    /// Compute slope magnitude at (x, y) using central differences.
+    pub fn slope_at(&self, x: usize, y: usize) -> f32 {
+        let xl = if x > 0 { x - 1 } else { x };
+        let xr = if x + 1 < self.width { x + 1 } else { x };
+        let yd = if y > 0 { y - 1 } else { y };
+        let yu = if y + 1 < self.height { y + 1 } else { y };
+        let dx = self.get(xr, y) - self.get(xl, y);
+        let dy = self.get(x, yu) - self.get(x, yd);
+        (dx * dx + dy * dy).sqrt()
     }
 
     /// Set height at integer coordinates. No-op if out-of-bounds.
