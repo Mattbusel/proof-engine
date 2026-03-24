@@ -21,6 +21,7 @@ pub mod soft_body;
 pub mod rigid_body;
 pub mod constraints;
 pub mod joints;
+pub mod fluids;
 
 pub use joints::{Joint, JointType, Ragdoll, RagdollBone, CharacterController, JointSolver};
 
