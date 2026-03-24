@@ -13,8 +13,10 @@ pub struct GlyphUv {
     pub u1: f32, pub v1: f32,
 }
 impl GlyphUv {
-    pub fn offset(&self) -> [f32; 2] { [self.u0, self.v0] }
-    pub fn size(&self)   -> [f32; 2] { [self.u1 - self.u0, self.v1 - self.v0] }
+    /// Returns UV offset. U is flipped (starts at u1) so that the glyph reads
+    /// correctly when rendered with look_at_rh from +Z (which mirrors world X).
+    pub fn offset(&self) -> [f32; 2] { [self.u1, self.v0] }
+    pub fn size(&self)   -> [f32; 2] { [self.u0 - self.u1, self.v1 - self.v0] }
 }
 
 /// The characters the engine can render.
