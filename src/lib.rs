@@ -33,6 +33,7 @@ pub mod particle;
 pub mod scene;
 pub mod render;
 pub mod audio;
+pub mod integration;
 pub mod input;
 pub mod config;
 
