@@ -717,7 +717,7 @@ impl EffectPreset for LightningArcEffect {
     fn duration(&self) -> Option<f32> { Some(0.5 * self.strike_count as f32) }
 
     fn build_emitters(&self) -> Vec<EmitterConfig> {
-        let mid = (self.start + self.end) * 0.5;
+        let _mid = (self.start + self.end) * 0.5;
         let len = (self.end - self.start).length();
 
         // Ionisation mist along the arc path

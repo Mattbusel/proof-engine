@@ -1,5 +1,30 @@
 //! Visual effects system: decals, trails, impact splats, ribbon renderers,
-//! screen-space effects, and procedural destruction visuals.
+//! screen-space effects, procedural destruction visuals, particle emitters,
+//! effect presets and force fields.
+
+pub mod emitter;
+pub mod effects;
+pub mod forces;
+
+pub use emitter::{
+    Emitter, EmitterConfig, EmitterPool, EmitterBuilder, EmitterShape,
+    SpawnMode, SpawnCurve, VelocityMode, ColorOverLifetime, SizeOverLifetime,
+    LodController, LodLevel, EmitterTransformAnim, TransformKeyframe,
+    Particle, ParticleTag, lcg_f32, lcg_range, lcg_next,
+};
+pub use effects::{
+    EffectPreset, EffectRegistry,
+    ExplosionEffect, FireEffect, SmokeEffect, SparksEffect, BloodSplatterEffect,
+    MagicAuraEffect, MagicElement, PortalSwirlEffect, LightningArcEffect,
+    WaterSplashEffect, DustCloudEffect,
+};
+pub use forces::{
+    ForceField, ForceFieldId, ForceFieldKind, ForceFieldWorld, ForceComposite,
+    ForceBlendMode, ForcePresets, FalloffMode, TagMask,
+    GravityWell, VortexField, TurbulenceField, WindZone,
+    AttractorRepulsor, AttractorMode, DragField, BuoyancyField,
+    ForceDebugSample,
+};
 
 use glam::{Vec2, Vec3, Vec4, Mat4, Quat};
 use std::collections::HashMap;

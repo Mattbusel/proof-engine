@@ -765,42 +765,55 @@ impl Emitter {
 
     fn spawn_one(&mut self, spawn_normal_hint: Vec3) {
         if self.particles.len() >= self.config.max_particles { return; }
+
+        // Allocate particle ID before borrowing rng
+        let particle_id = self.alloc_id();
+        let emitter_id  = self.id;
+        let position    = self.position;
+        let rotation    = self.rotation;
+        let scale       = self.scale;
+        let velocity    = self.velocity;
+        let world_space = self.config.world_space;
+        let inherit_vel = self.config.inherit_velocity;
+        let lod_size    = self.lod.size_scale();
+
         let rng = &mut self.rng;
         let (local_pos, normal) = self.config.shape.sample(rng);
         let effective_normal = if normal.length_squared() > 0.5 { normal } else { spawn_normal_hint };
-        let world_pos = if self.config.world_space {
-            self.position + self.rotation * (local_pos * self.scale)
+        let world_pos = if world_space {
+            position + rotation * (local_pos * scale)
         } else {
             local_pos
         };
         let vel = self.config.velocity_mode.sample(local_pos, effective_normal, rng);
-        let world_vel = if self.config.world_space {
-            self.rotation * vel + self.velocity * self.config.inherit_velocity
+        let world_vel = if world_space {
+            rotation * vel + velocity * inherit_vel
         } else {
             vel
         };
 
-        let lod_size = self.lod.size_scale();
         let lifetime  = lcg_range(rng, self.config.lifetime_min, self.config.lifetime_max);
         let size      = lcg_range(rng, self.config.size_min, self.config.size_max) * lod_size;
         let mass      = lcg_range(rng, self.config.mass_min, self.config.mass_max);
         let ang_vel   = lcg_range(rng, self.config.angular_vel_min, self.config.angular_vel_max);
-        let id        = self.alloc_id();
+        let spin      = lcg_f32(rng) * std::f32::consts::TAU;
+        let color0    = self.config.color_over_life.sample(0.0);
+        let tag       = self.config.tag;
 
         self.particles.push(Particle {
-            id,
+            id:           particle_id,
             position:     world_pos,
             velocity:     world_vel,
             acceleration: Vec3::ZERO,
-            color:        self.config.color_over_life.sample(0.0),
+            color:        color0,
             size,
-            rotation:     lcg_f32(rng) * std::f32::consts::TAU,
+            rotation:     spin,
             angular_vel:  ang_vel,
             age:          0.0,
             lifetime,
             mass,
-            tag:          self.config.tag,
-            emitter_id:   self.id,
+            tag,
+            emitter_id,
             custom:       [0.0; 4],
         });
     }
