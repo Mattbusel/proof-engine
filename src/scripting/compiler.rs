@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use super::ast::*;
+use super::vm::Value as VmValue;
 
 // ── Constant pool ─────────────────────────────────────────────────────────────
 
@@ -269,21 +270,32 @@ pub enum Instruction {
 pub struct Chunk {
     pub name:         String,
     pub instructions: Vec<Instruction>,
-    pub constants:    Vec<Constant>,
+    pub constants:    Vec<VmValue>,
     pub sub_chunks:   Vec<Arc<Chunk>>,
     pub param_count:  u8,
     pub is_vararg:    bool,
+}
+
+fn const_to_value(c: &Constant) -> VmValue {
+    match c {
+        Constant::Nil      => VmValue::Nil,
+        Constant::Bool(b)  => VmValue::Bool(*b),
+        Constant::Int(i)   => VmValue::Int(*i),
+        Constant::Float(f) => VmValue::Float(*f),
+        Constant::Str(s)   => VmValue::Str(Arc::new(s.clone())),
+    }
 }
 
 fn proto_to_chunk(proto: &Proto) -> Arc<Chunk> {
     let instructions = proto.code.iter()
         .map(|op| op_to_instruction(op, &proto.constants))
         .collect();
+    let constants = proto.constants.iter().map(const_to_value).collect();
     let sub_chunks = proto.protos.iter().map(proto_to_chunk).collect();
     Arc::new(Chunk {
         name:         proto.name.clone(),
         instructions,
-        constants:    proto.constants.clone(),
+        constants,
         sub_chunks,
         param_count:  proto.param_count,
         is_vararg:    proto.is_vararg,
