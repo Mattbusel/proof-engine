@@ -69,11 +69,6 @@ pub mod pathfinding;
 pub mod economy;
 pub mod behavior;
 pub mod weather;
-pub mod rendergraph;
-pub mod compute;
-pub mod shader_graph;
-pub mod lighting;
-pub mod surfaces;
 pub mod deferred;
 
 pub use config::EngineConfig;
