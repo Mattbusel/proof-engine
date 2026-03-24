@@ -128,18 +128,16 @@ void main() {
 // ── Unit quad geometry ─────────────────────────────────────────────────────────
 
 /// Unit quad: 6 vertices (2 CCW triangles), each: [pos_x, pos_y, uv_x, uv_y]
-///
-/// UV corrections for the engine's coordinate system:
-///   U flipped (1→0 left-to-right): look_at_rh from +Z maps +X to screen left
-///   V flipped (0→1 top-to-bottom): ab_glyph row 0 = top, but GL tex row 0 = bottom
+/// U flipped (1→0 left-to-right) to compensate for look_at_rh X mirror.
+/// V is standard (0=bottom, 1=top) — atlas pixels are flipped at upload time.
 #[rustfmt::skip]
 const QUAD_VERTS: [f32; 24] = [
-    -0.5,  0.5,  1.0, 0.0,   // top-left:     u=1(right of char), v=0(top of char)
-    -0.5, -0.5,  1.0, 1.0,   // bottom-left:  u=1, v=1(bottom of char)
-     0.5,  0.5,  0.0, 0.0,   // top-right:    u=0(left of char), v=0
-    -0.5, -0.5,  1.0, 1.0,   // bottom-left
-     0.5, -0.5,  0.0, 1.0,   // bottom-right: u=0, v=1
-     0.5,  0.5,  0.0, 0.0,   // top-right
+    -0.5,  0.5,  1.0, 1.0,
+    -0.5, -0.5,  1.0, 0.0,
+     0.5,  0.5,  0.0, 1.0,
+    -0.5, -0.5,  1.0, 0.0,
+     0.5, -0.5,  0.0, 0.0,
+     0.5,  0.5,  0.0, 1.0,
 ];
 
 // ── FrameStats ─────────────────────────────────────────────────────────────────
@@ -706,11 +704,21 @@ unsafe fn upload_atlas(gl: &glow::Context, atlas: &FontAtlas) -> glow::Texture {
     let tex = gl.create_texture().expect("create atlas texture");
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+    // Flip rows vertically: ab_glyph rasterizes row 0 = top of glyph,
+    // but OpenGL tex_image_2d treats row 0 = bottom of texture.
+    let w = atlas.width as usize;
+    let h = atlas.height as usize;
+    let mut flipped = vec![0u8; w * h];
+    for row in 0..h {
+        let src_start = row * w;
+        let dst_start = (h - 1 - row) * w;
+        flipped[dst_start..dst_start + w].copy_from_slice(&atlas.pixels[src_start..src_start + w]);
+    }
     gl.tex_image_2d(
         glow::TEXTURE_2D, 0, glow::R8 as i32,
         atlas.width as i32, atlas.height as i32,
         0, glow::RED, glow::UNSIGNED_BYTE,
-        Some(&atlas.pixels),
+        Some(&flipped),
     );
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
