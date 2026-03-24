@@ -44,6 +44,7 @@ pub use particle::{MathParticle, ParticleInteraction};
 pub use scene::SceneGraph;
 pub use render::camera::ProofCamera;
 pub use input::InputState;
+pub use audio::AudioEvent;
 
 /// The main engine struct. Create once, run forever.
 pub struct ProofEngine {
@@ -51,18 +52,33 @@ pub struct ProofEngine {
     pub scene: SceneGraph,
     pub camera: ProofCamera,
     pub input: InputState,
+    /// Optional audio engine — None if no output device is available.
+    pub audio: Option<audio::AudioEngine>,
     // Internal render pipeline (initialized lazily when run() is called)
     pipeline: Option<render::Pipeline>,
 }
 
 impl ProofEngine {
     pub fn new(config: EngineConfig) -> Self {
+        let audio = if config.audio.enabled {
+            audio::AudioEngine::try_new()
+        } else {
+            None
+        };
         Self {
             camera: ProofCamera::new(&config),
             scene: SceneGraph::new(),
             input: InputState::new(),
+            audio,
             config,
             pipeline: None,
+        }
+    }
+
+    /// Send an audio event. No-op if audio is unavailable.
+    pub fn emit_audio(&self, event: audio::AudioEvent) {
+        if let Some(ref a) = self.audio {
+            a.emit(event);
         }
     }
 
@@ -119,8 +135,37 @@ impl ProofEngine {
         self.scene.spawn_glyph(glyph)
     }
 
-    /// Spawn an amorphous entity.
-    pub fn spawn_entity(&mut self, entity: AmorphousEntity) -> entity::EntityId {
+    /// Spawn an amorphous entity, creating its formation glyphs.
+    pub fn spawn_entity(&mut self, mut entity: AmorphousEntity) -> entity::EntityId {
+        // If no formation was specified, generate a default diamond
+        if entity.formation.is_empty() {
+            use entity::formation::Formation;
+            let f = Formation::diamond(2);
+            entity.formation = f.positions;
+            entity.formation_chars = f.chars;
+        }
+        // Ensure colors are filled (white if unspecified)
+        while entity.formation_colors.len() < entity.formation.len() {
+            entity.formation_colors.push(glam::Vec4::ONE);
+        }
+        // Spawn one glyph per formation slot
+        for i in 0..entity.formation.len() {
+            let offset = entity.formation[i];
+            let ch = entity.formation_chars.get(i).copied().unwrap_or('◆');
+            let color = entity.formation_colors.get(i).copied().unwrap_or(glam::Vec4::ONE);
+            let id = self.scene.spawn_glyph(Glyph {
+                character: ch,
+                position: entity.position + offset,
+                color,
+                emission: 0.8,
+                glow_color: glam::Vec3::new(color.x, color.y, color.z),
+                glow_radius: 1.2,
+                mass: entity.entity_mass / entity.formation.len().max(1) as f32,
+                layer: RenderLayer::Entity,
+                ..Default::default()
+            });
+            entity.glyph_ids.push(id);
+        }
         self.scene.spawn_entity(entity)
     }
 
@@ -143,10 +188,12 @@ pub mod prelude {
         Glyph, RenderLayer, BlendMode,
         AmorphousEntity,
         MathParticle, ParticleInteraction,
+        AudioEvent,
         particle::EmitterPreset,
         render::camera::ProofCamera,
         input::InputState,
         scene::{SceneGraph, FieldId},
+        audio::MusicVibe,
     };
     pub use glam::{Vec2, Vec3, Vec4};
 }
