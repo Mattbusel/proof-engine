@@ -356,7 +356,14 @@ fn field_center(field: &ForceField) -> Option<Vec3> {
         FF::StrangeAttractor { center, .. }=> Some(*center),
         FF::EntropyField { center, .. }   => Some(*center),
         FF::Damping { center, .. }        => Some(*center),
-        FF::Flow { .. }                   => None,
+        FF::Flow { .. }          => None,
+        FF::Pulsing { center, .. }       => Some(*center),
+        FF::Shockwave { center, .. }     => Some(*center),
+        FF::Warp { center, .. }          => Some(*center),
+        FF::Tidal { center, .. }         => Some(*center),
+        FF::MagneticDipole { center, .. }=> Some(*center),
+        FF::Saddle { center, .. }        => Some(*center),
+        FF::Wind { .. }                  => None,
     }
 }
 
