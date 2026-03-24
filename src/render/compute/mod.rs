@@ -16,6 +16,10 @@ use std::collections::HashMap;
 
 // ── GpuBufferId ───────────────────────────────────────────────────────────────
 
+/// Resource handle used by render_graph.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceHandle(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BufferId(pub u32);
 
