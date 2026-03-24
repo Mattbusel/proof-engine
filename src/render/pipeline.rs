@@ -128,16 +128,18 @@ void main() {
 // ── Unit quad geometry ─────────────────────────────────────────────────────────
 
 /// Unit quad: 6 vertices (2 CCW triangles), each: [pos_x, pos_y, uv_x, uv_y]
-/// UV X is flipped (1.0 at left, 0.0 at right) because look_at_rh from +Z
-/// maps world +X to screen LEFT. Flipping U compensates so characters read correctly.
+///
+/// UV corrections for the engine's coordinate system:
+///   U flipped (1→0 left-to-right): look_at_rh from +Z maps +X to screen left
+///   V flipped (0→1 top-to-bottom): ab_glyph row 0 = top, but GL tex row 0 = bottom
 #[rustfmt::skip]
 const QUAD_VERTS: [f32; 24] = [
-    -0.5,  0.5,  1.0, 1.0,
-    -0.5, -0.5,  1.0, 0.0,
-     0.5,  0.5,  0.0, 1.0,
-    -0.5, -0.5,  1.0, 0.0,
-     0.5, -0.5,  0.0, 0.0,
-     0.5,  0.5,  0.0, 1.0,
+    -0.5,  0.5,  1.0, 0.0,   // top-left:     u=1(right of char), v=0(top of char)
+    -0.5, -0.5,  1.0, 1.0,   // bottom-left:  u=1, v=1(bottom of char)
+     0.5,  0.5,  0.0, 0.0,   // top-right:    u=0(left of char), v=0
+    -0.5, -0.5,  1.0, 1.0,   // bottom-left
+     0.5, -0.5,  0.0, 1.0,   // bottom-right: u=0, v=1
+     0.5,  0.5,  0.0, 0.0,   // top-right
 ];
 
 // ── FrameStats ─────────────────────────────────────────────────────────────────
