@@ -1,6 +1,9 @@
 # Proof Engine
 
-A mathematical rendering engine for Rust. **221,000+ lines of fully implemented systems across 248 source files.**
+A mathematical rendering engine for Rust. **262,000+ lines of fully implemented systems across 283 source files.**
+
+[![Crates.io](https://img.shields.io/crates/v/proof-engine)](https://crates.io/crates/proof-engine)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > Compiles clean on `cargo check` with zero errors.
 
