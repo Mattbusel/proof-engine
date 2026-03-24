@@ -15,16 +15,16 @@ use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext,
                       PossiblyCurrentContext, Version};
 use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
-use glutin_winit::DisplayBuilder;
+use glutin::surface::{GlSurface, Surface, WindowSurface};
+use glutin_winit::{DisplayBuilder, GlWindow};
 use glow::HasContext;
-use raw_window_handle::HasRawWindowHandle;
+use raw_window_handle::HasWindowHandle;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
-use winit::window::{Window, WindowBuilder};
+use winit::window::Window;
 use glam::{Mat4, Vec3};
 use bytemuck::cast_slice;
 
@@ -145,8 +145,7 @@ impl Pipeline {
         let event_loop = EventLoop::new().expect("EventLoop::new");
 
         // ── 2. Window + GL config via glutin-winit DisplayBuilder ────────────
-        // Note: pass ConfigTemplateBuilder directly (not built ConfigTemplate)
-        let window_builder = WindowBuilder::new()
+        let window_attrs = Window::default_attributes()
             .with_title(&config.window_title)
             .with_inner_size(LogicalSize::new(config.window_width, config.window_height))
             .with_resizable(true);
@@ -155,7 +154,7 @@ impl Pipeline {
             .with_alpha_size(8)
             .with_depth_size(0);
 
-        let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
+        let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attrs));
 
         let (window, gl_config) = display_builder
             .build(&event_loop, template, |mut configs| {
@@ -168,9 +167,10 @@ impl Pipeline {
         let display = gl_config.display();
 
         // ── 3. GL context (OpenGL 3.3 Core) ──────────────────────────────────
+        let raw_handle = window.window_handle().unwrap().as_raw();
         let ctx_attrs = ContextAttributesBuilder::new()
             .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
-            .build(Some(window.raw_window_handle()));
+            .build(Some(raw_handle));
 
         let not_current = unsafe {
             display
@@ -180,11 +180,9 @@ impl Pipeline {
 
         // ── 4. Window surface ─────────────────────────────────────────────────
         let size = window.inner_size();
-        let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            window.raw_window_handle(),
-            NonZeroU32::new(size.width.max(1)).unwrap(),
-            NonZeroU32::new(size.height.max(1)).unwrap(),
-        );
+        let surface_attrs = window
+            .build_surface_attributes(Default::default())
+            .expect("build_surface_attributes");
         let surface = unsafe {
             display
                 .create_window_surface(&gl_config, &surface_attrs)

@@ -13,11 +13,11 @@ readme = "README.md"
 
 [dependencies]
 # OpenGL / windowing — glutin-winit bridges the two and handles version alignment
-glutin     = "0.31"
-glutin-winit = "0.4"
+glutin     = "0.32"
+glutin-winit = "0.5"
 glow       = "0.13"
-winit      = { version = "0.29", features = ["rwh_05"] }
-raw-window-handle = "0.5"
+winit      = "0.30"
+raw-window-handle = "0.6"
 
 # Math
 glam  = "0.25"
