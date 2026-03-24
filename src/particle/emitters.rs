@@ -34,6 +34,52 @@ pub fn emit_preset(pool: &mut ParticlePool, preset: EmitterPreset, origin: Vec3)
             emit_room_ambient(pool, origin, room_type_id)
         }
         EmitterPreset::BossEntrance { boss_id } => emit_boss_entrance(pool, origin, boss_id),
+        EmitterPreset::FireBurst { intensity } => {
+            emit_death(pool, origin, Vec4::new(1.0, 0.5 * intensity, 0.0, 1.0));
+        }
+        EmitterPreset::SmokePuff => {
+            emit_loot_sparkle(pool, origin, Vec4::new(0.4, 0.4, 0.4, 0.6));
+        }
+        EmitterPreset::ElectricDischarge { color } => {
+            emit_crit_burst(pool, origin);
+            emit_hit_sparks(pool, origin, color, 12);
+        }
+        EmitterPreset::BloodSplatter { color, count } => {
+            emit_hit_sparks(pool, origin, color, count);
+        }
+        EmitterPreset::IceShatter => {
+            emit_hit_sparks(pool, origin, Vec4::new(0.5, 0.8, 1.0, 1.0), 16);
+        }
+        EmitterPreset::PoisonCloud => {
+            emit_loot_sparkle(pool, origin, Vec4::new(0.2, 0.8, 0.1, 0.7));
+        }
+        EmitterPreset::TeleportFlash { color } => {
+            emit_death(pool, origin, color);
+            emit_crit_burst(pool, origin);
+        }
+        EmitterPreset::ShieldHit { shield_color } => {
+            emit_crit_burst(pool, origin);
+            emit_hit_sparks(pool, origin, shield_color, 8);
+        }
+        EmitterPreset::CoinScatter { count } => {
+            emit_hit_sparks(pool, origin, Vec4::new(1.0, 0.85, 0.0, 1.0), count);
+        }
+        EmitterPreset::RubbleDebris { count } => {
+            emit_hit_sparks(pool, origin, Vec4::new(0.5, 0.4, 0.3, 1.0), count);
+        }
+        EmitterPreset::RainShower => {
+            emit_level_up(pool, origin);
+        }
+        EmitterPreset::SnowFall => {
+            emit_level_up(pool, origin);
+        }
+        EmitterPreset::ConfettiBurst => {
+            emit_death(pool, origin, Vec4::new(1.0, 0.2, 0.8, 1.0));
+        }
+        EmitterPreset::Custom { template: _, count, shape: _ } => {
+            // Custom emitters are handled by ParticleSystem::burst directly
+            let _ = count;
+        }
     }
 }
 
@@ -163,6 +209,7 @@ fn emit_gravitational_collapse(
             trail_length: 4,
             trail_decay: 0.6,
             interaction: ParticleInteraction::None,
+            ..Default::default()
         });
     }
 }
@@ -194,6 +241,7 @@ fn emit_spell_stream(pool: &mut ParticlePool, origin: Vec3, color: Vec4) {
             interaction: ParticleInteraction::Flock {
                 alignment: 0.8, cohesion: 0.5, separation: 0.3, radius: 2.0,
             },
+            ..Default::default()
         });
     }
 }
@@ -223,6 +271,7 @@ fn emit_heal_spiral(pool: &mut ParticlePool, origin: Vec3) {
             trail_length: 6,
             trail_decay: 0.4,
             interaction: ParticleInteraction::Chain(1.5),
+            ..Default::default()
         });
     }
 }
@@ -394,5 +443,6 @@ fn make_particle(
         trail_length: 0,
         trail_decay: 0.5,
         interaction: ParticleInteraction::None,
+        ..Default::default()
     }
 }

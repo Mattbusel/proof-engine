@@ -112,40 +112,10 @@ impl<T: Component> ComponentStorage<T> {
 
     /// Remove the component for `entity`. Returns it if present.
     pub fn remove(&mut self, entity: Entity) -> Option<T> {
-        let id = entity.id() as usize;
-        if id >= self.sparse.len() {
-            return None;
-        }
-        let dense_idx = self.sparse[id].take()?;
-
-        // Swap-remove from dense arrays to keep them packed.
-        let last_idx = self.dense.len() - 1;
-        if dense_idx != last_idx {
-            let moved_entity = self.entities[last_idx];
-            self.sparse[moved_entity.id() as usize] = Some(dense_idx);
-            self.entities.swap(dense_idx, last_idx);
-            self.added_ticks.swap(dense_idx, last_idx);
-            self.changed_ticks.swap(dense_idx, last_idx);
-            self.dense.swap(dense_idx, last_idx);
-        }
-        self.dense.pop();
-        self.entities.pop();
-        self.added_ticks.pop();
-        self.changed_ticks.pop();
-
-        // We already swap-removed from dense; now return the value.
-        // The removed value ended up at last_idx position before pop.
-        // After swap it's at last position, then pop removes it.
-        // We need to return it — use unsafe-free trick: reconstruct.
-        // Actually swap already moved it to dense_idx, then swap again moved
-        // the original to last. After pop... we lost it.
-        // Let's use a different approach: remove properly.
-        // Redo with proper extraction:
-        None // placeholder — see below
+        self.remove_and_return(entity)
     }
 
     /// Remove the component for `entity`. Returns it if present.
-    /// (Correct implementation — replaces the placeholder above.)
     pub fn remove_and_return(&mut self, entity: Entity) -> Option<T> {
         let id = entity.id() as usize;
         if id >= self.sparse.len() {
@@ -268,11 +238,8 @@ impl<T: Component> ComponentStorage<T> {
         let new_added: Vec<u64> = indices.iter().map(|&i| self.added_ticks[i]).collect();
         let new_changed: Vec<u64> = indices.iter().map(|&i| self.changed_ticks[i]).collect();
 
-        // For dense (non-Copy T), we need unsafe or a swap dance.
-        // Use index-based swap permutation.
-        let mut permuted_dense: Vec<T> = Vec::with_capacity(self.dense.len());
-        // We'll drain and rebuild — safe but requires T: Default or use unsafe.
-        // Instead use a swap permutation with a "placed" bitset.
+        // Apply the permutation to self.dense using a swap-cycle approach.
+        // This works in-place without requiring T: Default or Clone.
         let mut placed = vec![false; self.dense.len()];
         for start in 0..self.dense.len() {
             if placed[start] { continue; }

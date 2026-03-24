@@ -9,8 +9,41 @@ pub mod flock;
 
 use crate::glyph::{Glyph, RenderLayer};
 use crate::math::{MathFunction, ForceField, Falloff, AttractorType};
+use crate::math::fields::falloff_factor;
 use glam::{Vec2, Vec3, Vec4, Mat4};
 use std::collections::HashMap;
+
+// ─── Particle flags ───────────────────────────────────────────────────────────
+
+/// Bitfield of particle feature flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParticleFlags(pub u32);
+
+impl ParticleFlags {
+    pub const COLLIDES:           Self = ParticleFlags(0x0001);
+    pub const GRAVITY:            Self = ParticleFlags(0x0002);
+    pub const AFFECTED_BY_FIELDS: Self = ParticleFlags(0x0004);
+    pub const EMIT_ON_DEATH:      Self = ParticleFlags(0x0008);
+    pub const ATTRACTOR:          Self = ParticleFlags(0x0010);
+    pub const TRAIL_EMITTER:      Self = ParticleFlags(0x0020);
+    pub const WORLD_SPACE:        Self = ParticleFlags(0x0040);
+    pub const STRETCH:            Self = ParticleFlags(0x0080);
+    pub const GPU_SIMULATED:      Self = ParticleFlags(0x0100);
+
+    pub fn empty() -> Self { Self(0) }
+    pub fn contains(self, other: Self) -> bool { (self.0 & other.0) == other.0 }
+    pub fn insert(&mut self, other: Self) { self.0 |= other.0; }
+    pub fn remove(&mut self, other: Self) { self.0 &= !other.0; }
+}
+
+impl std::ops::BitOr for ParticleFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+}
+
+impl std::ops::BitOrAssign for ParticleFlags {
+    fn bitor_assign(&mut self, rhs: Self) { self.0 |= rhs.0; }
+}
 
 // ─── Core particle types ─────────────────────────────────────────────────────
 
@@ -36,24 +69,36 @@ pub struct MathParticle {
     pub color_over_life: Option<ColorGradient>,
     pub size_over_life:  Option<FloatCurve>,
     pub group:           Option<u32>,
-    pub sub_emitter:     Option<SubEmitterRef>,
+    pub sub_emitter:     Option<Box<SubEmitterRef>>,
     pub flags:           ParticleFlags,
     pub user_data:       [f32; 4],
 }
 
-bitflags::bitflags! {
-    /// Bitfield of particle feature flags.
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct ParticleFlags: u32 {
-        const COLLIDES       = 0x0001;
-        const GRAVITY        = 0x0002;
-        const AFFECTED_BY_FIELDS = 0x0004;
-        const EMIT_ON_DEATH  = 0x0008;
-        const ATTRACTOR      = 0x0010;
-        const TRAIL_EMITTER  = 0x0020;
-        const WORLD_SPACE    = 0x0040;
-        const STRETCH        = 0x0080;
-        const GPU_SIMULATED  = 0x0100;
+impl Default for MathParticle {
+    fn default() -> Self {
+        Self {
+            glyph:           Glyph::default(),
+            behavior:        MathFunction::Sine { amplitude: 1.0, frequency: 1.0, phase: 0.0 },
+            trail:           false,
+            trail_length:    0,
+            trail_decay:     0.5,
+            interaction:     ParticleInteraction::None,
+            origin:          Vec3::ZERO,
+            age:             0.0,
+            lifetime:        2.0,
+            velocity:        Vec3::ZERO,
+            acceleration:    Vec3::ZERO,
+            drag:            0.01,
+            spin:            0.0,
+            scale:           1.0,
+            scale_over_life: None,
+            color_over_life: None,
+            size_over_life:  None,
+            group:           None,
+            sub_emitter:     None,
+            flags:           ParticleFlags::empty(),
+            user_data:       [0.0; 4],
+        }
     }
 }
 
@@ -80,7 +125,7 @@ pub enum ParticleInteraction {
 /// Reference to a sub-emitter that spawns on particle death.
 #[derive(Clone, Debug)]
 pub struct SubEmitterRef {
-    pub preset: EmitterPreset,
+    pub preset: Box<EmitterPreset>,
     pub count:  u8,
     pub inherit_velocity: bool,
     pub inherit_color:    bool,
@@ -232,8 +277,8 @@ impl MathParticle {
             }
             ParticleInteraction::Spring { target, stiffness, damping } => {
                 let delta = *target - self.glyph.position;
-                self.velocity += delta * stiffness * dt;
-                self.velocity *= 1.0 - damping * dt;
+                self.velocity += delta * *stiffness * dt;
+                self.velocity *= 1.0 - *damping * dt;
             }
             _ => {}
         }
@@ -459,16 +504,16 @@ impl EmitterShape {
             Self::Point => Vec3::ZERO,
             Self::Sphere { radius } => {
                 let (p, _) = rng.unit_sphere();
-                p * radius
+                p * *radius
             }
             Self::Hemisphere { radius } => {
                 let (mut p, _) = rng.unit_sphere();
                 p.y = p.y.abs();
-                p * radius
+                p * *radius
             }
             Self::SphereVolume { radius } => {
                 let (p, _) = rng.unit_sphere();
-                p * radius * rng.f32().cbrt()
+                p * *radius * rng.f32().cbrt()
             }
             Self::Cone { angle, length } => {
                 let r   = rng.f32() * length;
@@ -565,23 +610,23 @@ impl ParticleForce {
                 let dist  = delta.length();
                 if dist < 0.001 { return Vec3::ZERO; }
                 let dir  = delta / dist;
-                let mag  = falloff.evaluate(dist) * strength;
+                let mag  = falloff_factor(*falloff, dist, f32::MAX) * strength;
                 dir * mag
             }
-            Self::Turbulence { strength, frequency, octaves } => {
-                let pos = p.glyph.position * frequency;
+            Self::Turbulence { strength, frequency, octaves: _ } => {
+                let pos = p.glyph.position * *frequency;
                 let nx = pseudo_noise3(pos + Vec3::new(0.0, 0.0, 0.0), time) * 2.0 - 1.0;
                 let ny = pseudo_noise3(pos + Vec3::new(100.0, 0.0, 0.0), time) * 2.0 - 1.0;
                 let nz = pseudo_noise3(pos + Vec3::new(200.0, 0.0, 0.0), time) * 2.0 - 1.0;
-                Vec3::new(nx, ny, nz) * strength
+                Vec3::new(nx, ny, nz) * *strength
             }
             Self::Vortex { axis, position, strength, falloff_radius } => {
                 let delta = p.glyph.position - *position;
                 let dist  = delta.length();
                 if dist < 0.001 { return Vec3::ZERO; }
                 let tangent = axis.cross(delta).normalize();
-                let falloff = (1.0 - (dist / falloff_radius).min(1.0)).powi(2);
-                tangent * *strength * falloff
+                let fo = (1.0 - (dist / falloff_radius).min(1.0)).powi(2);
+                tangent * *strength * fo
             }
             Self::WindBlast { direction, min_speed, max_speed, gust_freq } => {
                 let gust = ((time * gust_freq).sin() * 0.5 + 0.5) * (max_speed - min_speed) + min_speed;
@@ -602,7 +647,7 @@ impl ParticleForce {
                 if dist < 0.001 { return Vec3::ZERO; }
                 let target_dist = *radius;
                 let radial_dir  = delta / dist;
-                let orbit_acc   = (target_dist - dist) * strength;
+                let orbit_acc   = (target_dist - dist) * *strength;
                 radial_dir * orbit_acc
             }
         }
@@ -795,7 +840,7 @@ pub struct ParticleTemplate {
     pub color_over_life: Option<ColorGradient>,
     pub size_over_life:  Option<FloatCurve>,
     pub group:           Option<u32>,
-    pub sub_emitter:     Option<SubEmitterRef>,
+    pub sub_emitter:     Option<Box<SubEmitterRef>>,
     pub flags:           ParticleFlags,
 }
 
@@ -927,7 +972,6 @@ impl ParticleTemplate {
 // ─── Continuous emitter ───────────────────────────────────────────────────────
 
 /// Emitter that fires continuously at a given rate.
-#[derive(Clone, Debug)]
 pub struct ContinuousEmitter {
     pub system:    ParticleSystem,
     pub rate:      f32, // particles per second
@@ -1243,10 +1287,10 @@ impl RangeParam {
 
 /// Jitter a direction vector by `spread` radians.
 fn jitter_direction(dir: Vec3, spread: f32, rng: &mut FastRng) -> Vec3 {
-    if spread < 0.001 { return dir.normalize_or(Vec3::Y); }
+    if spread < 0.001 { return dir.normalize_or_zero(); }
     let (perp, _) = rng.unit_sphere();
     let jitter = dir + perp * spread;
-    jitter.normalize_or(Vec3::Y)
+    jitter.normalize_or_zero()
 }
 
 /// A simple 3D pseudo-noise function for turbulence.

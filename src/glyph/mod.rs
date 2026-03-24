@@ -189,4 +189,8 @@ impl GlyphPool {
             self.free_slots.push(id);
         }
     }
+
+    pub fn count(&self) -> usize {
+        self.glyphs.iter().filter(|s| s.is_some()).count()
+    }
 }

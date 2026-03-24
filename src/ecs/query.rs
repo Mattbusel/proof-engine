@@ -22,7 +22,7 @@ use std::any::TypeId;
 use std::marker::PhantomData;
 
 use super::entity::Entity;
-use super::storage::{Component, ComponentStorage, TypedStorage};
+use super::storage::Component;
 use super::world::World;
 
 // ---------------------------------------------------------------------------
@@ -45,11 +45,10 @@ pub trait WorldQuery: 'static {
 }
 
 // ---------------------------------------------------------------------------
-// WorldQuery for Ref<T> (immutable component access)
+// Ref<T> — alternative named wrapper for immutable access
 // ---------------------------------------------------------------------------
 
-/// Marker for immutable component access in queries.
-/// Use `Ref<T>` in query type parameters to fetch `&T` from the world.
+/// Named marker for immutable component access. Equivalent to using `&T` directly.
 pub struct Ref<T>(PhantomData<T>);
 
 impl<T: Component> WorldQuery for Ref<T> {

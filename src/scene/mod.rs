@@ -9,7 +9,7 @@ pub mod bvh;
 pub mod query;
 pub mod events;
 
-use crate::glyph::{Glyph, GlyphId, GlyphPool, RenderLayer};
+use crate::glyph::{Glyph, GlyphId, GlyphPool};
 use crate::entity::{AmorphousEntity, EntityId};
 use crate::particle::ParticlePool;
 use crate::math::ForceField;

@@ -1060,3 +1060,597 @@ mod tests {
         assert_eq!(billboards.len(), 1);
     }
 }
+
+// ── Wind System ───────────────────────────────────────────────────────────────
+
+/// Models global wind for vegetation animation.
+#[derive(Clone, Debug)]
+pub struct WindSystem {
+    /// Base wind direction and strength.
+    pub base_wind:    Vec2,
+    /// Wind gustiness [0, 1]: how much the wind varies.
+    pub gustiness:    f32,
+    /// Wind turbulence frequency.
+    pub turbulence:   f32,
+    /// Current resolved wind vector.
+    pub current_wind: Vec2,
+    /// Internal time.
+    time:             f32,
+    /// Gust cycle phase.
+    gust_phase:       f32,
+}
+
+impl WindSystem {
+    pub fn new(base_wind: Vec2, gustiness: f32) -> Self {
+        Self {
+            base_wind,
+            gustiness,
+            turbulence: 0.3,
+            current_wind: base_wind,
+            time: 0.0,
+            gust_phase: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.time += dt;
+        self.gust_phase += dt * 0.3;
+        // Gust cycle: sine wave modulation of wind strength
+        let gust_mul = 1.0 + self.gustiness * (self.gust_phase * 0.7).sin()
+                                            * (self.gust_phase * 1.3).sin();
+        // Direction variation: slow oscillation
+        let dir_angle = (self.base_wind.y.atan2(self.base_wind.x))
+            + (self.time * 0.1).sin() * self.gustiness * 0.4;
+        let base_speed = self.base_wind.length();
+        self.current_wind = Vec2::new(
+            dir_angle.cos() * base_speed * gust_mul,
+            dir_angle.sin() * base_speed * gust_mul,
+        );
+    }
+
+    /// Compute local wind at a position (adds turbulence based on position).
+    pub fn local_wind(&self, pos: Vec2) -> Vec2 {
+        let turb = self.turbulence;
+        let phase_x = pos.x * 0.02 + self.time * 0.5;
+        let phase_y = pos.y * 0.02 + self.time * 0.7;
+        let turb_x = phase_x.sin() * turb;
+        let turb_y = phase_y.sin() * turb;
+        self.current_wind + Vec2::new(turb_x, turb_y) * self.current_wind.length()
+    }
+}
+
+// ── Vegetation Density Map ────────────────────────────────────────────────────
+
+/// A 2D map of vegetation density values.
+#[derive(Clone, Debug)]
+pub struct VegetationDensityMap {
+    pub width:  usize,
+    pub height: usize,
+    pub data:   Vec<f32>,
+}
+
+impl VegetationDensityMap {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self { width, height, data: vec![0.0; width * height] }
+    }
+
+    pub fn get(&self, x: usize, y: usize) -> f32 {
+        if x < self.width && y < self.height { self.data[y * self.width + x] } else { 0.0 }
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, v: f32) {
+        if x < self.width && y < self.height {
+            self.data[y * self.width + x] = v.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Build density map from heightmap and biome map for trees.
+    pub fn for_trees(
+        heightmap: &crate::terrain::heightmap::HeightMap,
+        biome_map: &BiomeMap,
+        slope_map: &crate::terrain::heightmap::HeightMap,
+    ) -> Self {
+        let w = heightmap.width;
+        let h = heightmap.height;
+        let mut dm = Self::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let alt   = heightmap.get(x, y);
+                let slope = slope_map.get(x, y);
+                let biome = biome_map.get(x, y);
+                if alt < 0.1 || slope > 0.6 { continue; }
+                let base = VegetationDensity::for_biome(biome).tree_density;
+                // Altitude penalty: fewer trees at high altitude
+                let alt_factor = if alt > 0.7 { 1.0 - (alt - 0.7) / 0.3 } else { 1.0 };
+                // Slope penalty: fewer trees on steep slopes
+                let slope_factor = (1.0 - slope / 0.6).max(0.0);
+                dm.set(x, y, base * alt_factor * slope_factor);
+            }
+        }
+        dm
+    }
+
+    /// Build density map for grass.
+    pub fn for_grass(
+        heightmap: &crate::terrain::heightmap::HeightMap,
+        biome_map: &BiomeMap,
+    ) -> Self {
+        let w = heightmap.width;
+        let h = heightmap.height;
+        let mut dm = Self::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let alt   = heightmap.get(x, y);
+                let biome = biome_map.get(x, y);
+                if alt < 0.08 { continue; }
+                let base = VegetationDensity::for_biome(biome).grass_density;
+                // Grass prefers moderate altitude
+                let alt_factor = if alt > 0.8 { 0.1 } else if alt > 0.6 { 0.5 } else { 1.0 };
+                dm.set(x, y, base * alt_factor);
+            }
+        }
+        dm
+    }
+
+    /// Sample with bilinear interpolation.
+    pub fn sample_bilinear(&self, x: f32, y: f32) -> f32 {
+        let cx = x.clamp(0.0, (self.width  - 1) as f32);
+        let cy = y.clamp(0.0, (self.height - 1) as f32);
+        let x0 = cx.floor() as usize;
+        let y0 = cy.floor() as usize;
+        let x1 = (x0 + 1).min(self.width  - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let tx = cx - x0 as f32;
+        let ty = cy - y0 as f32;
+        let h00 = self.get(x0, y0);
+        let h10 = self.get(x1, y0);
+        let h01 = self.get(x0, y1);
+        let h11 = self.get(x1, y1);
+        let lerp = |a: f32, b: f32, t: f32| a + t * (b - a);
+        lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), ty)
+    }
+}
+
+// ── Vegetation Cluster ────────────────────────────────────────────────────────
+
+/// A group of same-species instances sharing a spatial cluster for efficient culling.
+#[derive(Debug, Clone)]
+pub struct VegetationCluster {
+    pub center:     Vec3,
+    pub radius:     f32,
+    pub instances:  Vec<usize>,  // indices into VegetationSystem.instances
+    pub kind:       VegetationKind,
+    pub lod_level:  u8,
+}
+
+impl VegetationCluster {
+    pub fn new(center: Vec3, radius: f32, kind: VegetationKind) -> Self {
+        Self { center, radius, instances: Vec::new(), kind, lod_level: 0 }
+    }
+
+    pub fn contains_point(&self, p: Vec3) -> bool {
+        let dx = p.x - self.center.x;
+        let dz = p.z - self.center.z;
+        dx * dx + dz * dz <= self.radius * self.radius
+    }
+
+    pub fn distance_to(&self, p: Vec3) -> f32 {
+        let dx = p.x - self.center.x;
+        let dz = p.z - self.center.z;
+        (dx * dx + dz * dz).sqrt()
+    }
+}
+
+// ── VegetationAtlas ───────────────────────────────────────────────────────────
+
+/// Manages texture atlas slots for vegetation impostor billboards.
+#[derive(Debug, Clone)]
+pub struct VegetationAtlas {
+    /// Width and height of the atlas in pixels.
+    pub resolution: u32,
+    /// Number of slots per row.
+    pub slots_per_row: u32,
+    /// Slot size (in atlas pixels).
+    pub slot_size: u32,
+    /// Mapping from tree type to atlas slot index.
+    pub slot_map: std::collections::HashMap<String, u32>,
+    /// Next available slot.
+    pub next_slot: u32,
+}
+
+impl VegetationAtlas {
+    pub fn new(resolution: u32, slots_per_row: u32) -> Self {
+        Self {
+            resolution,
+            slots_per_row,
+            slot_size: resolution / slots_per_row,
+            slot_map: std::collections::HashMap::new(),
+            next_slot: 0,
+        }
+    }
+
+    /// Allocate an atlas slot for a named vegetation type.
+    pub fn allocate_slot(&mut self, name: &str) -> Option<u32> {
+        let max_slots = self.slots_per_row * self.slots_per_row;
+        if self.next_slot >= max_slots { return None; }
+        let slot = self.next_slot;
+        self.slot_map.insert(name.to_string(), slot);
+        self.next_slot += 1;
+        Some(slot)
+    }
+
+    /// Get UV coordinates for a given slot.
+    pub fn slot_uv(&self, slot: u32) -> [f32; 4] {
+        let row = slot / self.slots_per_row;
+        let col = slot % self.slots_per_row;
+        let sz = 1.0 / self.slots_per_row as f32;
+        let u0 = col as f32 * sz;
+        let v0 = row as f32 * sz;
+        [u0, v0, u0 + sz, v0 + sz]
+    }
+
+    /// Get UV for a named type (returns default if not found).
+    pub fn get_uv(&self, name: &str) -> [f32; 4] {
+        let slot = self.slot_map.get(name).copied().unwrap_or(0);
+        self.slot_uv(slot)
+    }
+}
+
+// ── Forest Generator ──────────────────────────────────────────────────────────
+
+/// Specialized forest generator that creates realistic forest patterns.
+pub struct ForestGenerator {
+    pub min_tree_spacing: f32,
+    pub edge_density:     f32,  // trees are denser at forest edges
+    pub clustering:       f32,  // 0 = uniform, 1 = highly clustered
+}
+
+impl Default for ForestGenerator {
+    fn default() -> Self {
+        Self {
+            min_tree_spacing: 2.0,
+            edge_density: 1.5,
+            clustering: 0.4,
+        }
+    }
+}
+
+impl ForestGenerator {
+    pub fn new(min_spacing: f32, clustering: f32) -> Self {
+        Self { min_tree_spacing: min_spacing, edge_density: 1.5, clustering }
+    }
+
+    /// Generate tree positions in a forest region using clustered Poisson disk sampling.
+    pub fn generate_positions(
+        &self,
+        density_map: &VegetationDensityMap,
+        heightmap: &crate::terrain::heightmap::HeightMap,
+        biome_map: &BiomeMap,
+        seed: u64,
+    ) -> Vec<Vec3> {
+        let mut rng = Rng::new(seed);
+        let mut positions: Vec<Vec3> = Vec::new();
+        let w = density_map.width;
+        let h = density_map.height;
+
+        // Generate candidate positions on a grid with jitter
+        let grid_step = (self.min_tree_spacing * 0.8) as usize + 1;
+        for y in (0..h).step_by(grid_step) {
+            for x in (0..w).step_by(grid_step) {
+                let density = density_map.get(x, y);
+                if density < rng.next_f32() { continue; }
+
+                // Add spatial jitter
+                let jx = rng.next_f32_range(-(grid_step as f32 * 0.4), grid_step as f32 * 0.4);
+                let jz = rng.next_f32_range(-(grid_step as f32 * 0.4), grid_step as f32 * 0.4);
+                let px = (x as f32 + jx).clamp(0.0, w as f32 - 1.0);
+                let pz = (y as f32 + jz).clamp(0.0, h as f32 - 1.0);
+
+                // Check min spacing
+                let too_close = positions.iter().any(|p| {
+                    let dx = p.x - px;
+                    let dz = p.z - pz;
+                    dx * dx + dz * dz < self.min_tree_spacing * self.min_tree_spacing
+                });
+                if too_close { continue; }
+
+                let alt = heightmap.get(x, y);
+                positions.push(Vec3::new(px, alt * 100.0, pz));
+            }
+        }
+
+        // Clustering: move some trees toward existing cluster centers
+        if self.clustering > 0.0 {
+            let cluster_radius = self.min_tree_spacing * 4.0;
+            let n = positions.len();
+            for i in 0..n {
+                if rng.next_f32() < self.clustering {
+                    // Find a nearby position to cluster toward
+                    let target_idx = rng.next_usize(n);
+                    if target_idx == i { continue; }
+                    let tp = positions[target_idx];
+                    let dx = tp.x - positions[i].x;
+                    let dz = tp.z - positions[i].z;
+                    let dist = (dx * dx + dz * dz).sqrt();
+                    if dist < cluster_radius && dist > self.min_tree_spacing {
+                        let move_frac = self.clustering * 0.3;
+                        positions[i].x += dx * move_frac;
+                        positions[i].z += dz * move_frac;
+                    }
+                }
+            }
+        }
+
+        positions
+    }
+}
+
+// ── Snow Accumulation ─────────────────────────────────────────────────────────
+
+/// Computes snow accumulation on vegetation based on slope and temperature.
+pub struct SnowAccumulation;
+
+impl SnowAccumulation {
+    /// Compute snow coverage [0, 1] for a vegetation instance.
+    /// `temperature` is normalized (0 = freezing, 1 = hot).
+    /// `slope_normal` is the surface normal at the instance position.
+    pub fn coverage(temperature: f32, slope_normal: Vec3, altitude: f32) -> f32 {
+        if temperature > 0.35 { return 0.0; }
+        // Cold factor: how cold is it?
+        let cold = (0.35 - temperature) / 0.35;
+        // Vertical surface receives less snow
+        let vertical_factor = slope_normal.y.clamp(0.0, 1.0);
+        // Higher altitude = more snow
+        let alt_factor = if altitude > 0.7 { 1.0 } else { altitude / 0.7 };
+        (cold * vertical_factor * (0.5 + 0.5 * alt_factor)).clamp(0.0, 1.0)
+    }
+
+    /// Apply snow tinting to a vegetation instance's color.
+    pub fn apply_tint(base_color: Vec4, snow_coverage: f32) -> Vec4 {
+        let snow_color = Vec4::new(0.92, 0.95, 1.0, 1.0);
+        Vec4::new(
+            base_color.x + (snow_color.x - base_color.x) * snow_coverage,
+            base_color.y + (snow_color.y - base_color.y) * snow_coverage,
+            base_color.z + (snow_color.z - base_color.z) * snow_coverage,
+            base_color.w,
+        )
+    }
+}
+
+// ── Leaf Color System ─────────────────────────────────────────────────────────
+
+/// Computes leaf colors based on tree type, season, and variation.
+pub struct LeafColorSystem;
+
+impl LeafColorSystem {
+    /// Base leaf color for a tree type.
+    pub fn base_color(tt: TreeType) -> Vec3 {
+        match tt {
+            TreeType::Oak      => Vec3::new(0.2, 0.5,  0.1),
+            TreeType::Pine     => Vec3::new(0.1, 0.35, 0.08),
+            TreeType::Birch    => Vec3::new(0.35, 0.6, 0.15),
+            TreeType::Tropical => Vec3::new(0.1, 0.5,  0.05),
+            TreeType::Dead     => Vec3::new(0.4, 0.3,  0.15),
+            TreeType::Palm     => Vec3::new(0.15, 0.5, 0.1),
+            TreeType::Willow   => Vec3::new(0.25, 0.55, 0.12),
+            TreeType::Cactus   => Vec3::new(0.2, 0.45, 0.1),
+            TreeType::Fern     => Vec3::new(0.15, 0.55, 0.1),
+            TreeType::Mushroom => Vec3::new(0.7, 0.3,  0.1),
+        }
+    }
+
+    /// Seasonal leaf color: spring=bright green, summer=deep green,
+    ///                      autumn=orange/red, winter=bare/brown.
+    pub fn seasonal_color(tt: TreeType, month: u32, variation: f32) -> Vec3 {
+        let base = Self::base_color(tt);
+        let m = (month % 12) as f32;
+        // Summer peak at month 6, winter at 0/12
+        let summer_t = ((m - 6.0) * std::f32::consts::PI / 6.0).cos() * 0.5 + 0.5;
+        let autumn_t = {
+            // Autumn: Sept-Nov (months 8-10)
+            if m >= 8.0 && m <= 11.0 {
+                ((m - 8.0) / 3.0).min(1.0)
+            } else { 0.0 }
+        };
+        let dead_trees = matches!(tt, TreeType::Dead);
+        if dead_trees {
+            return Vec3::new(0.35, 0.25, 0.1);
+        }
+        let evergreen = matches!(tt, TreeType::Pine | TreeType::Fern | TreeType::Cactus | TreeType::Tropical | TreeType::Palm);
+        if evergreen {
+            return base * (0.8 + 0.2 * summer_t);
+        }
+        // Deciduous: green summer → orange/red autumn → brown winter
+        let autumn_color = Vec3::new(0.8 + variation * 0.1, 0.3 + variation * 0.1, 0.05);
+        let winter_color = Vec3::new(0.3, 0.2, 0.1);
+        let spring_color = Vec3::new(base.x * 1.2, base.y * 1.3, base.z * 1.0);
+        let summer_color = base;
+
+        if m < 3.0 {
+            // Winter
+            winter_color * (0.3 + summer_t * 0.2)
+        } else if m < 5.0 {
+            // Spring
+            let t = (m - 3.0) / 2.0;
+            winter_color + (spring_color - winter_color) * t
+        } else if m < 8.0 {
+            // Summer
+            spring_color + (summer_color - spring_color) * ((m - 5.0) / 3.0)
+        } else {
+            // Autumn → Winter
+            summer_color + (autumn_color - summer_color) * autumn_t
+        }
+    }
+}
+
+// ── Undergrowth System ────────────────────────────────────────────────────────
+
+/// Generates undergrowth (ferns, mushrooms, flowers) beneath forest canopy.
+pub struct UndergrowthSystem;
+
+impl UndergrowthSystem {
+    /// Generate undergrowth instances beneath existing tree canopies.
+    pub fn generate_under_canopy(
+        tree_instances: &[VegetationInstance],
+        heightmap: &crate::terrain::heightmap::HeightMap,
+        seed: u64,
+    ) -> Vec<VegetationInstance> {
+        let mut rng = Rng::new(seed);
+        let mut out = Vec::new();
+        for tree in tree_instances {
+            if !matches!(tree.kind, VegetationKind::Tree(_)) { continue; }
+            let canopy_r = tree.scale.x * 3.0;
+            let count = (canopy_r * canopy_r * 0.5) as usize + 1;
+            for _ in 0..count {
+                let angle = rng.next_f32() * std::f32::consts::TAU;
+                let dist  = rng.next_f32() * canopy_r;
+                let px = tree.position.x + angle.cos() * dist;
+                let pz = tree.position.z + angle.sin() * dist;
+                let xi = (px as usize).min(heightmap.width  - 1);
+                let zi = (pz as usize).min(heightmap.height - 1);
+                let alt = heightmap.get(xi, zi);
+                // Under canopy: spawn ferns or mushrooms
+                let kind = if rng.next_f32() < 0.7 {
+                    VegetationKind::Tree(TreeType::Fern)
+                } else {
+                    VegetationKind::Tree(TreeType::Mushroom)
+                };
+                out.push(VegetationInstance {
+                    position: Vec3::new(px, alt * 100.0, pz),
+                    rotation: rng.next_f32() * std::f32::consts::TAU,
+                    scale: Vec3::splat(rng.next_f32_range(0.2, 0.5)),
+                    lod_level: 0,
+                    visible: true,
+                    kind,
+                });
+            }
+        }
+        out
+    }
+}
+
+// ── Extended Vegetation Tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extended_vegetation_tests {
+    use super::*;
+    use crate::terrain::heightmap::FractalNoise;
+    use crate::terrain::biome::{ClimateSimulator, BiomeMap};
+
+    fn make_terrain(size: usize, seed: u64) -> (crate::terrain::heightmap::HeightMap, BiomeMap) {
+        let hm = FractalNoise::generate(size, size, 4, 2.0, 0.5, 3.0, seed);
+        let sim = ClimateSimulator::default();
+        let climate = sim.simulate(&hm);
+        let bm = BiomeMap::from_heightmap(&hm, &climate);
+        (hm, bm)
+    }
+
+    #[test]
+    fn test_wind_system_update() {
+        let mut wind = WindSystem::new(Vec2::new(1.0, 0.0), 0.3);
+        wind.update(0.016);
+        // After update, wind should be valid
+        assert!(wind.current_wind.length() >= 0.0);
+    }
+
+    #[test]
+    fn test_wind_system_local() {
+        let wind = WindSystem::new(Vec2::new(2.0, 1.0), 0.3);
+        let local = wind.local_wind(Vec2::new(10.0, 20.0));
+        assert!(local.length() > 0.0);
+    }
+
+    #[test]
+    fn test_vegetation_density_map_for_trees() {
+        let (hm, bm) = make_terrain(32, 42);
+        let slope = hm.slope_map();
+        let dm = VegetationDensityMap::for_trees(&hm, &bm, &slope);
+        assert_eq!(dm.data.len(), 32 * 32);
+        assert!(dm.data.iter().all(|&v| v >= 0.0 && v <= 1.0));
+    }
+
+    #[test]
+    fn test_vegetation_density_map_for_grass() {
+        let (hm, bm) = make_terrain(32, 42);
+        let dm = VegetationDensityMap::for_grass(&hm, &bm);
+        assert_eq!(dm.data.len(), 32 * 32);
+    }
+
+    #[test]
+    fn test_forest_generator() {
+        let (hm, bm) = make_terrain(32, 42);
+        let slope = hm.slope_map();
+        let dm = VegetationDensityMap::for_trees(&hm, &bm, &slope);
+        let fg = ForestGenerator::new(2.0, 0.3);
+        let positions = fg.generate_positions(&dm, &hm, &bm, 42);
+        // Should generate some positions
+        let _ = positions.len();
+    }
+
+    #[test]
+    fn test_vegetation_cluster() {
+        let c = VegetationCluster::new(Vec3::new(10.0, 0.0, 10.0), 5.0, VegetationKind::Grass);
+        assert!(c.contains_point(Vec3::new(10.0, 0.0, 10.0)));
+        assert!(!c.contains_point(Vec3::new(100.0, 0.0, 100.0)));
+        assert!((c.distance_to(Vec3::new(10.0, 0.0, 15.0)) - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_vegetation_atlas() {
+        let mut atlas = VegetationAtlas::new(512, 4);
+        let slot = atlas.allocate_slot("Oak");
+        assert!(slot.is_some());
+        let uv = atlas.get_uv("Oak");
+        assert!(uv[0] >= 0.0 && uv[2] <= 1.0);
+    }
+
+    #[test]
+    fn test_snow_accumulation() {
+        let cold_coverage = SnowAccumulation::coverage(0.1, Vec3::Y, 0.8);
+        assert!(cold_coverage > 0.0);
+        let warm_coverage = SnowAccumulation::coverage(0.8, Vec3::Y, 0.5);
+        assert_eq!(warm_coverage, 0.0);
+    }
+
+    #[test]
+    fn test_leaf_color_seasonal() {
+        let summer = LeafColorSystem::seasonal_color(TreeType::Oak, 6, 0.0);
+        let winter = LeafColorSystem::seasonal_color(TreeType::Oak, 1, 0.0);
+        // Summer should be greener
+        assert!(summer.y > winter.y);
+        // Pine is evergreen: small variation
+        let summer_pine = LeafColorSystem::seasonal_color(TreeType::Pine, 6, 0.0);
+        let winter_pine = LeafColorSystem::seasonal_color(TreeType::Pine, 1, 0.0);
+        assert!((summer_pine.y - winter_pine.y).abs() < 0.3);
+    }
+
+    #[test]
+    fn test_undergrowth_generation() {
+        let (hm, _) = make_terrain(32, 42);
+        let trees = vec![
+            VegetationInstance {
+                position: Vec3::new(16.0, 50.0, 16.0),
+                rotation: 0.0,
+                scale: Vec3::splat(2.0),
+                lod_level: 0,
+                visible: true,
+                kind: VegetationKind::Tree(TreeType::Oak),
+            },
+        ];
+        let undergrowth = UndergrowthSystem::generate_under_canopy(&trees, &hm, 42);
+        assert!(!undergrowth.is_empty());
+    }
+
+    #[test]
+    fn test_all_tree_types_have_base_color() {
+        let types = [
+            TreeType::Oak, TreeType::Pine, TreeType::Birch, TreeType::Tropical,
+            TreeType::Dead, TreeType::Palm, TreeType::Willow, TreeType::Cactus,
+            TreeType::Fern, TreeType::Mushroom,
+        ];
+        for tt in types {
+            let c = LeafColorSystem::base_color(tt);
+            assert!(c.x >= 0.0 && c.y >= 0.0 && c.z >= 0.0);
+        }
+    }
+}

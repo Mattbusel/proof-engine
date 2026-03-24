@@ -997,3 +997,607 @@ mod tests {
         assert_eq!(mgr.cache_size(), 1);
     }
 }
+
+// ── Extended Streaming Utilities ──────────────────────────────────────────────
+
+/// Serialization format options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerializationFormat {
+    /// Raw binary (no compression).
+    Raw,
+    /// Run-length encoded (good for uniform terrain).
+    RLE,
+    /// Delta-encoded (good for slowly varying terrain).
+    Delta,
+}
+
+/// Extended chunk serializer with format support.
+pub struct ExtendedChunkSerializer;
+
+impl ExtendedChunkSerializer {
+    /// Serialize with the given format.
+    pub fn serialize_with_format(
+        chunk: &crate::terrain::mod_types::TerrainChunk,
+        format: SerializationFormat,
+    ) -> Vec<u8> {
+        let base = ChunkSerializer::serialize(chunk);
+        match format {
+            SerializationFormat::Raw   => base,
+            SerializationFormat::RLE   => Self::rle_encode(&base),
+            SerializationFormat::Delta => Self::delta_encode_bytes(&base),
+        }
+    }
+
+    /// Deserialize with the given format.
+    pub fn deserialize_with_format(
+        bytes: &[u8],
+        format: SerializationFormat,
+    ) -> Option<crate::terrain::mod_types::TerrainChunk> {
+        let decoded = match format {
+            SerializationFormat::Raw   => bytes.to_vec(),
+            SerializationFormat::RLE   => Self::rle_decode(bytes)?,
+            SerializationFormat::Delta => Self::delta_decode_bytes(bytes)?,
+        };
+        ChunkSerializer::deserialize(&decoded)
+    }
+
+    /// Simple run-length encoding for byte streams.
+    pub fn rle_encode(data: &[u8]) -> Vec<u8> {
+        if data.is_empty() { return Vec::new(); }
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < data.len() {
+            let val = data[i];
+            let mut run = 1usize;
+            while i + run < data.len() && data[i + run] == val && run < 255 {
+                run += 1;
+            }
+            out.push(run as u8);
+            out.push(val);
+            i += run;
+        }
+        out
+    }
+
+    /// Decode run-length encoded data.
+    pub fn rle_decode(data: &[u8]) -> Option<Vec<u8>> {
+        if data.len() % 2 != 0 { return None; }
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 1 < data.len() {
+            let count = data[i] as usize;
+            let val   = data[i + 1];
+            for _ in 0..count { out.push(val); }
+            i += 2;
+        }
+        Some(out)
+    }
+
+    /// Delta encode: store first byte raw, then differences.
+    pub fn delta_encode_bytes(data: &[u8]) -> Vec<u8> {
+        if data.is_empty() { return Vec::new(); }
+        let mut out = Vec::with_capacity(data.len());
+        out.push(data[0]);
+        for i in 1..data.len() {
+            out.push(data[i].wrapping_sub(data[i - 1]));
+        }
+        out
+    }
+
+    /// Decode delta-encoded bytes.
+    pub fn delta_decode_bytes(data: &[u8]) -> Option<Vec<u8>> {
+        if data.is_empty() { return Some(Vec::new()); }
+        let mut out = Vec::with_capacity(data.len());
+        out.push(data[0]);
+        for i in 1..data.len() {
+            out.push(data[i].wrapping_add(*out.last().unwrap()));
+        }
+        Some(out)
+    }
+}
+
+// ── Chunk Event System ────────────────────────────────────────────────────────
+
+/// Events emitted by the streaming system.
+#[derive(Clone, Debug)]
+pub enum ChunkEvent {
+    Loaded(ChunkCoord),
+    Unloaded(ChunkCoord),
+    LodChanged { coord: ChunkCoord, old_lod: u8, new_lod: u8 },
+    GenerationStarted(ChunkCoord),
+    GenerationFailed { coord: ChunkCoord, reason: String },
+}
+
+/// Simple event queue for chunk events.
+#[derive(Debug, Default)]
+pub struct ChunkEventQueue {
+    events: VecDeque<ChunkEvent>,
+    max_size: usize,
+}
+
+impl ChunkEventQueue {
+    pub fn new(max_size: usize) -> Self {
+        Self { events: VecDeque::new(), max_size }
+    }
+
+    pub fn push(&mut self, event: ChunkEvent) {
+        if self.events.len() >= self.max_size {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    pub fn drain(&mut self) -> Vec<ChunkEvent> {
+        self.events.drain(..).collect()
+    }
+
+    pub fn len(&self) -> usize { self.events.len() }
+    pub fn is_empty(&self) -> bool { self.events.is_empty() }
+}
+
+// ── Memory Budget Tracker ─────────────────────────────────────────────────────
+
+/// Tracks and enforces memory budget for the streaming system.
+#[derive(Debug, Clone)]
+pub struct MemoryBudget {
+    /// Maximum allowed memory in bytes.
+    pub max_bytes:      usize,
+    /// Currently used memory in bytes.
+    pub current_bytes:  usize,
+    /// Reserved headroom (keep this much free).
+    pub headroom_bytes: usize,
+    /// Peak memory usage seen.
+    pub peak_bytes:     usize,
+}
+
+impl MemoryBudget {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            current_bytes: 0,
+            headroom_bytes: max_bytes / 10,
+            peak_bytes: 0,
+        }
+    }
+
+    pub fn allocate(&mut self, bytes: usize) -> bool {
+        if self.current_bytes + bytes + self.headroom_bytes > self.max_bytes {
+            return false;
+        }
+        self.current_bytes += bytes;
+        if self.current_bytes > self.peak_bytes {
+            self.peak_bytes = self.current_bytes;
+        }
+        true
+    }
+
+    pub fn free(&mut self, bytes: usize) {
+        self.current_bytes = self.current_bytes.saturating_sub(bytes);
+    }
+
+    pub fn utilization(&self) -> f32 {
+        self.current_bytes as f32 / self.max_bytes as f32
+    }
+
+    pub fn available(&self) -> usize {
+        self.max_bytes.saturating_sub(self.current_bytes + self.headroom_bytes)
+    }
+
+    pub fn is_over_budget(&self) -> bool {
+        self.current_bytes + self.headroom_bytes > self.max_bytes
+    }
+}
+
+// ── Terrain World Map ─────────────────────────────────────────────────────────
+
+/// Low-resolution overview map of the entire world, used for minimap and LOD hints.
+#[derive(Debug)]
+pub struct WorldMap {
+    /// Low-resolution height overview.
+    pub height_overview:  crate::terrain::heightmap::HeightMap,
+    /// Biome overview (compressed to u8 per cell).
+    pub biome_overview:   Vec<u8>,
+    /// Overview resolution.
+    pub resolution:       usize,
+    /// World size in chunks.
+    pub world_size_chunks: usize,
+}
+
+impl WorldMap {
+    /// Generate a world map by sampling the global noise function.
+    pub fn generate(world_size_chunks: usize, resolution: usize, config: &TerrainConfig) -> Self {
+        let scale = world_size_chunks as f32 / resolution as f32;
+        let height_overview = crate::terrain::heightmap::FractalNoise::generate(
+            resolution, resolution, 6, 2.0, 0.5, 2.0, config.seed,
+        );
+        let biome_overview: Vec<u8> = height_overview.data.iter()
+            .map(|&h| {
+                let biome = if h < 0.1 { crate::terrain::biome::BiomeType::Ocean }
+                    else if h < 0.2 { crate::terrain::biome::BiomeType::Beach }
+                    else if h < 0.5 { crate::terrain::biome::BiomeType::Grassland }
+                    else if h < 0.7 { crate::terrain::biome::BiomeType::TemperateForest }
+                    else if h < 0.85 { crate::terrain::biome::BiomeType::Mountain }
+                    else { crate::terrain::biome::BiomeType::AlpineGlacier };
+                biome as u8
+            })
+            .collect();
+        Self { height_overview, biome_overview, resolution, world_size_chunks }
+    }
+
+    /// Sample height at normalized world position (0..1).
+    pub fn sample_height(&self, nx: f32, ny: f32) -> f32 {
+        let x = (nx * (self.resolution - 1) as f32).clamp(0.0, (self.resolution - 1) as f32);
+        let y = (ny * (self.resolution - 1) as f32).clamp(0.0, (self.resolution - 1) as f32);
+        self.height_overview.sample_bilinear(x, y)
+    }
+
+    /// Get biome at normalized world position.
+    pub fn sample_biome(&self, nx: f32, ny: f32) -> crate::terrain::biome::BiomeType {
+        let x = (nx * (self.resolution - 1) as f32) as usize;
+        let y = (ny * (self.resolution - 1) as f32) as usize;
+        let idx = y.min(self.resolution - 1) * self.resolution + x.min(self.resolution - 1);
+        crate::terrain::biome::biome_from_index(self.biome_overview[idx] as usize)
+    }
+
+    /// Convert chunk coord to normalized world position.
+    pub fn chunk_to_normalized(&self, coord: ChunkCoord) -> (f32, f32) {
+        (
+            (coord.0 as f32 + 0.5) / self.world_size_chunks as f32,
+            (coord.1 as f32 + 0.5) / self.world_size_chunks as f32,
+        )
+    }
+}
+
+// ── Chunk Diff ────────────────────────────────────────────────────────────────
+
+/// Records the difference between two chunk heightmaps (for terrain editing).
+#[derive(Clone, Debug)]
+pub struct ChunkDiff {
+    pub coord:   ChunkCoord,
+    /// Sparse list of (x, y, old_height, new_height).
+    pub changes: Vec<(usize, usize, f32, f32)>,
+}
+
+impl ChunkDiff {
+    pub fn new(coord: ChunkCoord) -> Self {
+        Self { coord, changes: Vec::new() }
+    }
+
+    /// Record a height change.
+    pub fn record(&mut self, x: usize, y: usize, old_h: f32, new_h: f32) {
+        if (old_h - new_h).abs() > 1e-6 {
+            self.changes.push((x, y, old_h, new_h));
+        }
+    }
+
+    /// Apply this diff to a heightmap.
+    pub fn apply(&self, hm: &mut crate::terrain::heightmap::HeightMap) {
+        for &(x, y, _, new_h) in &self.changes {
+            hm.set(x, y, new_h);
+        }
+    }
+
+    /// Reverse (undo) this diff.
+    pub fn undo(&self, hm: &mut crate::terrain::heightmap::HeightMap) {
+        for &(x, y, old_h, _) in &self.changes {
+            hm.set(x, y, old_h);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool { self.changes.is_empty() }
+    pub fn len(&self) -> usize { self.changes.len() }
+}
+
+// ── Streaming Profiler ────────────────────────────────────────────────────────
+
+/// Profiling data for the streaming system.
+#[derive(Debug, Default, Clone)]
+pub struct StreamingProfiler {
+    pub frame_count:         u64,
+    pub total_generate_ms:   f64,
+    pub total_serialize_ms:  f64,
+    pub total_deserialize_ms: f64,
+    pub max_generate_ms:     f64,
+    pub min_generate_ms:     f64,
+    pub chunks_per_second:   f32,
+    pub last_frame_ms:       f64,
+}
+
+impl StreamingProfiler {
+    pub fn new() -> Self {
+        Self { min_generate_ms: f64::INFINITY, ..Default::default() }
+    }
+
+    pub fn record_generate(&mut self, ms: f64) {
+        self.total_generate_ms += ms;
+        self.frame_count += 1;
+        if ms > self.max_generate_ms { self.max_generate_ms = ms; }
+        if ms < self.min_generate_ms { self.min_generate_ms = ms; }
+    }
+
+    pub fn average_generate_ms(&self) -> f64 {
+        if self.frame_count == 0 { 0.0 } else { self.total_generate_ms / self.frame_count as f64 }
+    }
+
+    pub fn reset(&mut self) { *self = Self::new(); }
+}
+
+// ── Priority Zones ────────────────────────────────────────────────────────────
+
+/// Defines priority zones that affect chunk loading order.
+/// E.g., player start location, POIs, scripted events.
+#[derive(Clone, Debug)]
+pub struct PriorityZone {
+    /// World-space center of the zone.
+    pub center: Vec3,
+    /// Radius of influence (world units).
+    pub radius: f32,
+    /// Priority bonus applied to chunks in this zone.
+    pub priority_bonus: i64,
+    /// Optional name for debugging.
+    pub name: String,
+}
+
+impl PriorityZone {
+    pub fn new(center: Vec3, radius: f32, priority_bonus: i64) -> Self {
+        Self { center, radius, priority_bonus, name: String::new() }
+    }
+
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    pub fn contains_world_pos(&self, pos: Vec3) -> bool {
+        let dx = pos.x - self.center.x;
+        let dz = pos.z - self.center.z;
+        dx * dx + dz * dz <= self.radius * self.radius
+    }
+
+    pub fn chunk_priority(&self, coord: ChunkCoord, chunk_size: f32) -> i64 {
+        let world_pos = coord.to_world_pos(chunk_size);
+        if self.contains_world_pos(world_pos) {
+            self.priority_bonus
+        } else {
+            let dx = world_pos.x - self.center.x;
+            let dz = world_pos.z - self.center.z;
+            let dist = (dx * dx + dz * dz).sqrt();
+            let falloff = (1.0 - (dist / self.radius).min(2.0)) * 0.5;
+            (self.priority_bonus as f32 * falloff.max(0.0)) as i64
+        }
+    }
+}
+
+/// Manages multiple priority zones and computes combined priority bonuses.
+#[derive(Debug, Default)]
+pub struct PriorityZoneManager {
+    pub zones: Vec<PriorityZone>,
+}
+
+impl PriorityZoneManager {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn add_zone(&mut self, zone: PriorityZone) {
+        self.zones.push(zone);
+    }
+
+    pub fn remove_zone_by_name(&mut self, name: &str) {
+        self.zones.retain(|z| z.name != name);
+    }
+
+    pub fn total_priority_bonus(&self, coord: ChunkCoord, chunk_size: f32) -> i64 {
+        self.zones.iter().map(|z| z.chunk_priority(coord, chunk_size)).sum()
+    }
+}
+
+// ── Chunk Hitlist ─────────────────────────────────────────────────────────────
+
+/// A list of chunks that must be loaded before play can begin.
+#[derive(Debug)]
+pub struct ChunkHitlist {
+    required: std::collections::HashSet<ChunkCoord>,
+    loaded:   std::collections::HashSet<ChunkCoord>,
+}
+
+impl ChunkHitlist {
+    pub fn new() -> Self {
+        Self {
+            required: std::collections::HashSet::new(),
+            loaded:   std::collections::HashSet::new(),
+        }
+    }
+
+    pub fn require(&mut self, coord: ChunkCoord) {
+        self.required.insert(coord);
+    }
+
+    pub fn mark_loaded(&mut self, coord: ChunkCoord) {
+        if self.required.contains(&coord) {
+            self.loaded.insert(coord);
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.required.iter().all(|c| self.loaded.contains(c))
+    }
+
+    pub fn completion_fraction(&self) -> f32 {
+        if self.required.is_empty() { return 1.0; }
+        self.loaded.len() as f32 / self.required.len() as f32
+    }
+
+    pub fn pending_coords(&self) -> Vec<ChunkCoord> {
+        self.required.iter().filter(|c| !self.loaded.contains(*c)).copied().collect()
+    }
+}
+
+impl Default for ChunkHitlist {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Distance-based LOD Bias ───────────────────────────────────────────────────
+
+/// Adjusts LOD thresholds based on terrain importance (e.g., near a city).
+#[derive(Clone, Debug)]
+pub struct LodBias {
+    /// LOD multiplier: > 1.0 means higher quality (further LOD0 distance).
+    pub quality_multiplier: f32,
+    /// Region center.
+    pub center: Vec3,
+    /// Radius of effect.
+    pub radius: f32,
+}
+
+impl LodBias {
+    pub fn new(center: Vec3, radius: f32, quality_multiplier: f32) -> Self {
+        Self { quality_multiplier, center, radius }
+    }
+
+    pub fn lod_multiplier_at(&self, pos: Vec3) -> f32 {
+        let dx = pos.x - self.center.x;
+        let dz = pos.z - self.center.z;
+        let dist = (dx * dx + dz * dz).sqrt();
+        if dist < self.radius {
+            let t = 1.0 - dist / self.radius;
+            1.0 + (self.quality_multiplier - 1.0) * t
+        } else {
+            1.0
+        }
+    }
+}
+
+// ── Extended Streaming Tests ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extended_streaming_tests {
+    use super::*;
+
+    fn test_config() -> TerrainConfig {
+        TerrainConfig { chunk_size: 16, view_distance: 2, lod_levels: 3, seed: 42 }
+    }
+
+    #[test]
+    fn test_rle_roundtrip() {
+        let data: Vec<u8> = vec![1, 1, 1, 2, 3, 3, 4, 4, 4, 4];
+        let encoded = ExtendedChunkSerializer::rle_encode(&data);
+        let decoded = ExtendedChunkSerializer::rle_decode(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn test_delta_encode_roundtrip() {
+        let data: Vec<u8> = vec![10, 12, 11, 15, 14, 20, 18];
+        let enc = ExtendedChunkSerializer::delta_encode_bytes(&data);
+        let dec = ExtendedChunkSerializer::delta_decode_bytes(&enc).unwrap();
+        assert_eq!(data, dec);
+    }
+
+    #[test]
+    fn test_chunk_event_queue() {
+        let mut q = ChunkEventQueue::new(100);
+        q.push(ChunkEvent::Loaded(ChunkCoord(0, 0)));
+        q.push(ChunkEvent::Unloaded(ChunkCoord(1, 0)));
+        assert_eq!(q.len(), 2);
+        let events = q.drain();
+        assert_eq!(events.len(), 2);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn test_memory_budget() {
+        let mut budget = MemoryBudget::new(1024 * 1024);
+        assert!(budget.allocate(100_000));
+        budget.free(100_000);
+        assert_eq!(budget.current_bytes, 0);
+        assert!(!budget.is_over_budget());
+    }
+
+    #[test]
+    fn test_memory_budget_over() {
+        let mut budget = MemoryBudget::new(1000);
+        assert!(!budget.allocate(1000)); // headroom would be exceeded
+    }
+
+    #[test]
+    fn test_world_map_generation() {
+        let config = test_config();
+        let wm = WorldMap::generate(64, 32, &config);
+        assert_eq!(wm.height_overview.data.len(), 32 * 32);
+        assert_eq!(wm.biome_overview.len(), 32 * 32);
+    }
+
+    #[test]
+    fn test_world_map_sample() {
+        let config = test_config();
+        let wm = WorldMap::generate(64, 32, &config);
+        let h = wm.sample_height(0.5, 0.5);
+        assert!(h >= 0.0 && h <= 1.0);
+    }
+
+    #[test]
+    fn test_chunk_diff_apply_undo() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let mut chunk = gen.generate(ChunkCoord(0, 0));
+        let old_h = chunk.heightmap.get(5, 5);
+        let new_h = 0.9f32;
+        let mut diff = ChunkDiff::new(ChunkCoord(0, 0));
+        diff.record(5, 5, old_h, new_h);
+        diff.apply(&mut chunk.heightmap);
+        assert!((chunk.heightmap.get(5, 5) - new_h).abs() < 1e-6);
+        diff.undo(&mut chunk.heightmap);
+        assert!((chunk.heightmap.get(5, 5) - old_h).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_priority_zone() {
+        let zone = PriorityZone::new(Vec3::new(0.0, 0.0, 0.0), 100.0, 500_000);
+        assert!(zone.contains_world_pos(Vec3::new(50.0, 0.0, 50.0)));
+        assert!(!zone.contains_world_pos(Vec3::new(200.0, 0.0, 200.0)));
+        let bonus = zone.chunk_priority(ChunkCoord(0, 0), 16.0);
+        assert!(bonus > 0);
+    }
+
+    #[test]
+    fn test_priority_zone_manager() {
+        let mut mgr = PriorityZoneManager::new();
+        mgr.add_zone(PriorityZone::new(Vec3::ZERO, 100.0, 100_000).named("start"));
+        let bonus = mgr.total_priority_bonus(ChunkCoord(0, 0), 16.0);
+        assert!(bonus > 0);
+        mgr.remove_zone_by_name("start");
+        assert!(mgr.zones.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_hitlist() {
+        let mut hl = ChunkHitlist::new();
+        hl.require(ChunkCoord(0, 0));
+        hl.require(ChunkCoord(1, 0));
+        assert!(!hl.is_complete());
+        assert!((hl.completion_fraction() - 0.0).abs() < 1e-5);
+        hl.mark_loaded(ChunkCoord(0, 0));
+        assert!((hl.completion_fraction() - 0.5).abs() < 1e-5);
+        hl.mark_loaded(ChunkCoord(1, 0));
+        assert!(hl.is_complete());
+    }
+
+    #[test]
+    fn test_lod_bias() {
+        let bias = LodBias::new(Vec3::ZERO, 100.0, 2.0);
+        let at_center = bias.lod_multiplier_at(Vec3::ZERO);
+        assert!((at_center - 2.0).abs() < 1e-4);
+        let far_away = bias.lod_multiplier_at(Vec3::new(200.0, 0.0, 0.0));
+        assert!((far_away - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_streaming_profiler() {
+        let mut prof = StreamingProfiler::new();
+        prof.record_generate(5.0);
+        prof.record_generate(10.0);
+        prof.record_generate(3.0);
+        assert!((prof.average_generate_ms() - 6.0).abs() < 1e-4);
+        assert!((prof.max_generate_ms - 10.0).abs() < 1e-4);
+        assert!((prof.min_generate_ms - 3.0).abs() < 1e-4);
+    }
+}

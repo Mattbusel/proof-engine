@@ -66,6 +66,22 @@ fn grad2(hash: u32, x: f32, y: f32) -> f32 {
 }
 
 /// Minimal self-contained 2D value/gradient noise.
+pub struct GradientNoisePublic {
+    perm: [u8; 512],
+}
+
+impl GradientNoisePublic {
+    pub fn new(seed: u64) -> Self {
+        let inner = GradientNoise::new(seed);
+        Self { perm: inner.perm }
+    }
+    pub fn noise2d(&self, x: f32, y: f32) -> f32 {
+        let inner = GradientNoise { perm: self.perm };
+        inner.noise2d(x, y)
+    }
+}
+
+/// Minimal self-contained 2D value/gradient noise.
 struct GradientNoise {
     perm: [u8; 512],
 }
@@ -1318,5 +1334,997 @@ mod tests {
         let m = DiamondSquare::generate(32, 0.7, 42);
         let n = m.normal_at(16, 16);
         assert!((n.length() - 1.0).abs() < 1e-4);
+    }
+}
+
+// ── Extended HeightMap Operations ─────────────────────────────────────────────
+
+impl HeightMap {
+    /// Compute the mean (average) value across all cells.
+    pub fn mean(&self) -> f32 {
+        if self.data.is_empty() { return 0.0; }
+        self.data.iter().sum::<f32>() / self.data.len() as f32
+    }
+
+    /// Compute the variance of height values.
+    pub fn variance(&self) -> f32 {
+        if self.data.is_empty() { return 0.0; }
+        let mean = self.mean();
+        self.data.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / self.data.len() as f32
+    }
+
+    /// Standard deviation of height values.
+    pub fn std_dev(&self) -> f32 { self.variance().sqrt() }
+
+    /// Invert heights: new_value = 1.0 - old_value.
+    pub fn invert(&mut self) {
+        for v in self.data.iter_mut() { *v = 1.0 - *v; }
+    }
+
+    /// Add a constant offset to all values (clamped to [0,1]).
+    pub fn offset(&mut self, delta: f32) {
+        for v in self.data.iter_mut() { *v = (*v + delta).clamp(0.0, 1.0); }
+    }
+
+    /// Scale all values by a multiplier (clamped to [0,1]).
+    pub fn scale(&mut self, factor: f32) {
+        for v in self.data.iter_mut() { *v = (*v * factor).clamp(0.0, 1.0); }
+    }
+
+    /// Element-wise addition of another heightmap. Maps must be same size.
+    pub fn add(&mut self, other: &HeightMap, weight: f32) {
+        assert_eq!(self.data.len(), other.data.len(), "HeightMap::add size mismatch");
+        for (a, &b) in self.data.iter_mut().zip(other.data.iter()) {
+            *a = (*a + b * weight).clamp(0.0, 1.0);
+        }
+    }
+
+    /// Element-wise multiplication (mask).
+    pub fn multiply(&mut self, other: &HeightMap) {
+        assert_eq!(self.data.len(), other.data.len(), "HeightMap::multiply size mismatch");
+        for (a, &b) in self.data.iter_mut().zip(other.data.iter()) {
+            *a = (*a * b).clamp(0.0, 1.0);
+        }
+    }
+
+    /// Compute percentile value (e.g., 0.5 = median).
+    pub fn percentile(&self, p: f32) -> f32 {
+        if self.data.is_empty() { return 0.0; }
+        let mut sorted = self.data.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = ((p.clamp(0.0, 1.0)) * (sorted.len() - 1) as f32) as usize;
+        sorted[idx]
+    }
+
+    /// Apply a histogram equalization to redistribute height values.
+    pub fn equalize(&mut self) {
+        let n = self.data.len();
+        if n == 0 { return; }
+        let mut indexed: Vec<(f32, usize)> = self.data.iter().copied().enumerate().map(|(i, v)| (v, i)).collect();
+        indexed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (rank, (_, idx)) in indexed.iter().enumerate() {
+            self.data[*idx] = rank as f32 / (n - 1) as f32;
+        }
+    }
+
+    /// Compute a height histogram with `bins` buckets. Returns (bin_edges, counts).
+    pub fn histogram(&self, bins: usize) -> Vec<usize> {
+        let mut counts = vec![0usize; bins];
+        for &v in &self.data {
+            let bin = ((v.clamp(0.0, 1.0)) * (bins - 1) as f32) as usize;
+            counts[bin] += 1;
+        }
+        counts
+    }
+
+    /// Erode using a simple "drop" model: any cell higher than its lowest neighbor
+    /// by more than `threshold` transfers `rate` of material downhill.
+    pub fn simple_erode(&mut self, iterations: usize, threshold: f32, rate: f32) {
+        let w = self.width;
+        let h = self.height;
+        let dirs: [(i32, i32); 4] = [(1,0),(-1,0),(0,1),(0,-1)];
+        for _ in 0..iterations {
+            for y in 0..h {
+                for x in 0..w {
+                    let cur = self.get(x, y);
+                    let mut lowest_h = cur;
+                    let mut lowest_nx = x as i32;
+                    let mut lowest_ny = y as i32;
+                    for (dx, dy) in &dirs {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
+                            let nh = self.get(nx as usize, ny as usize);
+                            if nh < lowest_h {
+                                lowest_h = nh;
+                                lowest_nx = nx;
+                                lowest_ny = ny;
+                            }
+                        }
+                    }
+                    let diff = cur - lowest_h;
+                    if diff > threshold {
+                        let transfer = diff * rate;
+                        self.set(x, y, (cur - transfer).clamp(0.0, 1.0));
+                        self.set(lowest_nx as usize, lowest_ny as usize,
+                            (lowest_h + transfer).clamp(0.0, 1.0));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Generate a color-mapped image of the heightmap as RGB bytes.
+    /// Uses a standard terrain color ramp: deep water → water → sand → grass → rock → snow.
+    pub fn to_color_bytes(&self) -> Vec<u8> {
+        let ramp: &[(f32, (u8, u8, u8))] = &[
+            (0.00, (0,   0,   80)),
+            (0.10, (0,   50,  170)),
+            (0.15, (60,  120, 200)),
+            (0.20, (240, 220, 130)),
+            (0.35, (80,  160, 40)),
+            (0.55, (60,  130, 30)),
+            (0.70, (120, 100, 80)),
+            (0.85, (140, 140, 140)),
+            (1.00, (250, 255, 255)),
+        ];
+        let mut pixels = Vec::with_capacity(self.data.len() * 3);
+        for &v in &self.data {
+            let (r, g, b) = sample_color_ramp(ramp, v.clamp(0.0, 1.0));
+            pixels.push(r);
+            pixels.push(g);
+            pixels.push(b);
+        }
+        pixels
+    }
+
+    /// Compute an ambient occlusion approximation using height-based sampling.
+    /// Returns a map where 0 = fully occluded, 1 = fully lit.
+    pub fn ambient_occlusion(&self, radius: usize, samples: usize) -> HeightMap {
+        let mut ao = HeightMap::new(self.width, self.height);
+        let r = radius as f32;
+        let angle_step = std::f32::consts::TAU / samples as f32;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let h0 = self.get(x, y);
+                let mut occluded = 0.0f32;
+                for s in 0..samples {
+                    let angle = s as f32 * angle_step;
+                    let dx = angle.cos();
+                    let dy = angle.sin();
+                    let mut max_elev_angle = 0.0f32;
+                    for step in 1..=radius {
+                        let sx = x as f32 + dx * step as f32;
+                        let sy = y as f32 + dy * step as f32;
+                        if sx < 0.0 || sx >= self.width as f32 || sy < 0.0 || sy >= self.height as f32 { break; }
+                        let sh = self.sample_bilinear(sx, sy);
+                        let dist = step as f32;
+                        let elev = (sh - h0) / dist;
+                        if elev > max_elev_angle { max_elev_angle = elev; }
+                    }
+                    let horizon_angle = (max_elev_angle * r).atan() / std::f32::consts::FRAC_PI_2;
+                    occluded += horizon_angle.clamp(0.0, 1.0);
+                }
+                ao.set(x, y, 1.0 - (occluded / samples as f32).clamp(0.0, 1.0));
+            }
+        }
+        ao
+    }
+
+    /// Detect ridgelines: cells that are local maxima in at least one axis direction.
+    pub fn ridge_mask(&self, threshold: f32) -> HeightMap {
+        let mut out = HeightMap::new(self.width, self.height);
+        for y in 1..(self.height - 1) {
+            for x in 1..(self.width - 1) {
+                let c = self.get(x, y);
+                let ridge_x = self.get(x-1, y) < c && self.get(x+1, y) < c;
+                let ridge_z = self.get(x, y-1) < c && self.get(x, y+1) < c;
+                if (ridge_x || ridge_z) && c > threshold {
+                    out.set(x, y, c);
+                }
+            }
+        }
+        out
+    }
+
+    /// Detect valley lines: cells that are local minima in at least one axis.
+    pub fn valley_mask(&self, threshold: f32) -> HeightMap {
+        let mut out = HeightMap::new(self.width, self.height);
+        for y in 1..(self.height - 1) {
+            for x in 1..(self.width - 1) {
+                let c = self.get(x, y);
+                let valley_x = self.get(x-1, y) > c && self.get(x+1, y) > c;
+                let valley_z = self.get(x, y-1) > c && self.get(x, y+1) > c;
+                if (valley_x || valley_z) && c < threshold {
+                    out.set(x, y, 1.0 - c);
+                }
+            }
+        }
+        out
+    }
+
+    /// Compute a distance field: each cell stores distance to the nearest cell
+    /// with value >= `threshold`, normalized to [0,1].
+    pub fn distance_field(&self, threshold: f32) -> HeightMap {
+        let w = self.width;
+        let h = self.height;
+        let mut dist = vec![f32::INFINITY; w * h];
+        // BFS from all seed cells (value >= threshold)
+        let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+        for y in 0..h {
+            for x in 0..w {
+                if self.get(x, y) >= threshold {
+                    dist[y * w + x] = 0.0;
+                    queue.push_back((x, y));
+                }
+            }
+        }
+        let dirs: [(i32, i32); 4] = [(1,0),(-1,0),(0,1),(0,-1)];
+        while let Some((cx, cy)) = queue.pop_front() {
+            let d = dist[cy * w + cx];
+            for (dx, dy) in &dirs {
+                let nx = cx as i32 + dx;
+                let ny = cy as i32 + dy;
+                if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
+                    let ni = ny as usize * w + nx as usize;
+                    if dist[ni] > d + 1.0 {
+                        dist[ni] = d + 1.0;
+                        queue.push_back((nx as usize, ny as usize));
+                    }
+                }
+            }
+        }
+        let max_d = dist.iter().cloned().fold(0.0f32, f32::max);
+        let data = if max_d > 0.0 {
+            dist.iter().map(|&d| if d.is_infinite() { 1.0 } else { d / max_d }).collect()
+        } else {
+            vec![0.0; w * h]
+        };
+        HeightMap { width: w, height: h, data }
+    }
+
+    /// Overlay a circle (Gaussian bump) at world-space (x, y) with given radius and strength.
+    pub fn paint_circle(&mut self, cx: f32, cy: f32, radius: f32, strength: f32, add: bool) {
+        let r2 = radius * radius;
+        let x0 = ((cx - radius).floor() as i32).max(0) as usize;
+        let y0 = ((cy - radius).floor() as i32).max(0) as usize;
+        let x1 = ((cx + radius).ceil()  as i32).min(self.width  as i32 - 1) as usize;
+        let y1 = ((cy + radius).ceil()  as i32).min(self.height as i32 - 1) as usize;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let d2 = dx * dx + dy * dy;
+                if d2 < r2 {
+                    let t = 1.0 - (d2 / r2).sqrt();
+                    let falloff = t * t * (3.0 - 2.0 * t); // smooth step
+                    let delta = strength * falloff;
+                    let cur = self.get(x, y);
+                    self.set(x, y, if add { (cur + delta).clamp(0.0, 1.0) } else { (cur - delta).clamp(0.0, 1.0) });
+                }
+            }
+        }
+    }
+
+    /// Flatten a circular area to a target height.
+    pub fn flatten_circle(&mut self, cx: f32, cy: f32, radius: f32, target: f32, strength: f32) {
+        let r2 = radius * radius;
+        let x0 = ((cx - radius).floor() as i32).max(0) as usize;
+        let y0 = ((cy - radius).floor() as i32).max(0) as usize;
+        let x1 = ((cx + radius).ceil()  as i32).min(self.width  as i32 - 1) as usize;
+        let y1 = ((cy + radius).ceil()  as i32).min(self.height as i32 - 1) as usize;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                if dx * dx + dy * dy < r2 {
+                    let cur = self.get(x, y);
+                    self.set(x, y, (cur + (target - cur) * strength).clamp(0.0, 1.0));
+                }
+            }
+        }
+    }
+
+    /// Resample the heightmap to a new resolution using bilinear interpolation.
+    pub fn resample(&self, new_width: usize, new_height: usize) -> HeightMap {
+        let mut out = HeightMap::new(new_width, new_height);
+        let sx = (self.width  - 1) as f32 / (new_width  - 1).max(1) as f32;
+        let sy = (self.height - 1) as f32 / (new_height - 1).max(1) as f32;
+        for y in 0..new_height {
+            for x in 0..new_width {
+                out.set(x, y, self.sample_bilinear(x as f32 * sx, y as f32 * sy));
+            }
+        }
+        out
+    }
+
+    /// Crop a rectangular region from the heightmap.
+    pub fn crop(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> HeightMap {
+        let nw = x1.saturating_sub(x0).min(self.width  - x0);
+        let nh = y1.saturating_sub(y0).min(self.height - y0);
+        let mut out = HeightMap::new(nw, nh);
+        for y in 0..nh {
+            for x in 0..nw {
+                out.set(x, y, self.get(x0 + x, y0 + y));
+            }
+        }
+        out
+    }
+
+    /// Tile two heightmaps side by side (horizontal).
+    pub fn tile_horizontal(&self, other: &HeightMap) -> HeightMap {
+        assert_eq!(self.height, other.height, "heights must match for horizontal tiling");
+        let nw = self.width + other.width;
+        let mut out = HeightMap::new(nw, self.height);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                out.set(x, y, self.get(x, y));
+            }
+            for x in 0..other.width {
+                out.set(self.width + x, y, other.get(x, y));
+            }
+        }
+        out
+    }
+}
+
+fn sample_color_ramp(ramp: &[(f32, (u8, u8, u8))], t: f32) -> (u8, u8, u8) {
+    if ramp.is_empty() { return (128, 128, 128); }
+    if t <= ramp[0].0 { return ramp[0].1; }
+    if t >= ramp[ramp.len()-1].0 { return ramp[ramp.len()-1].1; }
+    for i in 0..ramp.len()-1 {
+        let (t0, c0) = ramp[i];
+        let (t1, c1) = ramp[i+1];
+        if t >= t0 && t <= t1 {
+            let f = (t - t0) / (t1 - t0);
+            let lerp_c = |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * f) as u8 };
+            return (lerp_c(c0.0, c1.0), lerp_c(c0.1, c1.1), lerp_c(c0.2, c1.2));
+        }
+    }
+    ramp[ramp.len()-1].1
+}
+
+use std::collections::VecDeque;
+
+// ── Worley / Cellular Noise Terrain ───────────────────────────────────────────
+
+/// Generates terrain using Worley (cellular / Voronoi) noise.
+/// Produces cracked-earth, rocky, or cell-structured terrain.
+pub struct WorleyTerrain;
+
+impl WorleyTerrain {
+    /// Generate terrain using F1 Worley noise (distance to nearest feature point).
+    /// `num_points` controls density of feature points.
+    pub fn generate(width: usize, height: usize, num_points: usize, seed: u64) -> HeightMap {
+        let mut rng = Rng::new(seed);
+        let points: Vec<(f32, f32)> = (0..num_points)
+            .map(|_| (rng.next_f32() * width as f32, rng.next_f32() * height as f32))
+            .collect();
+        let mut map = HeightMap::new(width, height);
+        let max_dist = (width * width + height * height) as f32;
+        for y in 0..height {
+            for x in 0..width {
+                let px = x as f32;
+                let py = y as f32;
+                let mut d1 = f32::INFINITY;
+                let mut d2 = f32::INFINITY;
+                for &(qx, qy) in &points {
+                    let dx = px - qx;
+                    let dy = py - qy;
+                    let d = dx * dx + dy * dy;
+                    if d < d1 { d2 = d1; d1 = d; }
+                    else if d < d2 { d2 = d; }
+                }
+                // F2 - F1 creates cell boundaries
+                let val = ((d2.sqrt() - d1.sqrt()) / width.min(height) as f32).clamp(0.0, 1.0);
+                map.set(x, y, val);
+            }
+        }
+        map.normalize();
+        map
+    }
+
+    /// Invert Worley noise to get bumpy hills instead of cracked surfaces.
+    pub fn generate_inverted(width: usize, height: usize, num_points: usize, seed: u64) -> HeightMap {
+        let mut m = Self::generate(width, height, num_points, seed);
+        m.invert();
+        m
+    }
+}
+
+// ── Gradient Domain Operations ────────────────────────────────────────────────
+
+/// Operations that work in gradient/frequency domain.
+pub struct HeightMapFilter;
+
+impl HeightMapFilter {
+    /// Apply a high-pass filter (removes low frequencies).
+    pub fn high_pass(map: &HeightMap, radius: usize) -> HeightMap {
+        let mut low = map.clone();
+        low.blur(radius);
+        let mut out = map.clone();
+        for i in 0..map.data.len() {
+            out.data[i] = (map.data[i] - low.data[i] + 0.5).clamp(0.0, 1.0);
+        }
+        out
+    }
+
+    /// Apply a low-pass filter (removes high frequencies / smoothing).
+    pub fn low_pass(map: &HeightMap, radius: usize) -> HeightMap {
+        let mut out = map.clone();
+        out.blur(radius);
+        out
+    }
+
+    /// Band-pass filter: keeps frequencies between low_radius and high_radius.
+    pub fn band_pass(map: &HeightMap, low_radius: usize, high_radius: usize) -> HeightMap {
+        let lp = Self::low_pass(map, low_radius);
+        let hp = Self::high_pass(map, high_radius);
+        let mut out = HeightMap::new(map.width, map.height);
+        for i in 0..map.data.len() {
+            out.data[i] = ((lp.data[i] + hp.data[i]) * 0.5).clamp(0.0, 1.0);
+        }
+        out
+    }
+
+    /// Emboss filter: emphasizes edges to create a metallic/3D impression.
+    pub fn emboss(map: &HeightMap) -> HeightMap {
+        let w = map.width;
+        let h = map.height;
+        let mut out = HeightMap::new(w, h);
+        for y in 1..(h-1) {
+            for x in 1..(w-1) {
+                let tl = map.get(x-1, y-1);
+                let br = map.get(x+1, y+1);
+                let emboss = (br - tl + 1.0) * 0.5;
+                out.set(x, y, emboss.clamp(0.0, 1.0));
+            }
+        }
+        out
+    }
+
+    /// Erosion morphological operator: each cell takes the minimum of its neighborhood.
+    pub fn morphological_erosion(map: &HeightMap, radius: usize) -> HeightMap {
+        let mut out = HeightMap::new(map.width, map.height);
+        for y in 0..map.height {
+            for x in 0..map.width {
+                let mut mn = 1.0f32;
+                for dy in -(radius as i32)..=(radius as i32) {
+                    for dx in -(radius as i32)..=(radius as i32) {
+                        let nx = (x as i32 + dx).clamp(0, map.width  as i32 - 1) as usize;
+                        let ny = (y as i32 + dy).clamp(0, map.height as i32 - 1) as usize;
+                        mn = mn.min(map.get(nx, ny));
+                    }
+                }
+                out.set(x, y, mn);
+            }
+        }
+        out
+    }
+
+    /// Dilation morphological operator: each cell takes the maximum of its neighborhood.
+    pub fn morphological_dilation(map: &HeightMap, radius: usize) -> HeightMap {
+        let mut out = HeightMap::new(map.width, map.height);
+        for y in 0..map.height {
+            for x in 0..map.width {
+                let mut mx = 0.0f32;
+                for dy in -(radius as i32)..=(radius as i32) {
+                    for dx in -(radius as i32)..=(radius as i32) {
+                        let nx = (x as i32 + dx).clamp(0, map.width  as i32 - 1) as usize;
+                        let ny = (y as i32 + dy).clamp(0, map.height as i32 - 1) as usize;
+                        mx = mx.max(map.get(nx, ny));
+                    }
+                }
+                out.set(x, y, mx);
+            }
+        }
+        out
+    }
+
+    /// Opening: erosion followed by dilation (removes small peaks).
+    pub fn morphological_open(map: &HeightMap, radius: usize) -> HeightMap {
+        let eroded = Self::morphological_erosion(map, radius);
+        Self::morphological_dilation(&eroded, radius)
+    }
+
+    /// Closing: dilation followed by erosion (fills small valleys).
+    pub fn morphological_close(map: &HeightMap, radius: usize) -> HeightMap {
+        let dilated = Self::morphological_dilation(map, radius);
+        Self::morphological_erosion(&dilated, radius)
+    }
+}
+
+// ── Tectonic Simulation (Extended) ───────────────────────────────────────────
+
+/// Extended tectonic simulation with plate movement and collision.
+pub struct TectonicSimulation {
+    pub width:       usize,
+    pub height:      usize,
+    pub num_plates:  usize,
+    pub seed:        u64,
+    /// Accumulated heightmap from simulation steps.
+    pub heightmap:   HeightMap,
+    /// Per-cell plate assignment.
+    plate_ids:       Vec<usize>,
+    /// Plate base elevations.
+    plate_elevations: Vec<f32>,
+    /// Plate velocity vectors.
+    plate_velocities: Vec<(f32, f32)>,
+    /// Accumulated stress per cell.
+    stress:          Vec<f32>,
+}
+
+impl TectonicSimulation {
+    /// Initialize a new tectonic simulation.
+    pub fn new(width: usize, height: usize, num_plates: usize, seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        let centers: Vec<(f32, f32)> = (0..num_plates)
+            .map(|_| (rng.next_f32() * width as f32, rng.next_f32() * height as f32))
+            .collect();
+        let plate_elevations: Vec<f32> = (0..num_plates)
+            .map(|_| if rng.next_f32() < 0.45 { rng.next_f32_range(0.0, 0.3) }
+                     else { rng.next_f32_range(0.4, 0.65) })
+            .collect();
+        let plate_velocities: Vec<(f32, f32)> = (0..num_plates)
+            .map(|_| {
+                let a = rng.next_f32() * std::f32::consts::TAU;
+                (a.cos() * 0.3, a.sin() * 0.3)
+            })
+            .collect();
+        // Assign plate IDs via nearest-center Voronoi
+        let mut plate_ids = vec![0usize; width * height];
+        for y in 0..height {
+            for x in 0..width {
+                let mut best = 0;
+                let mut best_d = f32::INFINITY;
+                for (i, &(cx, cy)) in centers.iter().enumerate() {
+                    let d = (x as f32 - cx).powi(2) + (y as f32 - cy).powi(2);
+                    if d < best_d { best_d = d; best = i; }
+                }
+                plate_ids[y * width + x] = best;
+            }
+        }
+        let stress = vec![0.0f32; width * height];
+        let heightmap = HeightMap::new(width, height);
+        Self { width, height, num_plates, seed, heightmap, plate_ids, plate_elevations, plate_velocities, stress }
+    }
+
+    /// Run one simulation step: move plates, compute stress, update heights.
+    pub fn step(&mut self) {
+        let w = self.width;
+        let h = self.height;
+        // Update heights based on plate elevations and stress
+        for y in 0..h {
+            for x in 0..w {
+                let pid = self.plate_ids[y * w + x];
+                let base = self.plate_elevations[pid];
+                let stress = self.stress[y * w + x];
+                self.heightmap.data[y * w + x] = (base + stress * 0.3).clamp(0.0, 1.0);
+            }
+        }
+        // Compute boundary stress from plate velocity differences
+        let dirs: [(i32, i32); 4] = [(1,0),(-1,0),(0,1),(0,-1)];
+        for y in 0..h {
+            for x in 0..w {
+                let pid = self.plate_ids[y * w + x];
+                let pv = self.plate_velocities[pid];
+                let mut new_stress = self.stress[y * w + x] * 0.95;
+                for (dx, dy) in &dirs {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
+                        let npid = self.plate_ids[ny as usize * w + nx as usize];
+                        if npid != pid {
+                            let nv = self.plate_velocities[npid];
+                            // Convergence = dot product of relative velocity and boundary normal
+                            let rel_vx = pv.0 - nv.0;
+                            let rel_vy = pv.1 - nv.1;
+                            let boundary_nx = *dx as f32;
+                            let boundary_ny = *dy as f32;
+                            let convergence = rel_vx * boundary_nx + rel_vy * boundary_ny;
+                            if convergence < 0.0 {
+                                // Compressing boundary → stress builds up
+                                new_stress += (-convergence) * 0.05;
+                            }
+                        }
+                    }
+                }
+                self.stress[y * w + x] = new_stress.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    /// Run `n` simulation steps and return the resulting heightmap.
+    pub fn simulate(&mut self, steps: usize) -> &HeightMap {
+        for _ in 0..steps {
+            self.step();
+        }
+        self.heightmap.normalize();
+        &self.heightmap
+    }
+}
+
+// ── Extended Erosion: Full Hydraulic Detail ────────────────────────────────────
+
+/// Advanced hydraulic erosion with explicit water table tracking.
+pub struct AdvancedHydraulicErosion;
+
+impl AdvancedHydraulicErosion {
+    /// Full simulation with water table, springs, and river formation.
+    pub fn erode_full(
+        map:              &mut HeightMap,
+        iterations:       usize,
+        rain_per_cell:    f32,
+        evaporation_rate: f32,
+        erosion_rate:     f32,
+        deposition_rate:  f32,
+        seed:             u64,
+    ) {
+        let w = map.width;
+        let h = map.height;
+        let mut water  = vec![0.0f32; w * h];
+        let mut sediment = vec![0.0f32; w * h];
+        let mut rng = Rng::new(seed);
+        let dirs: [(i32, i32); 4] = [(1,0),(-1,0),(0,1),(0,-1)];
+
+        for _iter in 0..iterations {
+            // Rain: add water to all cells
+            for cell in water.iter_mut() {
+                *cell += rain_per_cell * rng.next_f32_range(0.5, 1.5);
+            }
+
+            // Flow: move water + sediment downhill
+            let terrain_plus_water: Vec<f32> = (0..w*h)
+                .map(|i| map.data[i] + water[i])
+                .collect();
+
+            let mut d_water   = vec![0.0f32; w * h];
+            let mut d_sediment = vec![0.0f32; w * h];
+
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = y * w + x;
+                    let h_cur = terrain_plus_water[idx];
+                    let w_cur = water[idx];
+                    if w_cur < 0.0001 { continue; }
+
+                    let mut total_flow = 0.0f32;
+                    let mut flows = [(0.0f32, 0i32, 0i32); 4];
+                    for (k, (dx, dy)) in dirs.iter().enumerate() {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx < 0 || nx >= w as i32 || ny < 0 || ny >= h as i32 { continue; }
+                        let nidx = ny as usize * w + nx as usize;
+                        let h_n = terrain_plus_water[nidx];
+                        let diff = h_cur - h_n;
+                        if diff > 0.0 {
+                            flows[k] = (diff, nx, ny);
+                            total_flow += diff;
+                        }
+                    }
+                    if total_flow < 0.0001 { continue; }
+
+                    for (diff, nx, ny) in flows.iter() {
+                        if *diff <= 0.0 { continue; }
+                        let frac = diff / total_flow;
+                        let flow_w = (w_cur * frac * 0.5).min(w_cur);
+                        let flow_s = sediment[idx] * frac * 0.5;
+                        let nidx = *ny as usize * w + *nx as usize;
+                        d_water[idx] -= flow_w;
+                        d_water[nidx] += flow_w;
+                        d_sediment[idx] -= flow_s;
+                        d_sediment[nidx] += flow_s;
+
+                        // Erosion proportional to flow
+                        let erode = erosion_rate * flow_w * diff;
+                        map.data[idx] = (map.data[idx] - erode).clamp(0.0, 1.0);
+                        d_sediment[idx] += erode;
+                    }
+                }
+            }
+
+            // Apply deltas
+            for i in 0..(w*h) {
+                water[i]    = (water[i] + d_water[i]).max(0.0);
+                sediment[i] = (sediment[i] + d_sediment[i]).max(0.0);
+            }
+
+            // Evaporation + sediment deposition
+            for i in 0..(w*h) {
+                water[i] *= 1.0 - evaporation_rate;
+                let deposit = sediment[i] * deposition_rate;
+                sediment[i] -= deposit;
+                map.data[i] = (map.data[i] + deposit).clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+// ── HeightMap Compositor ──────────────────────────────────────────────────────
+
+/// Composites multiple heightmaps using layered blending operations.
+pub struct HeightMapCompositor {
+    layers: Vec<CompositeLayer>,
+}
+
+/// A single layer in a compositor.
+pub struct CompositeLayer {
+    pub map:     HeightMap,
+    pub blend:   CompositeBlendMode,
+    pub weight:  f32,
+    pub mask:    Option<HeightMap>,
+}
+
+/// How a layer blends with layers below it.
+#[derive(Clone, Copy, Debug)]
+pub enum CompositeBlendMode {
+    Normal,
+    Add,
+    Subtract,
+    Multiply,
+    Screen,
+    Overlay,
+    Max,
+    Min,
+}
+
+impl HeightMapCompositor {
+    pub fn new() -> Self { Self { layers: Vec::new() } }
+
+    pub fn add_layer(&mut self, map: HeightMap, blend: CompositeBlendMode, weight: f32) {
+        self.layers.push(CompositeLayer { map, blend, weight, mask: None });
+    }
+
+    pub fn add_layer_with_mask(&mut self, map: HeightMap, mask: HeightMap, blend: CompositeBlendMode, weight: f32) {
+        self.layers.push(CompositeLayer { map, blend, weight, mask: Some(mask) });
+    }
+
+    /// Flatten all layers into a single heightmap.
+    pub fn flatten(&self) -> Option<HeightMap> {
+        if self.layers.is_empty() { return None; }
+        let w = self.layers[0].map.width;
+        let h = self.layers[0].map.height;
+        let mut result = HeightMap::new(w, h);
+
+        for layer in &self.layers {
+            let lm = &layer.map;
+            for y in 0..h {
+                for x in 0..w {
+                    let src = lm.get(x.min(lm.width-1), y.min(lm.height-1));
+                    let dst = result.get(x, y);
+                    let mask_w = layer.mask.as_ref()
+                        .map(|m| m.get(x.min(m.width-1), y.min(m.height-1)))
+                        .unwrap_or(1.0);
+                    let blended = Self::blend(dst, src, layer.blend);
+                    let final_v = dst + (blended - dst) * layer.weight * mask_w;
+                    result.set(x, y, final_v.clamp(0.0, 1.0));
+                }
+            }
+        }
+        Some(result)
+    }
+
+    fn blend(dst: f32, src: f32, mode: CompositeBlendMode) -> f32 {
+        match mode {
+            CompositeBlendMode::Normal    => src,
+            CompositeBlendMode::Add       => (dst + src).clamp(0.0, 1.0),
+            CompositeBlendMode::Subtract  => (dst - src).clamp(0.0, 1.0),
+            CompositeBlendMode::Multiply  => dst * src,
+            CompositeBlendMode::Screen    => 1.0 - (1.0 - dst) * (1.0 - src),
+            CompositeBlendMode::Overlay   => {
+                if dst < 0.5 { 2.0 * dst * src }
+                else { 1.0 - 2.0 * (1.0 - dst) * (1.0 - src) }
+            }
+            CompositeBlendMode::Max       => dst.max(src),
+            CompositeBlendMode::Min       => dst.min(src),
+        }
+    }
+}
+
+// ── HeightMap Warp ────────────────────────────────────────────────────────────
+
+/// Warp (distort) a heightmap using a displacement field.
+pub struct DisplacementWarp {
+    /// Horizontal displacement field.
+    pub warp_x: HeightMap,
+    /// Vertical displacement field.
+    pub warp_y: HeightMap,
+    /// Maximum displacement in pixels.
+    pub strength: f32,
+}
+
+impl DisplacementWarp {
+    /// Create a warp using noise-derived displacement.
+    pub fn from_noise(width: usize, height: usize, strength: f32, seed: u64) -> Self {
+        let warp_x = FractalNoise::generate(width, height, 4, 2.0, 0.5, 3.0, seed);
+        let warp_y = FractalNoise::generate(width, height, 4, 2.0, 0.5, 3.0, seed.wrapping_add(137));
+        Self { warp_x, warp_y, strength }
+    }
+
+    /// Apply warp to a heightmap.
+    pub fn apply(&self, map: &HeightMap) -> HeightMap {
+        let w = map.width;
+        let h = map.height;
+        let mut out = HeightMap::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let wx = (self.warp_x.get(x, y) * 2.0 - 1.0) * self.strength;
+                let wy = (self.warp_y.get(x, y) * 2.0 - 1.0) * self.strength;
+                let sx = (x as f32 + wx).clamp(0.0, w as f32 - 1.0);
+                let sy = (y as f32 + wy).clamp(0.0, h as f32 - 1.0);
+                out.set(x, y, map.sample_bilinear(sx, sy));
+            }
+        }
+        out
+    }
+}
+
+// ── Extended Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn test_heightmap_mean_variance() {
+        let mut m = HeightMap::new(4, 4);
+        for v in m.data.iter_mut() { *v = 0.5; }
+        assert!((m.mean() - 0.5).abs() < 1e-5);
+        assert!(m.variance().abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_heightmap_invert() {
+        let mut m = HeightMap::new(4, 4);
+        for v in m.data.iter_mut() { *v = 0.3; }
+        m.invert();
+        assert!((m.data[0] - 0.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_heightmap_add_multiply() {
+        let mut a = HeightMap::new(4, 4);
+        let mut b = HeightMap::new(4, 4);
+        for v in a.data.iter_mut() { *v = 0.4; }
+        for v in b.data.iter_mut() { *v = 0.3; }
+        a.add(&b, 1.0);
+        assert!((a.data[0] - 0.7).abs() < 0.01);
+        let mut c = HeightMap::new(4, 4);
+        let mut d = HeightMap::new(4, 4);
+        for v in c.data.iter_mut() { *v = 0.5; }
+        for v in d.data.iter_mut() { *v = 0.4; }
+        c.multiply(&d);
+        assert!((c.data[0] - 0.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_heightmap_equalize() {
+        let mut m = HeightMap::new(8, 8);
+        for (i, v) in m.data.iter_mut().enumerate() { *v = (i % 4) as f32 * 0.1; }
+        m.equalize();
+        let mn = m.min_value();
+        let mx = m.max_value();
+        assert!((mn - 0.0).abs() < 1e-4);
+        assert!((mx - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_heightmap_histogram() {
+        let mut m = HeightMap::new(16, 16);
+        m.normalize(); // all zeros after new
+        for v in m.data.iter_mut() { *v = 0.0; }
+        let hist = m.histogram(10);
+        assert_eq!(hist[0], 256); // all in first bin
+        assert_eq!(hist.iter().sum::<usize>(), 256);
+    }
+
+    #[test]
+    fn test_worley_terrain() {
+        let m = WorleyTerrain::generate(32, 32, 20, 42);
+        assert_eq!(m.data.len(), 32 * 32);
+        let mn = m.min_value();
+        let mx = m.max_value();
+        assert!((mn - 0.0).abs() < 1e-4);
+        assert!((mx - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_heightmap_filter_high_pass() {
+        let m = DiamondSquare::generate(32, 0.7, 42);
+        let hp = HeightMapFilter::high_pass(&m, 3);
+        assert_eq!(hp.data.len(), m.data.len());
+    }
+
+    #[test]
+    fn test_heightmap_filter_morphological() {
+        let m = DiamondSquare::generate(16, 0.7, 42);
+        let eroded = HeightMapFilter::morphological_erosion(&m, 1);
+        // Erosion should reduce max value
+        assert!(eroded.max_value() <= m.max_value() + 1e-5);
+    }
+
+    #[test]
+    fn test_tectonic_simulation() {
+        let mut sim = TectonicSimulation::new(32, 32, 6, 42);
+        sim.simulate(5);
+        assert_eq!(sim.heightmap.data.len(), 32 * 32);
+        let mn = sim.heightmap.min_value();
+        let mx = sim.heightmap.max_value();
+        assert!(mn >= 0.0 && mx <= 1.0);
+    }
+
+    #[test]
+    fn test_heightmap_resample() {
+        let m = DiamondSquare::generate(32, 0.7, 42);
+        let r = m.resample(16, 16);
+        assert_eq!(r.width, 16);
+        assert_eq!(r.height, 16);
+    }
+
+    #[test]
+    fn test_heightmap_crop() {
+        let m = DiamondSquare::generate(32, 0.7, 42);
+        let c = m.crop(8, 8, 24, 24);
+        assert_eq!(c.width, 16);
+        assert_eq!(c.height, 16);
+    }
+
+    #[test]
+    fn test_heightmap_distance_field() {
+        let mut m = HeightMap::new(16, 16);
+        m.set(8, 8, 1.0); // single seed
+        let df = m.distance_field(0.5);
+        assert_eq!(df.get(8, 8), 0.0);
+        assert!(df.get(0, 0) > 0.0);
+    }
+
+    #[test]
+    fn test_heightmap_paint_circle() {
+        let mut m = HeightMap::new(64, 64);
+        m.paint_circle(32.0, 32.0, 10.0, 0.5, true);
+        assert!(m.get(32, 32) > 0.0);
+        assert_eq!(m.get(0, 0), 0.0);
+    }
+
+    #[test]
+    fn test_compositor_flatten() {
+        let a = FractalNoise::generate(16, 16, 4, 2.0, 0.5, 3.0, 42);
+        let b = FractalNoise::generate(16, 16, 4, 2.0, 0.5, 3.0, 99);
+        let mut comp = HeightMapCompositor::new();
+        comp.add_layer(a, CompositeBlendMode::Normal, 0.5);
+        comp.add_layer(b, CompositeBlendMode::Add, 0.3);
+        let result = comp.flatten().expect("compositor should produce output");
+        assert_eq!(result.data.len(), 16 * 16);
+    }
+
+    #[test]
+    fn test_displacement_warp() {
+        let m = FractalNoise::generate(32, 32, 4, 2.0, 0.5, 3.0, 42);
+        let warp = DisplacementWarp::from_noise(32, 32, 5.0, 77);
+        let warped = warp.apply(&m);
+        assert_eq!(warped.data.len(), m.data.len());
+    }
+
+    #[test]
+    fn test_advanced_hydraulic_erosion() {
+        let mut m = DiamondSquare::generate(32, 0.8, 1);
+        AdvancedHydraulicErosion::erode_full(&mut m, 50, 0.01, 0.02, 0.01, 0.05, 42);
+        assert!(m.min_value() >= 0.0);
+        assert!(m.max_value() <= 1.0);
+    }
+
+    #[test]
+    fn test_color_bytes() {
+        let m = FractalNoise::generate(16, 16, 4, 2.0, 0.5, 3.0, 42);
+        let bytes = m.to_color_bytes();
+        assert_eq!(bytes.len(), 16 * 16 * 3);
+    }
+
+    #[test]
+    fn test_ambient_occlusion() {
+        let m = DiamondSquare::generate(16, 0.7, 42);
+        let ao = m.ambient_occlusion(4, 8);
+        assert_eq!(ao.data.len(), m.data.len());
+        assert!(ao.min_value() >= 0.0 && ao.max_value() <= 1.0);
     }
 }

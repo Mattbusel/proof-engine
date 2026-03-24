@@ -159,14 +159,10 @@ impl World {
     /// Panics in debug mode if `entity` is not alive.
     pub fn insert<T: Component>(&mut self, entity: Entity, component: T) -> Option<T> {
         debug_assert!(self.entities.is_alive(entity), "insert: entity {:?} is not alive", entity);
+        // ComponentStorage::insert handles the replace case and returns the old value.
         self.get_or_create_storage_mut::<T>()
             .borrow_mut()
-            .remove_and_return(entity); // discard old, we'll re-insert below
-
-        let old = self.get_or_create_storage_mut::<T>()
-            .borrow_mut()
-            .insert(entity, component);
-        old
+            .insert(entity, component)
     }
 
     /// Insert a component, returning `&mut Self` for chaining.
@@ -336,19 +332,16 @@ impl World {
             return self.entities.alive_entities();
         }
 
-        // Start with the smallest storage.
-        let smallest = type_ids
+        // If any required component type has no storage, no entity can match.
+        let all_types_registered = type_ids
             .iter()
-            .filter_map(|tid| self.components.get(tid))
-            .min_by_key(|s| s.len_erased());
-
-        let Some(first_storage) = smallest else {
+            .all(|tid| self.components.contains_key(tid));
+        if !all_types_registered {
             return Vec::new();
-        };
+        }
 
-        // We can't iterate entities from the erased storage trait directly
-        // without adding a method — so we iterate all alive entities and filter.
-        // For large worlds this could be optimised with archetype acceleration.
+        // Iterate all alive entities and filter by required types.
+        // For large worlds this could be accelerated with archetype caching.
         self.entities
             .iter_alive()
             .filter(|e| {
@@ -475,33 +468,29 @@ impl std::fmt::Debug for World {
 // ---------------------------------------------------------------------------
 
 /// Iterator over `(Entity, &T)` pairs from a component storage.
-/// Exists to avoid lifetime issues with the `RefCell` guard.
+///
+/// Eagerly collects entity + pointer pairs so iteration is O(n) dense.
+/// Pointers into `Vec<T>` remain valid for `'w` because `&World` prevents
+/// any mutation while the iterator is live.
 pub struct ComponentIter<'w, T: Component> {
-    // We store a raw pointer to the storage to decouple lifetimes.
-    // Safety invariant: the World (and its RefCell<ComponentStorage<T>>) outlives 'w.
-    ptr: *const ComponentStorage<T>,
+    items: Vec<(Entity, *const T)>,
     index: usize,
     _marker: PhantomData<&'w T>,
 }
 
 impl<'w, T: Component> ComponentIter<'w, T> {
     fn empty() -> Self {
-        Self {
-            ptr: std::ptr::null(),
-            index: 0,
-            _marker: PhantomData,
-        }
+        Self { items: Vec::new(), index: 0, _marker: PhantomData }
     }
 
     fn new(typed: &'w TypedStorage<T>) -> Self {
         let guard = typed.borrow();
-        let ptr = &*guard as *const ComponentStorage<T>;
-        std::mem::forget(guard); // leak the borrow guard — we'll reborrow as raw pointer
-        Self {
-            ptr,
-            index: 0,
-            _marker: PhantomData,
-        }
+        let items: Vec<(Entity, *const T)> = guard
+            .iter()
+            .map(|(&e, v)| (e, v as *const T))
+            .collect();
+        drop(guard); // RefCell unlocked; pointers remain valid via &World borrow
+        Self { items, index: 0, _marker: PhantomData }
     }
 }
 
@@ -509,31 +498,23 @@ impl<'w, T: Component> Iterator for ComponentIter<'w, T> {
     type Item = (Entity, &'w T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.ptr.is_null() {
-            return None;
-        }
-        // SAFETY: ptr is valid for 'w (World is borrowed for 'w), and we only
-        // read through it immutably. The RefCell's dynamic borrow is satisfied
-        // because we hold `&World` which prevents any mutable borrows.
-        let storage = unsafe { &*self.ptr };
-        if self.index >= storage.len() {
-            return None;
-        }
-        let entity = *storage.entities().nth(self.index)?;
-        let component = storage.get_by_dense_index(self.index);
+        let (entity, ptr) = *self.items.get(self.index)?;
         self.index += 1;
-        Some((entity, component))
+        // SAFETY: ptr was obtained from a &T inside a Vec<T> that lives for
+        // 'w (the World borrow). No mutation can occur while &World is held.
+        Some((entity, unsafe { &*ptr }))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.ptr.is_null() {
-            return (0, Some(0));
-        }
-        let storage = unsafe { &*self.ptr };
-        let remaining = storage.len() - self.index;
+        let remaining = self.items.len() - self.index;
         (remaining, Some(remaining))
     }
 }
+
+// SAFETY: ComponentIter only holds raw pointers into data owned by World.
+// The pointers are valid for 'w. T: Send + Sync per Component bound.
+unsafe impl<'w, T: Component> Send for ComponentIter<'w, T> {}
+unsafe impl<'w, T: Component> Sync for ComponentIter<'w, T> {}
 
 // ---------------------------------------------------------------------------
 // EntityBuilder

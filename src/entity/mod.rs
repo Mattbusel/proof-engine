@@ -53,6 +53,12 @@ pub struct AmorphousEntity {
 
     // ── Internal animation time ───────────────────────────────────────────────
     pub age: f32,
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    /// Arbitrary string tags for filtering/grouping.
+    pub tags: Vec<String>,
+    /// Set to true to remove the entity on the next GC pass.
+    pub despawn_requested: bool,
 }
 
 impl AmorphousEntity {
@@ -78,6 +84,8 @@ impl AmorphousEntity {
             pulse_rate: 1.0,
             pulse_depth: 0.05,
             age: 0.0,
+            tags: Vec::new(),
+            despawn_requested: false,
         }
     }
 
@@ -106,4 +114,8 @@ impl AmorphousEntity {
 
     /// Return true if the entity is dead.
     pub fn is_dead(&self) -> bool { self.hp <= 0.0 }
+}
+
+impl Default for AmorphousEntity {
+    fn default() -> Self { Self::new("", Vec3::ZERO) }
 }
