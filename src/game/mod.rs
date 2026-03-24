@@ -8,6 +8,7 @@ pub mod localization;
 pub mod achievements;
 pub mod fluids;
 pub mod debris;
+pub mod cloth_rope;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
