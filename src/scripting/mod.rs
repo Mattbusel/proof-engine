@@ -28,6 +28,8 @@ pub mod compiler;
 pub mod vm;
 pub mod stdlib;
 pub mod host;
+pub mod debugger;
+pub mod modules;
 
 pub use vm::{Vm, Value, ScriptError};
 pub use host::{ScriptHost, HostFunction};
