@@ -1119,7 +1119,8 @@ impl Modal {
         // Tab cycles focus inside modal (focus trap)
         if ctx.key_pressed(crate::ui::KeyCode::Escape) { self.close(); return; }
 
-        for (i, (bid, _)) in self.buttons.iter().enumerate() {
+        let button_ids: Vec<UiId> = self.buttons.iter().map(|(bid, _)| *bid).collect();
+        for (i, bid) in button_ids.iter().enumerate() {
             let bx    = rect.x + 16.0 + i as f32 * (btn_w + 8.0);
             let brect = Rect::new(bx, btn_y, btn_w, 32.0);
             let hov   = brect.contains(ctx.mouse_x, ctx.mouse_y);
@@ -1128,8 +1129,7 @@ impl Modal {
                 self.hover_btns[i] += (target - self.hover_btns[i]) * (10.0 * dt).min(1.0);
             }
             if hov && ctx.mouse_just_pressed {
-                let bid_copy = *bid;
-                self.pressed = Some(bid_copy);
+                self.pressed = Some(*bid);
                 self.close();
             }
         }
