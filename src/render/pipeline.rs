@@ -79,9 +79,7 @@ void main() {
         v_pos.x * s + v_pos.y * c
     ) * i_scale;
 
-    vec4 pos = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
-    pos.x = -pos.x;  // flip X: look_at_rh from +Z has right=-X, this corrects it
-    gl_Position = pos;
+    gl_Position = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
 
     f_uv         = i_uv_offset + v_uv * i_uv_size;
     f_color      = i_color;
