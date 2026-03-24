@@ -504,7 +504,11 @@ impl Pipeline {
         let aspect = if self.height > 0 { self.width as f32 / self.height as f32 } else { 1.0 };
         let view      = Mat4::look_at_rh(pos, tgt, Vec3::Y);
         let proj      = Mat4::perspective_rh_gl(fov.to_radians(), aspect, camera.near, camera.far);
-        let view_proj = proj * view;
+        // Flip X axis so +X world = screen-right.
+        // look_at_rh from +Z gives right=-X which mirrors text.
+        // Multiplying by scale(-1,1,1) on the view matrix fixes this.
+        let flip_x    = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+        let view_proj = proj * flip_x * view;
 
         // ── Build glyph batch ──────────────────────────────────────────────────
         self.instances.clear();
