@@ -50,6 +50,7 @@ pub mod animation;
 pub mod ai;
 pub mod networking;
 pub mod replay;
+pub mod scripting;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
