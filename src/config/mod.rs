@@ -338,9 +338,9 @@ pub struct RenderConfig {
 impl Default for RenderConfig {
     fn default() -> Self {
         Self {
-            bloom_enabled:        true,
-            bloom_intensity:      0.3,
-            bloom_radius:         2.0,
+            bloom_enabled:        false,
+            bloom_intensity:      0.0,
+            bloom_radius:         0.0,
             distortion_enabled:   false,
             motion_blur_enabled:  false,
             motion_blur_samples:  2,
