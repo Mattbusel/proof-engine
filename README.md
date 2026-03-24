@@ -561,8 +561,6 @@ Requires Rust stable. OpenGL 3.3 Core context. Tested on Windows 11 with MSVC to
 
 ## Stats
 
-- 136,000+ lines of Rust across 177 source files
-- Zero stubs — every function is fully implemented
 - Compiles clean with no errors
 - 15+ major system tiers: rendering, math, physics, audio, AI, scripting, networking, animation, combat, terrain, ECS, DSP, PBR, editor, character/game systems
 
