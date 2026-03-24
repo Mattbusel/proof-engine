@@ -1433,7 +1433,7 @@ mod tests {
     fn test_scale_handle_hit_uniform() {
         let gizmo = GizmoRenderer::new();
         let ray = Ray3::new(Vec3::new(0.0, 0.0, 0.1), Vec3::new(0.0, 0.0, -1.0));
-        let hit = gizmo.raycast.test_scale(&gizmo.scale, ray, Vec3::ZERO, 1.0);
+        let hit = gizmo.raycast.test_scale(&ray, &gizmo.scale, Vec3::ZERO, 1.0);
         // A ray aimed almost directly at origin should hit ScaleUniform.
         assert_eq!(hit, GizmoHit::ScaleUniform);
     }
