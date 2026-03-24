@@ -80,6 +80,9 @@ void main() {
     ) * i_scale;
 
     gl_Position = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
+    // Flip X in clip space: look_at_rh from +Z gives right=-X which mirrors.
+    // Negating clip X makes +X world = screen right without affecting Y or depth.
+    gl_Position.x = -gl_Position.x;
 
     f_uv         = i_uv_offset + v_uv * i_uv_size;
     f_color      = i_color;
@@ -504,11 +507,7 @@ impl Pipeline {
         let aspect = if self.height > 0 { self.width as f32 / self.height as f32 } else { 1.0 };
         let view      = Mat4::look_at_rh(pos, tgt, Vec3::Y);
         let proj      = Mat4::perspective_rh_gl(fov.to_radians(), aspect, camera.near, camera.far);
-        // Flip X axis so +X world = screen-right.
-        // look_at_rh from +Z gives right=-X which mirrors text.
-        // Multiplying by scale(-1,1,1) on the view matrix fixes this.
-        let flip_x    = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
-        let view_proj = proj * flip_x * view;
+        let view_proj = proj * view;
 
         // ── Build glyph batch ──────────────────────────────────────────────────
         self.instances.clear();
