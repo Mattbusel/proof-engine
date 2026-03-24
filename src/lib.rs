@@ -57,6 +57,8 @@ pub mod editor;
 pub mod asset;
 pub mod save;
 pub mod character;
+pub mod dsp;
+pub mod game;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
