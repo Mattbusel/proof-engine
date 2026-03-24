@@ -11,6 +11,7 @@ pub mod debris;
 pub mod cloth_rope;
 pub mod arena_physics;
 pub mod weapon_physics;
+pub mod dungeon;
 pub mod music;
 pub mod animation;
 
