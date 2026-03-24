@@ -9,6 +9,8 @@ pub mod synth;
 pub mod output;
 pub mod music_engine;
 pub mod graph;
+pub mod effects;
+pub mod synthesis;
 
 use glam::Vec3;
 

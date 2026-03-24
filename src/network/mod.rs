@@ -447,10 +447,10 @@ impl RollbackState {
             self.confirmed.push_back(Vec::new());
         }
         if (frame as usize) < self.confirmed.len() {
+            let player = input.player;
             self.confirmed[frame as usize].push(input);
+            self.predicted.remove(&(frame, player));
         }
-        // Remove matching prediction
-        self.predicted.remove(&(frame, input.player));
     }
 
     /// Get input for (frame, player): confirmed if available, else predicted.
