@@ -1,11 +1,6 @@
-//! Render pipeline — glutin/winit window, OpenGL context, instanced glyph batch rendering.
-//!
-//! Phase 1 implementation:
-//!   - glutin-winit DisplayBuilder creates the window + GL config together
-//!   - GL 3.3 Core context via glow
-//!   - Font atlas uploaded as R8 texture (ab_glyph or fallback)
-//!   - All glyphs rendered as instanced textured quads
-//!   - winit pump_events drives the input loop without blocking
+//! Render pipeline — glutin 0.32/winit 0.30 window, OpenGL context,
+//! instanced glyph batch rendering, and multi-pass post-processing
+//! (bright-pass bloom + chromatic aberration).
 
 use std::num::NonZeroU32;
 use std::ffi::CString;
@@ -15,8 +10,8 @@ use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextApi, ContextAttributesBuilder, NotCurrentGlContext,
                       PossiblyCurrentContext, Version};
 use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, Surface, WindowSurface};
-use glutin_winit::{DisplayBuilder, GlWindow};
+use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
+use glutin_winit::DisplayBuilder;
 use glow::HasContext;
 use raw_window_handle::HasWindowHandle;
 use winit::dpi::LogicalSize;
@@ -35,7 +30,7 @@ use crate::input::{InputState, Key};
 use crate::glyph::atlas::FontAtlas;
 use crate::glyph::batch::{GlyphBatch, GlyphInstance};
 
-// ── Shaders (Phase 1 — single render target, emission blended inline) ──────────
+// ── Glyph shaders ──────────────────────────────────────────────────────────────
 
 const VERT_SRC: &str = r#"
 #version 330 core
@@ -109,6 +104,80 @@ const QUAD_VERTS: [f32; 24] = [
      0.5,  0.5,  1.0, 1.0,
 ];
 
+// ── Post-processing shaders ────────────────────────────────────────────────────
+
+/// Full-screen triangle vertex shader (no VBO needed — uses gl_VertexID).
+const POSTFX_VERT: &str = r#"
+#version 330 core
+out vec2 f_uv;
+void main() {
+    // 3-vertex full-screen triangle trick
+    float x = float((gl_VertexID & 1) << 2) - 1.0;
+    float y = float((gl_VertexID & 2) << 1) - 1.0;
+    f_uv = vec2(x * 0.5 + 0.5, y * 0.5 + 0.5);
+    gl_Position = vec4(x, y, 0.0, 1.0);
+}
+"#;
+
+/// Extract pixels above a luminance threshold (bright-pass).
+const BRIGHT_EXTRACT_FRAG: &str = r#"
+#version 330 core
+uniform sampler2D u_scene;
+uniform float u_threshold;
+in vec2 f_uv;
+out vec4 o_color;
+void main() {
+    vec4 c = texture(u_scene, f_uv);
+    float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float t = max(lum - u_threshold, 0.0) / max(1.0 - u_threshold, 0.001);
+    o_color = c * t;
+}
+"#;
+
+/// Single-axis 9-tap Gaussian blur.
+const BLUR_FRAG: &str = r#"
+#version 330 core
+uniform sampler2D u_src;
+uniform vec2 u_direction;   // (1,0) horizontal, (0,1) vertical
+in vec2 f_uv;
+out vec4 o_color;
+const float w[5] = float[](0.227027, 0.194595, 0.121622, 0.054054, 0.016216);
+void main() {
+    vec2 step = u_direction / vec2(textureSize(u_src, 0));
+    vec4 result = texture(u_src, f_uv) * w[0];
+    for (int i = 1; i < 5; ++i) {
+        result += texture(u_src, f_uv + step * float(i)) * w[i];
+        result += texture(u_src, f_uv - step * float(i)) * w[i];
+    }
+    o_color = result;
+}
+"#;
+
+/// Composite: scene + bloom with optional chromatic aberration.
+const COMPOSITE_FRAG: &str = r#"
+#version 330 core
+uniform sampler2D u_scene;
+uniform sampler2D u_bloom;
+uniform float u_bloom_intensity;
+uniform float u_chromatic;    // 0 = off
+in vec2 f_uv;
+out vec4 o_color;
+void main() {
+    vec4 scene;
+    if (u_chromatic > 0.001) {
+        vec2 dir = (f_uv - 0.5) * u_chromatic;
+        float r = texture(u_scene, f_uv + dir).r;
+        float g = texture(u_scene, f_uv).g;
+        float b = texture(u_scene, f_uv - dir).b;
+        scene = vec4(r, g, b, texture(u_scene, f_uv).a);
+    } else {
+        scene = texture(u_scene, f_uv);
+    }
+    vec4 bloom = texture(u_bloom, f_uv) * u_bloom_intensity;
+    o_color = vec4(scene.rgb + bloom.rgb, scene.a);
+}
+"#;
+
 // ── Pipeline ───────────────────────────────────────────────────────────────────
 
 pub struct Pipeline {
@@ -122,7 +191,7 @@ pub struct Pipeline {
     surface:    Surface<WindowSurface>,
     context:    PossiblyCurrentContext,
 
-    // OpenGL
+    // OpenGL — glyph pass
     gl:            glow::Context,
     program:       glow::Program,
     vao:           glow::VertexArray,
@@ -130,6 +199,35 @@ pub struct Pipeline {
     instance_vbo:  glow::Buffer,
     atlas_tex:     glow::Texture,
     loc_view_proj: glow::UniformLocation,
+
+    // Phase 7 — scene FBO
+    scene_fbo: glow::Framebuffer,
+    scene_tex: glow::Texture,
+
+    // Phase 7 — bright-pass FBO
+    bright_fbo: glow::Framebuffer,
+    bright_tex: glow::Texture,
+
+    // Phase 7 — blur ping-pong FBOs
+    blur_fbo_a: glow::Framebuffer,
+    blur_tex_a: glow::Texture,
+    blur_fbo_b: glow::Framebuffer,
+    blur_tex_b: glow::Texture,
+
+    // Phase 7 — post-process programs
+    extract_prog:   glow::Program,
+    blur_prog:      glow::Program,
+    composite_prog: glow::Program,
+
+    // Uniform locations
+    extract_loc_scene:     glow::UniformLocation,
+    extract_loc_threshold: glow::UniformLocation,
+    blur_loc_src:          glow::UniformLocation,
+    blur_loc_direction:    glow::UniformLocation,
+    comp_loc_scene:        glow::UniformLocation,
+    comp_loc_bloom:        glow::UniformLocation,
+    comp_loc_intensity:    glow::UniformLocation,
+    comp_loc_chromatic:    glow::UniformLocation,
 
     // Font atlas (kept for UV lookups)
     atlas: FontAtlas,
@@ -139,12 +237,13 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Initialize the window, OpenGL context, shaders, and font atlas.
+    /// Initialize the window, OpenGL context, shaders, font atlas, and post-process FBOs.
     pub fn init(config: &EngineConfig) -> Self {
         // ── 1. Event loop ────────────────────────────────────────────────────
         let event_loop = EventLoop::new().expect("EventLoop::new");
 
         // ── 2. Window + GL config via glutin-winit DisplayBuilder ────────────
+        // winit 0.30: WindowAttributes instead of WindowBuilder
         let window_attrs = Window::default_attributes()
             .with_title(&config.window_title)
             .with_inner_size(LogicalSize::new(config.window_width, config.window_height))
@@ -154,6 +253,7 @@ impl Pipeline {
             .with_alpha_size(8)
             .with_depth_size(0);
 
+        // glutin-winit 0.5: with_window_attributes instead of with_window_builder
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attrs));
 
         let (window, gl_config) = display_builder
@@ -167,10 +267,11 @@ impl Pipeline {
         let display = gl_config.display();
 
         // ── 3. GL context (OpenGL 3.3 Core) ──────────────────────────────────
-        let raw_handle = window.window_handle().unwrap().as_raw();
+        // rwh 0.6: use HasWindowHandle instead of HasRawWindowHandle
+        let raw_window_handle = window.window_handle().unwrap().as_raw();
         let ctx_attrs = ContextAttributesBuilder::new()
             .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
-            .build(Some(raw_handle));
+            .build(Some(raw_window_handle));
 
         let not_current = unsafe {
             display
@@ -180,9 +281,14 @@ impl Pipeline {
 
         // ── 4. Window surface ─────────────────────────────────────────────────
         let size = window.inner_size();
-        let surface_attrs = window
-            .build_surface_attributes(Default::default())
-            .expect("build_surface_attributes");
+        let w = size.width.max(1);
+        let h = size.height.max(1);
+
+        let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
+            raw_window_handle,
+            NonZeroU32::new(w).unwrap(),
+            NonZeroU32::new(h).unwrap(),
+        );
         let surface = unsafe {
             display
                 .create_window_surface(&gl_config, &surface_attrs)
@@ -204,19 +310,50 @@ impl Pipeline {
 
         // ── 7. Compile shaders ────────────────────────────────────────────────
         let program = unsafe { compile_program(&gl, VERT_SRC, FRAG_SRC) };
-
         let loc_view_proj = unsafe {
             gl.get_uniform_location(program, "u_view_proj")
                 .expect("uniform u_view_proj not found")
         };
-
-        // Bind atlas sampler to texture unit 0 (set once, never changes)
         unsafe {
             gl.use_program(Some(program));
             if let Some(loc) = gl.get_uniform_location(program, "u_atlas") {
                 gl.uniform_1_i32(Some(&loc), 0);
             }
         }
+
+        let extract_prog   = unsafe { compile_program(&gl, POSTFX_VERT, BRIGHT_EXTRACT_FRAG) };
+        let blur_prog      = unsafe { compile_program(&gl, POSTFX_VERT, BLUR_FRAG) };
+        let composite_prog = unsafe { compile_program(&gl, POSTFX_VERT, COMPOSITE_FRAG) };
+
+        let (extract_loc_scene, extract_loc_threshold) = unsafe {
+            gl.use_program(Some(extract_prog));
+            let s = gl.get_uniform_location(extract_prog, "u_scene").expect("extract u_scene");
+            let t = gl.get_uniform_location(extract_prog, "u_threshold").expect("extract u_threshold");
+            gl.uniform_1_i32(Some(&s), 0);
+            gl.uniform_1_f32(Some(&t), 0.6);
+            (s, t)
+        };
+
+        let (blur_loc_src, blur_loc_direction) = unsafe {
+            gl.use_program(Some(blur_prog));
+            let s = gl.get_uniform_location(blur_prog, "u_src").expect("blur u_src");
+            let d = gl.get_uniform_location(blur_prog, "u_direction").expect("blur u_direction");
+            gl.uniform_1_i32(Some(&s), 0);
+            (s, d)
+        };
+
+        let (comp_loc_scene, comp_loc_bloom, comp_loc_intensity, comp_loc_chromatic) = unsafe {
+            gl.use_program(Some(composite_prog));
+            let sc = gl.get_uniform_location(composite_prog, "u_scene").expect("comp u_scene");
+            let bl = gl.get_uniform_location(composite_prog, "u_bloom").expect("comp u_bloom");
+            let bi = gl.get_uniform_location(composite_prog, "u_bloom_intensity").expect("comp u_bloom_intensity");
+            let ch = gl.get_uniform_location(composite_prog, "u_chromatic").expect("comp u_chromatic");
+            gl.uniform_1_i32(Some(&sc), 0);
+            gl.uniform_1_i32(Some(&bl), 1);
+            gl.uniform_1_f32(Some(&bi), 0.8);
+            gl.uniform_1_f32(Some(&ch), 0.003);
+            (sc, bl, bi, ch)
+        };
 
         // ── 8. VAO + VBOs ─────────────────────────────────────────────────────
         let (vao, quad_vbo, instance_vbo) = unsafe { setup_vao(&gl) };
@@ -225,36 +362,38 @@ impl Pipeline {
         let atlas = FontAtlas::build(config.render.font_size as f32);
         let atlas_tex = unsafe { upload_atlas(&gl, &atlas) };
 
-        // ── 10. Global GL state ───────────────────────────────────────────────
+        // ── 10. Post-process FBOs ─────────────────────────────────────────────
+        let (scene_fbo, scene_tex,
+             bright_fbo, bright_tex,
+             blur_fbo_a, blur_tex_a,
+             blur_fbo_b, blur_tex_b) = unsafe { create_fbos(&gl, w, h) };
+
+        // ── 11. Global GL state ───────────────────────────────────────────────
         unsafe {
             gl.enable(glow::BLEND);
             gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
             gl.clear_color(0.02, 0.02, 0.05, 1.0);
-            gl.viewport(0, 0, size.width as i32, size.height as i32);
+            gl.viewport(0, 0, w as i32, h as i32);
         }
 
         log::info!(
             "Pipeline ready — {}×{} — font atlas {}×{} ({} chars)",
-            size.width, size.height,
-            atlas.width, atlas.height,
-            atlas.uvs.len()
+            w, h, atlas.width, atlas.height, atlas.uvs.len()
         );
 
         Self {
-            width:  size.width,
-            height: size.height,
+            width: w, height: h,
             running: true,
-            event_loop,
-            window,
-            surface,
-            context,
-            gl,
-            program,
-            vao,
-            quad_vbo,
-            instance_vbo,
-            atlas_tex,
-            loc_view_proj,
+            event_loop, window, surface, context,
+            gl, program, vao, quad_vbo, instance_vbo, atlas_tex, loc_view_proj,
+            scene_fbo, scene_tex,
+            bright_fbo, bright_tex,
+            blur_fbo_a, blur_tex_a,
+            blur_fbo_b, blur_tex_b,
+            extract_prog, blur_prog, composite_prog,
+            extract_loc_scene, extract_loc_threshold,
+            blur_loc_src, blur_loc_direction,
+            comp_loc_scene, comp_loc_bloom, comp_loc_intensity, comp_loc_chromatic,
             atlas,
             batch: GlyphBatch::new(),
         }
@@ -264,12 +403,11 @@ impl Pipeline {
     pub fn poll_events(&mut self, input: &mut InputState) -> bool {
         input.clear_frame();
 
-        // Collect raw events into local Vecs to avoid borrow-checker conflicts
         let mut should_exit = false;
         let mut resize: Option<(u32, u32)> = None;
-        // (KeyCode, pressed)
         let mut key_events: Vec<(KeyCode, bool)> = Vec::new();
 
+        #[allow(deprecated)]
         let status = self.event_loop.pump_events(Some(Duration::ZERO), |event, elwt| {
             if let Event::WindowEvent { event: we, .. } = event {
                 match we {
@@ -291,7 +429,6 @@ impl Pipeline {
             }
         });
 
-        // Apply resize
         if let Some((w, h)) = resize {
             if w > 0 && h > 0 {
                 self.surface.resize(
@@ -303,10 +440,10 @@ impl Pipeline {
                 self.width  = w;
                 self.height = h;
                 input.window_resized = Some((w, h));
+                unsafe { self.resize_fbos(w, h); }
             }
         }
 
-        // Apply key events
         for (kc, pressed) in key_events {
             if let Some(key) = keycode_to_engine(kc) {
                 if pressed {
@@ -325,9 +462,8 @@ impl Pipeline {
         self.running
     }
 
-    /// Collect all visible glyphs + particles into the batch and draw.
+    /// Collect all visible glyphs + particles into the batch and draw with post-processing.
     pub fn render(&mut self, scene: &Scene, camera: &ProofCamera) {
-        // Compute view-projection from camera's current spring positions
         let pos    = camera.position.position();
         let tgt    = camera.target.position();
         let fov    = camera.fov.position;
@@ -336,19 +472,15 @@ impl Pipeline {
         let proj      = Mat4::perspective_rh_gl(fov.to_radians(), aspect, camera.near, camera.far);
         let view_proj = proj * view;
 
-        // ── Build instance batch ───────────────────────────────────────────────
         self.batch.clear();
 
         for (_, glyph) in scene.glyphs.iter() {
             if !glyph.visible { continue; }
-
-            // life_function modulates scale (e.g. Breathing oscillates scale)
             let life_scale = if let Some(ref f) = glyph.life_function {
                 f.evaluate(scene.time, 0.0)
             } else {
                 1.0
             };
-
             let uv = self.atlas.uv_for(glyph.character);
             self.batch.push(GlyphInstance {
                 position:    glyph.position.to_array(),
@@ -382,32 +514,7 @@ impl Pipeline {
             });
         }
 
-        // ── Draw ──────────────────────────────────────────────────────────────
-        unsafe {
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-
-            if self.batch.is_empty() { return; }
-
-            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
-            self.gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                cast_slice(self.batch.instances.as_slice()),
-                glow::DYNAMIC_DRAW,
-            );
-
-            self.gl.use_program(Some(self.program));
-            self.gl.uniform_matrix_4_f32_slice(
-                Some(&self.loc_view_proj),
-                false,
-                &view_proj.to_cols_array(),
-            );
-
-            self.gl.active_texture(glow::TEXTURE0);
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
-
-            self.gl.bind_vertex_array(Some(self.vao));
-            self.gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, self.batch.len() as i32);
-        }
+        unsafe { self.draw_postfx(view_proj); }
     }
 
     /// Swap the back buffer to screen. Returns false if the window was closed.
@@ -417,6 +524,93 @@ impl Pipeline {
             self.running = false;
         }
         self.running
+    }
+
+    // ── Private GL multi-pass draw ─────────────────────────────────────────────
+
+    unsafe fn draw_postfx(&mut self, view_proj: Mat4) {
+        let gl = &self.gl;
+
+        // ── Pass 1: Render glyphs → scene FBO ────────────────────────────────
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.scene_fbo));
+        gl.clear(glow::COLOR_BUFFER_BIT);
+
+        if !self.batch.is_empty() {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+            gl.buffer_data_u8_slice(
+                glow::ARRAY_BUFFER,
+                cast_slice(self.batch.instances.as_slice()),
+                glow::DYNAMIC_DRAW,
+            );
+            gl.use_program(Some(self.program));
+            gl.uniform_matrix_4_f32_slice(
+                Some(&self.loc_view_proj), false, &view_proj.to_cols_array(),
+            );
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
+            gl.bind_vertex_array(Some(self.vao));
+            gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, self.batch.len() as i32);
+        }
+
+        // ── Pass 2: Bright-pass extract (scene_tex → bright_fbo) ─────────────
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bright_fbo));
+        gl.disable(glow::BLEND);
+        gl.use_program(Some(self.extract_prog));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_tex));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3); // full-screen triangle
+
+        // ── Pass 3: Horizontal blur (bright_tex → blur_fbo_a) ────────────────
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.blur_fbo_a));
+        gl.use_program(Some(self.blur_prog));
+        gl.uniform_2_f32(Some(&self.blur_loc_direction), 1.0, 0.0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.bright_tex));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+
+        // ── Pass 4: Vertical blur (blur_tex_a → blur_fbo_b) ──────────────────
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.blur_fbo_b));
+        gl.uniform_2_f32(Some(&self.blur_loc_direction), 0.0, 1.0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.blur_tex_a));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+
+        // ── Pass 5: Composite → default framebuffer ───────────────────────────
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.enable(glow::BLEND);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        gl.use_program(Some(self.composite_prog));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_tex));
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.blur_tex_b));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+    }
+
+    /// Recreate all FBO textures after a window resize.
+    unsafe fn resize_fbos(&mut self, w: u32, h: u32) {
+        let gl = &self.gl;
+
+        gl.delete_framebuffer(self.scene_fbo);
+        gl.delete_texture(self.scene_tex);
+        gl.delete_framebuffer(self.bright_fbo);
+        gl.delete_texture(self.bright_tex);
+        gl.delete_framebuffer(self.blur_fbo_a);
+        gl.delete_texture(self.blur_tex_a);
+        gl.delete_framebuffer(self.blur_fbo_b);
+        gl.delete_texture(self.blur_tex_b);
+
+        let (scene_fbo, scene_tex,
+             bright_fbo, bright_tex,
+             blur_fbo_a, blur_tex_a,
+             blur_fbo_b, blur_tex_b) = create_fbos(gl, w, h);
+
+        self.scene_fbo  = scene_fbo;
+        self.scene_tex  = scene_tex;
+        self.bright_fbo = bright_fbo;
+        self.bright_tex = bright_tex;
+        self.blur_fbo_a = blur_fbo_a;
+        self.blur_tex_a = blur_tex_a;
+        self.blur_fbo_b = blur_fbo_b;
+        self.blur_tex_b = blur_tex_b;
     }
 }
 
@@ -459,29 +653,14 @@ unsafe fn setup_vao(
     let vao = gl.create_vertex_array().expect("create vao");
     gl.bind_vertex_array(Some(vao));
 
-    // ── Quad VBO (static, per-vertex) ────────────────────────────────────────
     let quad_vbo = gl.create_buffer().expect("create quad_vbo");
     gl.bind_buffer(glow::ARRAY_BUFFER, Some(quad_vbo));
     gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, cast_slice(&QUAD_VERTS), glow::STATIC_DRAW);
-    // loc 0: vec2 v_pos  (stride 16, offset 0)
     gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 16, 0);
     gl.enable_vertex_attrib_array(0);
-    // loc 1: vec2 v_uv   (stride 16, offset 8)
     gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 16, 8);
     gl.enable_vertex_attrib_array(1);
 
-    // ── Instance VBO (dynamic, per-instance) ─────────────────────────────────
-    // GlyphInstance layout (repr(C), 84 bytes):
-    //   [f32;3] position   offset  0
-    //   [f32;2] scale      offset 12
-    //   f32     rotation   offset 20
-    //   [f32;4] color      offset 24
-    //   f32     emission   offset 40
-    //   [f32;3] glow_color offset 44
-    //   f32     glow_radius offset 56
-    //   [f32;2] uv_offset  offset 60
-    //   [f32;2] uv_size    offset 68
-    //   [f32;2] _pad       offset 76
     let instance_vbo = gl.create_buffer().expect("create instance_vbo");
     gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
 
@@ -525,6 +704,51 @@ unsafe fn upload_atlas(gl: &glow::Context, atlas: &FontAtlas) -> glow::Texture {
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
     tex
+}
+
+/// Create a color attachment texture for an FBO.
+unsafe fn make_color_tex(gl: &glow::Context, w: u32, h: u32) -> glow::Texture {
+    let tex = gl.create_texture().expect("create fbo tex");
+    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, w as i32, h as i32,
+                    0, glow::RGBA, glow::UNSIGNED_BYTE, None);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    tex
+}
+
+/// Create a single-attachment FBO backed by a color texture.
+unsafe fn make_fbo(gl: &glow::Context, tex: glow::Texture) -> glow::Framebuffer {
+    let fbo = gl.create_framebuffer().expect("create framebuffer");
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+                              glow::TEXTURE_2D, Some(tex), 0);
+    fbo
+}
+
+/// Create all post-processing FBOs for the given resolution.
+#[allow(clippy::type_complexity)]
+unsafe fn create_fbos(gl: &glow::Context, w: u32, h: u32) -> (
+    glow::Framebuffer, glow::Texture,
+    glow::Framebuffer, glow::Texture,
+    glow::Framebuffer, glow::Texture,
+    glow::Framebuffer, glow::Texture,
+) {
+    let scene_tex  = make_color_tex(gl, w, h);
+    let bright_tex = make_color_tex(gl, w, h);
+    let blur_tex_a = make_color_tex(gl, w, h);
+    let blur_tex_b = make_color_tex(gl, w, h);
+
+    let scene_fbo  = make_fbo(gl, scene_tex);
+    let bright_fbo = make_fbo(gl, bright_tex);
+    let blur_fbo_a = make_fbo(gl, blur_tex_a);
+    let blur_fbo_b = make_fbo(gl, blur_tex_b);
+
+    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+
+    (scene_fbo, scene_tex, bright_fbo, bright_tex, blur_fbo_a, blur_tex_a, blur_fbo_b, blur_tex_b)
 }
 
 /// Map winit KeyCode → engine Key.  Returns None for unrecognised keys.
