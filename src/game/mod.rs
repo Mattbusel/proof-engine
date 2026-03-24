@@ -6,6 +6,8 @@
 pub mod menu;
 pub mod localization;
 pub mod achievements;
+pub mod fluids;
+pub mod debris;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
