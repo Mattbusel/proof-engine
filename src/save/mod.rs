@@ -30,6 +30,10 @@ pub mod serializer;
 pub mod snapshot;
 pub mod format;
 pub mod checkpoint;
+pub mod compression;
+pub mod migrations;
+pub mod cloud;
+pub mod profile;
 
 // Key re-exports
 pub use serializer::{
