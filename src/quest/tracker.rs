@@ -493,6 +493,329 @@ impl QuestTracker {
     pub fn is_quest_complete(&self, id: QuestId) -> bool { self.journal.is_quest_complete(id) }
     pub fn player_level(&self) -> u32 { self.journal.player_level }
     pub fn set_player_level(&mut self, level: u32) { self.journal.player_level = level; }
+
+    // ── Additional tracker helpers ────────────────────────────────────────
+
+    /// Number of currently active quests in the journal.
+    pub fn active_quest_count(&self) -> usize { self.journal.active_count() }
+
+    /// Whether there are no active quests.
+    pub fn no_active_quests(&self) -> bool { self.journal.is_empty() }
+
+    /// Directly fail a quest by id.
+    pub fn fail_quest(&mut self, quest_id: QuestId) {
+        let _ = self.journal.fail_quest(quest_id);
+        for ev in self.journal.drain_events() {
+            self.pending_events.push_back(ev);
+        }
+    }
+
+    /// Abandon a quest by id.
+    pub fn abandon_quest(&mut self, quest_id: QuestId) {
+        self.journal.abandon_quest(quest_id);
+        for ev in self.journal.drain_events() {
+            self.pending_events.push_back(ev);
+        }
+    }
+
+    /// Directly script-complete a specific objective, bypassing event routing.
+    pub fn script_complete_objective(
+        &mut self,
+        quest_id: QuestId,
+        obj_id: ObjectiveId,
+    ) {
+        let db = Arc::clone(&self.db);
+        let _ = self.journal.complete_objective(quest_id, obj_id, &db);
+        for ev in self.journal.drain_events() {
+            if let QuestEvent::RewardGranted(qid, reward) = &ev {
+                self.rewards.queue(*qid, reward.clone());
+            }
+            self.pending_events.push_back(ev);
+        }
+    }
+
+    /// Script-complete all objectives of a quest without routing game events.
+    pub fn script_complete_quest(&mut self, quest_id: QuestId) {
+        let db = Arc::clone(&self.db);
+        let _ = self.journal.script_complete_all_objectives(quest_id, &db);
+        for ev in self.journal.drain_events() {
+            if let QuestEvent::RewardGranted(qid, reward) = &ev {
+                self.rewards.queue(*qid, reward.clone());
+            }
+            self.pending_events.push_back(ev);
+        }
+    }
+
+    /// Return the time remaining for a timed quest, or `None` if no limit.
+    pub fn time_remaining(&self, quest_id: QuestId) -> Option<f32> {
+        self.journal.time_remaining(quest_id, &self.db)
+    }
+
+    /// Return the fraction of time elapsed for a timed quest.
+    pub fn time_fraction(&self, quest_id: QuestId) -> Option<f32> {
+        self.journal.time_fraction_elapsed(quest_id, &self.db)
+    }
+
+    /// Summary of the current journal state.
+    pub fn summary(&self) -> super::journal::JournalSummary {
+        self.journal.summary(&self.db)
+    }
+
+    /// A snapshot of `(quest_id, obj_id, current, target)` for all objectives.
+    pub fn objective_snapshot(&self) -> Vec<(QuestId, ObjectiveId, u32, u32)> {
+        self.journal.objective_snapshot(&self.db)
+    }
+
+    /// Reset session statistics.
+    pub fn reset_stats(&mut self) { self.stats = TrackerStats::new(); }
+
+    /// How many events are currently buffered in the pending queue.
+    pub fn pending_event_count(&self) -> usize { self.pending_events.len() }
+}
+
+// ── Additional ObjectiveMapper utilities ──────────────────────────────────────
+
+impl ObjectiveMapper {
+    /// Returns `true` if the given event could potentially advance any
+    /// objective across the entire database (regardless of active quests).
+    /// Useful for quickly rejecting irrelevant events before full scan.
+    pub fn event_could_matter(event: &GameEventType, db: &QuestDatabase) -> bool {
+        for def in db.all() {
+            for obj_def in &def.objectives {
+                if Self::event_matches_objective(event, obj_def, def).is_some() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Describe the objective type as a human-readable filter string,
+    /// used for debugging and UI display.
+    pub fn describe_objective(obj_def: &super::ObjectiveDef) -> String {
+        match &obj_def.obj_type {
+            ObjectiveType::Kill { enemy_type } =>
+                format!("Kill {}", enemy_type),
+            ObjectiveType::Collect { item_id, count } =>
+                format!("Collect {} x item#{}", count, item_id),
+            ObjectiveType::Reach { location } =>
+                format!("Reach '{}'", location),
+            ObjectiveType::Talk { npc_id } =>
+                format!("Talk to NPC #{}", npc_id),
+            ObjectiveType::Craft { item_id } =>
+                format!("Craft item#{}", item_id),
+            ObjectiveType::Survive { duration } =>
+                format!("Survive {:.1}s", duration),
+            ObjectiveType::Escort { npc_id, destination } =>
+                format!("Escort NPC #{} to '{}'", npc_id, destination),
+            ObjectiveType::Protect { npc_id, duration } =>
+                format!("Protect NPC #{} for {:.1}s", npc_id, duration),
+            ObjectiveType::Custom { key } =>
+                format!("Custom '{}'", key),
+        }
+    }
+
+    /// Count how many active objectives across all active quests match
+    /// the given event type (without actually advancing them).
+    pub fn count_matching(
+        event: &GameEventType,
+        journal: &QuestJournal,
+        db: &QuestDatabase,
+    ) -> usize {
+        Self::find_matching_objectives(event, journal, db).len()
+    }
+}
+
+// ── EventFilter ───────────────────────────────────────────────────────────────
+
+/// A bloom-filter-like structure that pre-classifies which `GameEventType`
+/// variants are "interesting" given the current set of active objectives.
+/// This avoids the full `ObjectiveMapper` scan when there are no active
+/// objectives for a given event type.
+#[derive(Debug, Default, Clone)]
+pub struct EventFilter {
+    wants_kills: bool,
+    kill_types: Vec<String>, // empty = wildcard
+    wants_pickups: bool,
+    pickup_ids: Vec<u32>,
+    wants_locations: bool,
+    location_keys: Vec<String>,
+    wants_npc_talks: bool,
+    npc_ids: Vec<u32>,
+    wants_crafts: bool,
+    craft_ids: Vec<u32>,
+    wants_time: bool,
+    wants_escorts: bool,
+    wants_protects: bool,
+    wants_custom: bool,
+    custom_keys: Vec<String>,
+}
+
+impl EventFilter {
+    pub fn new() -> Self { Self::default() }
+
+    /// Build an `EventFilter` from all objectives across active quests.
+    pub fn from_active_quests(journal: &QuestJournal, db: &QuestDatabase) -> Self {
+        let mut f = EventFilter::new();
+        for progress in journal.active_quests() {
+            if let Some(def) = db.get(progress.def_id) {
+                for obj_def in &def.objectives {
+                    // Skip already-complete objectives
+                    if let Some(op) = progress.objectives.get(&obj_def.id) {
+                        if op.is_done() { continue; }
+                    }
+                    match &obj_def.obj_type {
+                        ObjectiveType::Kill { enemy_type } => {
+                            f.wants_kills = true;
+                            if enemy_type != "*" {
+                                f.kill_types.push(enemy_type.clone());
+                            }
+                        }
+                        ObjectiveType::Collect { item_id, .. } => {
+                            f.wants_pickups = true;
+                            f.pickup_ids.push(*item_id);
+                        }
+                        ObjectiveType::Reach { location } => {
+                            f.wants_locations = true;
+                            f.location_keys.push(location.clone());
+                        }
+                        ObjectiveType::Talk { npc_id } => {
+                            f.wants_npc_talks = true;
+                            f.npc_ids.push(*npc_id);
+                        }
+                        ObjectiveType::Craft { item_id } => {
+                            f.wants_crafts = true;
+                            f.craft_ids.push(*item_id);
+                        }
+                        ObjectiveType::Survive { .. } => { f.wants_time = true; }
+                        ObjectiveType::Escort { .. }  => { f.wants_escorts = true; }
+                        ObjectiveType::Protect { .. } => { f.wants_protects = true; }
+                        ObjectiveType::Custom { key } => {
+                            f.wants_custom = true;
+                            f.custom_keys.push(key.clone());
+                        }
+                    }
+                }
+            }
+        }
+        f
+    }
+
+    /// Return `true` if the event is potentially relevant given the filter.
+    pub fn passes(&self, event: &GameEventType) -> bool {
+        match event {
+            GameEventType::EntityKilled { entity_type, .. } => {
+                if !self.wants_kills { return false; }
+                if self.kill_types.is_empty() { return true; } // wildcard
+                self.kill_types.iter().any(|t| t.eq_ignore_ascii_case(entity_type))
+            }
+            GameEventType::ItemPickedUp { item_id, .. } => {
+                self.wants_pickups && self.pickup_ids.contains(item_id)
+            }
+            GameEventType::LocationReached(loc) => {
+                if !self.wants_locations { return false; }
+                if self.location_keys.is_empty() { return true; }
+                self.location_keys.iter().any(|k| {
+                    if let Some(prefix) = k.strip_suffix('*') {
+                        loc.starts_with(prefix)
+                    } else {
+                        k.eq_ignore_ascii_case(loc)
+                    }
+                })
+            }
+            GameEventType::NpcTalkedTo(npc_id) => {
+                self.wants_npc_talks && self.npc_ids.contains(npc_id)
+            }
+            GameEventType::ItemCrafted { item_id, .. } => {
+                self.wants_crafts && self.craft_ids.contains(item_id)
+            }
+            GameEventType::TimePassed(_) => self.wants_time,
+            GameEventType::EscortReached { .. }   => self.wants_escorts,
+            GameEventType::EntityProtected { .. } => self.wants_protects,
+            GameEventType::CustomEvent { key, .. } => {
+                self.wants_custom && self.custom_keys.contains(key)
+            }
+        }
+    }
+
+    /// Whether no events are of interest (all quest types idle).
+    pub fn is_empty(&self) -> bool {
+        !self.wants_kills
+            && !self.wants_pickups
+            && !self.wants_locations
+            && !self.wants_npc_talks
+            && !self.wants_crafts
+            && !self.wants_time
+            && !self.wants_escorts
+            && !self.wants_protects
+            && !self.wants_custom
+    }
+}
+
+// ── QuestTrackerWithFilter ────────────────────────────────────────────────────
+
+/// Wraps a `QuestTracker` with a cached `EventFilter` for fast rejection of
+/// irrelevant events.  The filter is rebuilt lazily after any quest state change.
+pub struct QuestTrackerWithFilter {
+    pub tracker: QuestTracker,
+    filter: EventFilter,
+    filter_dirty: bool,
+}
+
+impl QuestTrackerWithFilter {
+    pub fn new(db: Arc<QuestDatabase>, journal: QuestJournal) -> Self {
+        let mut s = Self {
+            tracker: QuestTracker::new(db, journal),
+            filter: EventFilter::new(),
+            filter_dirty: true,
+        };
+        s.rebuild_filter();
+        s
+    }
+
+    fn rebuild_filter(&mut self) {
+        self.filter = EventFilter::from_active_quests(&self.tracker.journal, &self.tracker.db);
+        self.filter_dirty = false;
+    }
+
+    /// Process an event, skipping the full scan if the filter rejects it.
+    pub fn process_event_filtered(&mut self, event: GameEventType) -> Vec<QuestEvent> {
+        if self.filter_dirty { self.rebuild_filter(); }
+        if self.filter.is_empty() || !self.filter.passes(&event) {
+            // Still need to record stats for irrelevant events
+            self.tracker.stats.record_event(&event);
+            return Vec::new();
+        }
+        let events = self.tracker.process_game_event(event);
+        if events.iter().any(|e| matches!(
+            e,
+            QuestEvent::QuestComplete(_)
+            | QuestEvent::QuestFailed(_)
+            | QuestEvent::QuestStarted(_)
+            | QuestEvent::QuestTimedOut(_)
+        )) {
+            self.filter_dirty = true;
+        }
+        events
+    }
+
+    /// Accept a quest and mark filter as dirty.
+    pub fn accept_quest(&mut self, quest_id: QuestId) -> Result<(), JournalError> {
+        let result = self.tracker.accept_quest(quest_id);
+        if result.is_ok() { self.filter_dirty = true; }
+        result
+    }
+
+    pub fn tick(&mut self, delta: f32) -> Vec<QuestEvent> {
+        let events = self.tracker.tick(delta);
+        if events.iter().any(|e| matches!(e, QuestEvent::QuestTimedOut(_))) {
+            self.filter_dirty = true;
+        }
+        events
+    }
+
+    pub fn filter(&self) -> &EventFilter { &self.filter }
+    pub fn force_rebuild_filter(&mut self) { self.rebuild_filter(); }
 }
 
 // ── TrackerSession ────────────────────────────────────────────────────────────
@@ -578,6 +901,141 @@ impl TrackerSession {
 
     pub fn drain_rewards(&mut self) -> Vec<(QuestId, Reward)> {
         self.tracker.rewards.drain()
+    }
+}
+
+// ── QuestEventLogger ──────────────────────────────────────────────────────────
+
+/// Records a timestamped history of quest events for debugging, replays, and
+/// analytics pipelines.
+#[derive(Debug, Default)]
+pub struct QuestEventLogger {
+    entries: Vec<LoggedQuestEvent>,
+    max_entries: usize,
+}
+
+/// A quest event paired with the game-world time it occurred.
+#[derive(Debug, Clone)]
+pub struct LoggedQuestEvent {
+    pub timestamp: f32,
+    pub event: LoggedEventKind,
+}
+
+/// A serialisation-friendly, non-recursive mirror of `QuestEvent`.
+#[derive(Debug, Clone)]
+pub enum LoggedEventKind {
+    QuestAvailable(QuestId),
+    QuestStarted(QuestId),
+    ObjectiveUpdated { quest: QuestId, obj: ObjectiveId, progress: u32 },
+    ObjectiveComplete(QuestId, ObjectiveId),
+    QuestComplete(QuestId),
+    QuestFailed(QuestId),
+    QuestTimedOut(QuestId),
+    RewardGranted { quest: QuestId, experience: u32, gold: u32 },
+}
+
+impl LoggedEventKind {
+    pub fn from_quest_event(ev: &QuestEvent) -> Self {
+        match ev {
+            QuestEvent::QuestAvailable(id)     => LoggedEventKind::QuestAvailable(*id),
+            QuestEvent::QuestStarted(id)       => LoggedEventKind::QuestStarted(*id),
+            QuestEvent::ObjectiveUpdated { quest, obj, progress } =>
+                LoggedEventKind::ObjectiveUpdated {
+                    quest: *quest,
+                    obj: *obj,
+                    progress: *progress,
+                },
+            QuestEvent::ObjectiveComplete(q, o) => LoggedEventKind::ObjectiveComplete(*q, *o),
+            QuestEvent::QuestComplete(id)      => LoggedEventKind::QuestComplete(*id),
+            QuestEvent::QuestFailed(id)        => LoggedEventKind::QuestFailed(*id),
+            QuestEvent::QuestTimedOut(id)      => LoggedEventKind::QuestTimedOut(*id),
+            QuestEvent::RewardGranted(id, r)   => LoggedEventKind::RewardGranted {
+                quest: *id,
+                experience: r.experience,
+                gold: r.gold,
+            },
+        }
+    }
+
+    pub fn quest_id(&self) -> QuestId {
+        match self {
+            LoggedEventKind::QuestAvailable(id)             => *id,
+            LoggedEventKind::QuestStarted(id)               => *id,
+            LoggedEventKind::ObjectiveUpdated { quest, .. } => *quest,
+            LoggedEventKind::ObjectiveComplete(id, _)       => *id,
+            LoggedEventKind::QuestComplete(id)              => *id,
+            LoggedEventKind::QuestFailed(id)                => *id,
+            LoggedEventKind::QuestTimedOut(id)              => *id,
+            LoggedEventKind::RewardGranted { quest, .. }    => *quest,
+        }
+    }
+}
+
+impl QuestEventLogger {
+    pub const DEFAULT_MAX: usize = 4096;
+
+    pub fn new() -> Self {
+        Self { entries: Vec::new(), max_entries: Self::DEFAULT_MAX }
+    }
+
+    pub fn with_max(max_entries: usize) -> Self {
+        Self { entries: Vec::new(), max_entries }
+    }
+
+    /// Ingest a slice of `QuestEvent`s at the given timestamp.
+    pub fn log_events(&mut self, events: &[QuestEvent], timestamp: f32) {
+        for ev in events {
+            if self.entries.len() >= self.max_entries {
+                self.entries.remove(0);
+            }
+            self.entries.push(LoggedQuestEvent {
+                timestamp,
+                event: LoggedEventKind::from_quest_event(ev),
+            });
+        }
+    }
+
+    /// All entries related to a specific quest.
+    pub fn entries_for(&self, quest_id: QuestId) -> Vec<&LoggedQuestEvent> {
+        self.entries.iter().filter(|e| e.event.quest_id() == quest_id).collect()
+    }
+
+    /// All entries in chronological order.
+    pub fn all_entries(&self) -> &[LoggedQuestEvent] { &self.entries }
+
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+
+    pub fn clear(&mut self) { self.entries.clear(); }
+
+    /// Count how many `QuestComplete` events have been logged.
+    pub fn completion_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e.event, LoggedEventKind::QuestComplete(_)))
+            .count()
+    }
+
+    /// Count how many failure events have been logged.
+    pub fn failure_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(
+                e.event,
+                LoggedEventKind::QuestFailed(_) | LoggedEventKind::QuestTimedOut(_)
+            ))
+            .count()
+    }
+
+    /// Find the timestamp when a quest completed, or `None`.
+    pub fn completion_time(&self, quest_id: QuestId) -> Option<f32> {
+        self.entries.iter().find_map(|e| {
+            if let LoggedEventKind::QuestComplete(id) = &e.event {
+                if *id == quest_id { Some(e.timestamp) } else { None }
+            } else {
+                None
+            }
+        })
     }
 }
 

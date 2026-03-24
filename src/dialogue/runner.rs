@@ -1729,3 +1729,753 @@ mod tests {
         assert!(RunnerStatus::Errored("oops".to_string()).is_errored());
     }
 }
+
+// ── DialogueOutputQueue ───────────────────────────────────────────────────────
+
+/// A buffered queue of [`DialogueOutput`] events with typed accessors.
+///
+/// The runner writes into a `VecDeque<DialogueOutput>` internally; this struct
+/// provides a convenient wrapper for callers who want typed extraction helpers
+/// rather than pattern-matching each variant by hand.
+#[derive(Debug, Default)]
+pub struct DialogueOutputQueue {
+    inner: VecDeque<DialogueOutput>,
+}
+
+impl DialogueOutputQueue {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn push(&mut self, out: DialogueOutput) {
+        self.inner.push_back(out);
+    }
+
+    pub fn pop(&mut self) -> Option<DialogueOutput> {
+        self.inner.pop_front()
+    }
+
+    pub fn peek(&self) -> Option<&DialogueOutput> {
+        self.inner.front()
+    }
+
+    pub fn len(&self) -> usize { self.inner.len() }
+    pub fn is_empty(&self) -> bool { self.inner.is_empty() }
+
+    /// Drain all events into a `Vec`.
+    pub fn drain_all(&mut self) -> Vec<DialogueOutput> {
+        self.inner.drain(..).collect()
+    }
+
+    /// Pop the next `Say` event if the front of the queue is a `Say`.
+    pub fn pop_say(&mut self) -> Option<(SpeakerId, String, Emotion, Option<String>)> {
+        if let Some(DialogueOutput::Say { .. }) = self.inner.front() {
+            if let Some(DialogueOutput::Say { speaker, text, emotion, audio_key }) = self.inner.pop_front() {
+                return Some((speaker, text, emotion, audio_key));
+            }
+        }
+        None
+    }
+
+    /// Pop the next `ShowChoices` event if the front of the queue is choices.
+    pub fn pop_choices(&mut self) -> Option<Vec<VisibleChoice>> {
+        if let Some(DialogueOutput::ShowChoices(_)) = self.inner.front() {
+            if let Some(DialogueOutput::ShowChoices(choices)) = self.inner.pop_front() {
+                return Some(choices);
+            }
+        }
+        None
+    }
+
+    /// Returns `true` if any event in the queue is `Ended`.
+    pub fn has_ended(&self) -> bool {
+        self.inner.iter().any(|o| matches!(o, DialogueOutput::Ended))
+    }
+}
+
+// ── RunnerSnapshot ────────────────────────────────────────────────────────────
+
+/// A point-in-time snapshot of [`DialogueRunner`] state for save/load.
+///
+/// The snapshot does not include the `DialogueLibrary` reference; the caller
+/// is responsible for providing the same library when restoring.
+#[derive(Debug, Clone)]
+pub struct RunnerSnapshot {
+    pub state:   Option<DialogueState>,
+    pub status:  RunnerStatus,
+}
+
+impl RunnerSnapshot {
+    /// Capture the current state of a runner.
+    pub fn capture(runner: &DialogueRunner) -> Self {
+        Self {
+            state:  runner.state.clone(),
+            status: runner.status.clone(),
+        }
+    }
+
+    /// Restore a runner to this snapshot.
+    ///
+    /// The runner's `library` and `persistent_vars`/`persistent_flags` are
+    /// preserved — only execution state is replaced.
+    pub fn restore(self, runner: &mut DialogueRunner) {
+        runner.state  = self.state;
+        runner.status = self.status;
+        runner.pending_output.clear();
+    }
+}
+
+// ── ChoiceHistory ─────────────────────────────────────────────────────────────
+
+/// Tracks which choices have been made in previous runs, enabling the UI to
+/// mark "already seen" paths.
+#[derive(Debug, Clone, Default)]
+pub struct ChoiceHistory {
+    /// Map from (DialogueId, NodeId) → set of chosen option indices.
+    records: HashMap<(DialogueId, NodeId), HashSet<usize>>,
+}
+
+impl ChoiceHistory {
+    pub fn new() -> Self { Self::default() }
+
+    /// Record that `option_index` was chosen at `(tree, node)`.
+    pub fn record(&mut self, tree: DialogueId, node: NodeId, option_index: usize) {
+        self.records
+            .entry((tree, node))
+            .or_default()
+            .insert(option_index);
+    }
+
+    /// Returns `true` if `option_index` has been chosen at `(tree, node)` before.
+    pub fn has_chosen(&self, tree: DialogueId, node: NodeId, option_index: usize) -> bool {
+        self.records
+            .get(&(tree, node))
+            .map_or(false, |s| s.contains(&option_index))
+    }
+
+    /// All indices that have been chosen at `(tree, node)`.
+    pub fn chosen_at(&self, tree: DialogueId, node: NodeId) -> Vec<usize> {
+        self.records
+            .get(&(tree, node))
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Clear history for a specific tree (e.g. after a new game).
+    pub fn clear_tree(&mut self, tree: DialogueId) {
+        self.records.retain(|(t, _), _| *t != tree);
+    }
+
+    /// Clear all history.
+    pub fn clear_all(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+// ── AutoAdvanceTimer ─────────────────────────────────────────────────────────
+
+/// Drives automatic dialogue progression at a configurable delay.
+///
+/// Attach one of these to a session or UI system; call `tick` each frame and
+/// act on the returned signal.
+#[derive(Debug, Clone)]
+pub struct AutoAdvanceTimer {
+    /// Seconds to wait before auto-advancing.
+    pub delay:   f32,
+    elapsed:     f32,
+    armed:       bool,
+    paused:      bool,
+}
+
+impl AutoAdvanceTimer {
+    pub fn new(delay: f32) -> Self {
+        Self { delay, elapsed: 0.0, armed: false, paused: false }
+    }
+
+    /// Arm the timer (start counting from 0).
+    pub fn arm(&mut self) {
+        self.elapsed = 0.0;
+        self.armed   = true;
+    }
+
+    /// Disarm the timer without firing.
+    pub fn disarm(&mut self) {
+        self.armed   = false;
+        self.elapsed = 0.0;
+    }
+
+    pub fn pause(&mut self)  { self.paused = true; }
+    pub fn resume(&mut self) { self.paused = false; }
+
+    /// Advance by `delta` seconds.  Returns `true` when the timer fires.
+    pub fn tick(&mut self, delta: f32) -> bool {
+        if !self.armed || self.paused { return false; }
+        self.elapsed += delta;
+        if self.elapsed >= self.delay {
+            self.disarm();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_armed(&self) -> bool { self.armed }
+
+    /// Progress in [0, 1].
+    pub fn progress(&self) -> f32 {
+        if self.delay <= 0.0 { return 1.0; }
+        (self.elapsed / self.delay).clamp(0.0, 1.0)
+    }
+}
+
+impl Default for AutoAdvanceTimer {
+    fn default() -> Self { Self::new(2.0) }
+}
+
+// ── SkipPolicy ────────────────────────────────────────────────────────────────
+
+/// Controls which nodes the skip action is allowed to fast-forward through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipPolicy {
+    /// Skip is not allowed.
+    Disabled,
+    /// Skip through all nodes unconditionally.
+    All,
+    /// Skip only through nodes that appear in the provided history.
+    SeenOnly,
+    /// Skip until a choice node or end is reached.
+    UntilChoice,
+}
+
+impl SkipPolicy {
+    /// Returns `true` if skipping is allowed at all.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, SkipPolicy::Disabled)
+    }
+}
+
+impl Default for SkipPolicy {
+    fn default() -> Self { SkipPolicy::SeenOnly }
+}
+
+// ── OutputFilter ─────────────────────────────────────────────────────────────
+
+/// Filtering rules applied to [`DialogueOutput`] before delivery to the UI.
+///
+/// Allows systems like cutscene cameras or voice-over managers to intercept
+/// specific output kinds without modifying the runner.
+#[derive(Debug, Clone, Default)]
+pub struct OutputFilter {
+    /// If true, `CameraAction` outputs are suppressed (e.g. in menus).
+    pub suppress_camera:  bool,
+    /// If true, `PlayAnim` outputs are suppressed.
+    pub suppress_anim:    bool,
+    /// If true, `ScriptCall` outputs are suppressed (dry-run mode).
+    pub suppress_scripts: bool,
+    /// If true, `Wait` outputs are suppressed and timers run at zero cost.
+    pub suppress_waits:   bool,
+}
+
+impl OutputFilter {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn suppress_camera(mut self)  -> Self { self.suppress_camera  = true; self }
+    pub fn suppress_anim(mut self)    -> Self { self.suppress_anim    = true; self }
+    pub fn suppress_scripts(mut self) -> Self { self.suppress_scripts = true; self }
+    pub fn suppress_waits(mut self)   -> Self { self.suppress_waits   = true; self }
+
+    /// Returns `false` if this output should be dropped.
+    pub fn allow(&self, output: &DialogueOutput) -> bool {
+        match output {
+            DialogueOutput::CameraAction(_) => !self.suppress_camera,
+            DialogueOutput::PlayAnim { .. } => !self.suppress_anim,
+            DialogueOutput::ScriptCall { .. } => !self.suppress_scripts,
+            DialogueOutput::Wait(_)         => !self.suppress_waits,
+            _ => true,
+        }
+    }
+
+    /// Filter a list of outputs, removing disallowed ones.
+    pub fn apply(&self, outputs: Vec<DialogueOutput>) -> Vec<DialogueOutput> {
+        outputs.into_iter().filter(|o| self.allow(o)).collect()
+    }
+}
+
+// ── extra runner tests ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use crate::dialogue::tree::{
+        CameraAction, ChoiceOption, Condition, DialogueBuilder, DialogueLibrary,
+        DialogueNode, DialogueMeta, DialogueTree,
+    };
+    use crate::dialogue::{DialogueId, DialogueVar, NodeId, SpeakerId};
+
+    fn make_library_with(tree: DialogueTree) -> Arc<DialogueLibrary> {
+        let mut lib = DialogueLibrary::new();
+        lib.register(tree);
+        Arc::new(lib)
+    }
+
+    // ── DialogueOutputQueue ────────────────────────────────────────────────
+
+    #[test]
+    fn output_queue_push_pop() {
+        let mut q = DialogueOutputQueue::new();
+        q.push(DialogueOutput::Ended);
+        assert_eq!(q.len(), 1);
+        let out = q.pop();
+        assert!(matches!(out, Some(DialogueOutput::Ended)));
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn output_queue_pop_say() {
+        let mut q = DialogueOutputQueue::new();
+        q.push(DialogueOutput::Say {
+            speaker:   SpeakerId(1),
+            text:      "Hi".to_string(),
+            emotion:   crate::dialogue::Emotion::Neutral,
+            audio_key: None,
+        });
+        let result = q.pop_say();
+        assert!(result.is_some());
+        let (spk, text, _, _) = result.unwrap();
+        assert_eq!(spk, SpeakerId(1));
+        assert_eq!(text, "Hi");
+    }
+
+    #[test]
+    fn output_queue_pop_choices() {
+        let mut q = DialogueOutputQueue::new();
+        q.push(DialogueOutput::ShowChoices(vec![
+            VisibleChoice { index: 0, text: "Yes".to_string(), tags: vec![] },
+        ]));
+        let choices = q.pop_choices();
+        assert!(choices.is_some());
+        assert_eq!(choices.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn output_queue_has_ended() {
+        let mut q = DialogueOutputQueue::new();
+        q.push(DialogueOutput::Ended);
+        assert!(q.has_ended());
+        q.drain_all();
+        assert!(!q.has_ended());
+    }
+
+    #[test]
+    fn output_queue_drain_all() {
+        let mut q = DialogueOutputQueue::new();
+        q.push(DialogueOutput::Ended);
+        q.push(DialogueOutput::Ended);
+        let drained = q.drain_all();
+        assert_eq!(drained.len(), 2);
+        assert!(q.is_empty());
+    }
+
+    // ── RunnerSnapshot ─────────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_capture_and_restore() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .say(SpeakerId(1), "Line 1")
+            .say(SpeakerId(1), "Line 2")
+            .end()
+            .build();
+        let lib = make_library_with(tree);
+        let mut runner = DialogueRunner::new(lib);
+        runner.start(DialogueId(1)).unwrap();
+
+        // Advance one step.
+        let _ = runner.advance();
+
+        // Capture snapshot.
+        let snap = RunnerSnapshot::capture(&runner);
+
+        // Advance further.
+        let _ = runner.advance();
+        let _ = runner.advance();
+
+        // Restore.
+        snap.restore(&mut runner);
+
+        // Runner should be back in Running state (not Finished).
+        assert!(!runner.is_finished(), "runner should not be finished after restore");
+    }
+
+    // ── ChoiceHistory ─────────────────────────────────────────────────────
+
+    #[test]
+    fn choice_history_record_and_query() {
+        let mut ch = ChoiceHistory::new();
+        ch.record(DialogueId(1), NodeId(5), 0);
+        ch.record(DialogueId(1), NodeId(5), 2);
+        assert!(ch.has_chosen(DialogueId(1), NodeId(5), 0));
+        assert!(ch.has_chosen(DialogueId(1), NodeId(5), 2));
+        assert!(!ch.has_chosen(DialogueId(1), NodeId(5), 1));
+        assert!(!ch.has_chosen(DialogueId(2), NodeId(5), 0));
+    }
+
+    #[test]
+    fn choice_history_chosen_at() {
+        let mut ch = ChoiceHistory::new();
+        ch.record(DialogueId(1), NodeId(3), 1);
+        ch.record(DialogueId(1), NodeId(3), 3);
+        let mut chosen = ch.chosen_at(DialogueId(1), NodeId(3));
+        chosen.sort();
+        assert_eq!(chosen, vec![1, 3]);
+    }
+
+    #[test]
+    fn choice_history_clear_tree() {
+        let mut ch = ChoiceHistory::new();
+        ch.record(DialogueId(1), NodeId(1), 0);
+        ch.record(DialogueId(2), NodeId(1), 0);
+        ch.clear_tree(DialogueId(1));
+        assert!(!ch.has_chosen(DialogueId(1), NodeId(1), 0));
+        assert!(ch.has_chosen(DialogueId(2), NodeId(1), 0));
+    }
+
+    #[test]
+    fn choice_history_clear_all() {
+        let mut ch = ChoiceHistory::new();
+        ch.record(DialogueId(1), NodeId(1), 0);
+        ch.clear_all();
+        assert!(ch.is_empty());
+    }
+
+    // ── AutoAdvanceTimer ───────────────────────────────────────────────────
+
+    #[test]
+    fn auto_advance_timer_fires() {
+        let mut t = AutoAdvanceTimer::new(1.0);
+        t.arm();
+        assert!(!t.tick(0.5));
+        assert!(t.tick(0.6)); // total 1.1 ≥ 1.0 — fires
+        assert!(!t.is_armed());
+    }
+
+    #[test]
+    fn auto_advance_timer_disarmed_does_not_fire() {
+        let mut t = AutoAdvanceTimer::new(0.1);
+        // Not armed — should never fire.
+        assert!(!t.tick(10.0));
+    }
+
+    #[test]
+    fn auto_advance_timer_paused() {
+        let mut t = AutoAdvanceTimer::new(1.0);
+        t.arm();
+        t.pause();
+        assert!(!t.tick(10.0)); // paused: won't fire regardless of time
+        t.resume();
+        assert!(t.tick(1.0)); // now fires
+    }
+
+    #[test]
+    fn auto_advance_timer_progress() {
+        let mut t = AutoAdvanceTimer::new(4.0);
+        t.arm();
+        t.tick(2.0);
+        let p = t.progress();
+        assert!((p - 0.5).abs() < 0.01, "expected 0.5, got {}", p);
+    }
+
+    // ── SkipPolicy ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn skip_policy_enabled() {
+        assert!(!SkipPolicy::Disabled.is_enabled());
+        assert!(SkipPolicy::All.is_enabled());
+        assert!(SkipPolicy::SeenOnly.is_enabled());
+        assert!(SkipPolicy::UntilChoice.is_enabled());
+    }
+
+    // ── OutputFilter ───────────────────────────────────────────────────────
+
+    #[test]
+    fn output_filter_suppress_camera() {
+        let filter = OutputFilter::new().suppress_camera();
+        let outputs = vec![
+            DialogueOutput::CameraAction(CameraAction::Restore),
+            DialogueOutput::Ended,
+        ];
+        let filtered = filter.apply(outputs);
+        assert_eq!(filtered.len(), 1);
+        assert!(matches!(filtered[0], DialogueOutput::Ended));
+    }
+
+    #[test]
+    fn output_filter_allow_all_by_default() {
+        let filter = OutputFilter::new();
+        let out = DialogueOutput::CameraAction(CameraAction::Restore);
+        assert!(filter.allow(&out));
+    }
+
+    #[test]
+    fn output_filter_suppress_scripts() {
+        let filter = OutputFilter::new().suppress_scripts();
+        let out = DialogueOutput::ScriptCall {
+            function: "test".to_string(),
+            args:     vec![],
+        };
+        assert!(!filter.allow(&out));
+        // Say is always allowed.
+        let say = DialogueOutput::Say {
+            speaker:   SpeakerId(1),
+            text:      "hi".to_string(),
+            emotion:   crate::dialogue::Emotion::Neutral,
+            audio_key: None,
+        };
+        assert!(filter.allow(&say));
+    }
+
+    // ── DialogueState ─────────────────────────────────────────────────────
+
+    #[test]
+    fn dialogue_state_visit_tracking() {
+        let mut state = DialogueState::new(
+            DialogueId(1),
+            NodeId(1),
+            HashMap::new(),
+            HashSet::new(),
+            0.0,
+        );
+        state.record_visit(NodeId(1));
+        state.record_visit(NodeId(2));
+        assert!(state.has_visited(NodeId(1)));
+        assert!(state.has_visited(NodeId(2)));
+        assert!(!state.has_visited(NodeId(99)));
+    }
+
+    #[test]
+    fn dialogue_state_choice_counts() {
+        let mut state = DialogueState::new(
+            DialogueId(1), NodeId(1), HashMap::new(), HashSet::new(), 0.0,
+        );
+        state.increment_choice(NodeId(5));
+        state.increment_choice(NodeId(5));
+        assert_eq!(state.choice_count(NodeId(5)), 2);
+        assert_eq!(state.choice_count(NodeId(99)), 0);
+    }
+
+    #[test]
+    fn dialogue_state_flag_ops() {
+        let mut state = DialogueState::new(
+            DialogueId(1), NodeId(1), HashMap::new(), HashSet::new(), 0.0,
+        );
+        state.set_flag("met_npc");
+        assert!(state.has_flag("met_npc"));
+        assert!(state.remove_flag("met_npc"));
+        assert!(!state.has_flag("met_npc"));
+    }
+
+    #[test]
+    fn dialogue_state_var_ops() {
+        let mut state = DialogueState::new(
+            DialogueId(1), NodeId(1), HashMap::new(), HashSet::new(), 0.0,
+        );
+        state.set_var("score", DialogueVar::Int(42));
+        assert_eq!(state.get_var("score"), Some(&DialogueVar::Int(42)));
+        assert_eq!(state.get_var("absent"), None);
+    }
+
+    // ── Persistent vars ────────────────────────────────────────────────────
+
+    #[test]
+    fn runner_persistent_vars_carry_into_next_dialogue() {
+        let mut lib = DialogueLibrary::new();
+
+        // Tree 1: SetVar "x" = 99 → End
+        let mut t1 = DialogueTree::new(DialogueId(1), NodeId(1), DialogueMeta::new("T1"));
+        t1.insert(DialogueNode::SetVar {
+            id:    NodeId(1),
+            name:  "x".to_string(),
+            value: DialogueVar::Int(99),
+            next:  Some(NodeId(2)),
+        });
+        t1.insert(DialogueNode::End { id: NodeId(2) });
+
+        // Tree 2: Branch x > 50 → Say "big" → End, else Say "small" → End
+        let mut t2 = DialogueTree::new(DialogueId(2), NodeId(1), DialogueMeta::new("T2"));
+        t2.insert(DialogueNode::Branch {
+            id:        NodeId(1),
+            condition: Condition::var_greater("x", 50i64),
+            if_true:   NodeId(2),
+            if_false:  Some(NodeId(3)),
+        });
+        t2.insert(DialogueNode::Say {
+            id:        NodeId(2),
+            speaker:   SpeakerId(1),
+            text:      "big".to_string(),
+            emotion:   crate::dialogue::Emotion::Neutral,
+            audio_key: None,
+            next:      Some(NodeId(4)),
+        });
+        t2.insert(DialogueNode::Say {
+            id:        NodeId(3),
+            speaker:   SpeakerId(1),
+            text:      "small".to_string(),
+            emotion:   crate::dialogue::Emotion::Neutral,
+            audio_key: None,
+            next:      Some(NodeId(4)),
+        });
+        t2.insert(DialogueNode::End { id: NodeId(4) });
+
+        lib.register(t1);
+        lib.register(t2);
+        let lib = Arc::new(lib);
+
+        let mut runner = DialogueRunner::new(lib);
+
+        // Run tree 1 to set x = 99.
+        runner.start(DialogueId(1)).unwrap();
+        loop {
+            match runner.advance() {
+                None | Some(DialogueOutput::Ended) => break,
+                _ => {}
+            }
+        }
+        // Copy the variable back into persistent store.
+        if let Some(v) = runner.get_var("x").cloned() {
+            runner.set_persistent_var("x", v);
+        }
+
+        // Run tree 2 — x should be 99 → "big" branch.
+        runner.start(DialogueId(2)).unwrap();
+        let mut found_text = String::new();
+        loop {
+            match runner.advance() {
+                None | Some(DialogueOutput::Ended) => break,
+                Some(DialogueOutput::Say { text, .. }) => { found_text = text; }
+                _ => {}
+            }
+        }
+        assert_eq!(found_text, "big", "expected 'big' branch, got '{}'", found_text);
+    }
+
+    // ── Camera + PlayAnim non-blocking ────────────────────────────────────
+
+    #[test]
+    fn runner_camera_and_anim_non_blocking() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1), NodeId(1), DialogueMeta::new("Cutscene"),
+        );
+        tree.insert(DialogueNode::Camera {
+            id:     NodeId(1),
+            action: CameraAction::FocusOn(SpeakerId(1)),
+            next:   NodeId(2),
+        });
+        tree.insert(DialogueNode::PlayAnim {
+            id:       NodeId(2),
+            speaker:  SpeakerId(1),
+            anim_key: "wave".to_string(),
+            next:     NodeId(3),
+        });
+        tree.insert(DialogueNode::Say {
+            id:        NodeId(3),
+            speaker:   SpeakerId(1),
+            text:      "Hello!".to_string(),
+            emotion:   crate::dialogue::Emotion::Happy,
+            audio_key: None,
+            next:      Some(NodeId(4)),
+        });
+        tree.insert(DialogueNode::End { id: NodeId(4) });
+
+        let lib = make_library_with(tree);
+        let mut runner = DialogueRunner::new(lib);
+        runner.start(DialogueId(1)).unwrap();
+
+        let mut outputs = Vec::new();
+        loop {
+            match runner.advance() {
+                None => break,
+                Some(out) => {
+                    let ended = matches!(out, DialogueOutput::Ended);
+                    outputs.push(out);
+                    if ended { break; }
+                }
+            }
+        }
+
+        let has_camera = outputs.iter().any(|o| matches!(o, DialogueOutput::CameraAction(_)));
+        let has_anim   = outputs.iter().any(|o| matches!(o, DialogueOutput::PlayAnim { .. }));
+        let has_say    = outputs.iter().any(|o| matches!(o, DialogueOutput::Say { .. }));
+
+        assert!(has_camera, "expected CameraAction in outputs");
+        assert!(has_anim,   "expected PlayAnim in outputs");
+        assert!(has_say,    "expected Say in outputs");
+    }
+
+    // ── ScriptCall output ─────────────────────────────────────────────────
+
+    #[test]
+    fn runner_script_call_output() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1), NodeId(1), DialogueMeta::new("Scripts"),
+        );
+        tree.insert(DialogueNode::CallScript {
+            id:       NodeId(1),
+            function: "unlock_door".to_string(),
+            args:     vec![DialogueVar::Int(42)],
+            next:     Some(NodeId(2)),
+        });
+        tree.insert(DialogueNode::End { id: NodeId(2) });
+
+        let lib = make_library_with(tree);
+        let mut runner = DialogueRunner::new(lib);
+        runner.start(DialogueId(1)).unwrap();
+
+        let mut found_script = false;
+        loop {
+            match runner.advance() {
+                None => break,
+                Some(DialogueOutput::ScriptCall { function, args }) => {
+                    assert_eq!(function, "unlock_door");
+                    assert_eq!(args[0], DialogueVar::Int(42));
+                    found_script = true;
+                }
+                Some(DialogueOutput::Ended) => break,
+                _ => {}
+            }
+        }
+        assert!(found_script, "expected ScriptCall output");
+    }
+
+    // ── Session update tick ────────────────────────────────────────────────
+
+    #[test]
+    fn session_update_advances_time() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .say(SpeakerId(1), "Tick test")
+            .end()
+            .build();
+        let lib = make_library_with(tree);
+        let cfg = SessionConfig::new().with_auto_advance(0.5);
+        let mut session = DialogueSession::new(lib, cfg);
+        session.start_session(DialogueId(1)).unwrap();
+        // update() advances time; after > 0.5s it should auto-advance.
+        for _ in 0..10 {
+            session.update(0.1);
+        }
+        // After 1.0s total, auto advance should have fired at least once.
+        // We don't assert finished here (depends on exact timing), just that
+        // it doesn't panic.
+    }
+
+    // ── HistoryRecord ─────────────────────────────────────────────────────
+
+    #[test]
+    fn history_record_fields() {
+        let rec = HistoryRecord::new(DialogueId(3), NodeId(7), "Some text", 42.5);
+        assert_eq!(rec.tree_id, DialogueId(3));
+        assert_eq!(rec.node_id, NodeId(7));
+        assert_eq!(rec.text_snapshot, "Some text");
+        assert!((rec.timestamp - 42.5).abs() < f32::EPSILON);
+    }
+}

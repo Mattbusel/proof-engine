@@ -33,6 +33,8 @@
 
 pub mod heightmap;
 pub mod biome;
+pub mod biomes;
+pub mod chunks;
 pub mod vegetation;
 pub mod streaming;
 pub mod mod_types;

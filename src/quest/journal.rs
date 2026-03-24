@@ -1449,4 +1449,617 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].def_id, QuestId(2));
     }
+
+    // ── additional method tests ───────────────────────────────────────────
+
+    #[test]
+    fn active_count_reflects_state() {
+        let def1 = simple_kill_quest();
+        let def2 = two_objective_quest();
+        let def3 = timed_quest(30.0);
+
+        let mut db = QuestDatabase::new();
+        db.register(def1.clone());
+        db.register(def2.clone());
+        db.register(def3.clone());
+
+        let mut journal = QuestJournal::new();
+        assert_eq!(journal.active_count(), 0);
+        assert!(journal.is_empty());
+
+        journal.accept_quest(&def1, 0.0).unwrap();
+        assert_eq!(journal.active_count(), 1);
+        assert!(!journal.is_empty());
+
+        journal.accept_quest(&def2, 0.0).unwrap();
+        journal.accept_quest(&def3, 0.0).unwrap();
+        assert_eq!(journal.active_count(), 3);
+
+        journal.fail_quest(QuestId(1)).unwrap();
+        assert_eq!(journal.active_count(), 2);
+    }
+
+    #[test]
+    fn active_by_category_filters_correctly() {
+        let mut db = QuestDatabase::new();
+        let combat = simple_kill_quest(); // Combat
+        let side = two_objective_quest();  // Side
+        db.register(combat.clone());
+        db.register(side.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&combat, 0.0).unwrap();
+        journal.accept_quest(&side, 0.0).unwrap();
+
+        let combat_active = journal.active_by_category(QuestCategory::Combat, &db);
+        assert_eq!(combat_active.len(), 1);
+        assert_eq!(combat_active[0].def_id, QuestId(1));
+
+        let side_active = journal.active_by_category(QuestCategory::Side, &db);
+        assert_eq!(side_active.len(), 1);
+        assert_eq!(side_active[0].def_id, QuestId(2));
+
+        let exploration = journal.active_by_category(QuestCategory::Exploration, &db);
+        assert!(exploration.is_empty());
+    }
+
+    #[test]
+    fn highest_priority_active_returns_correct_quest() {
+        let mut db = QuestDatabase::new();
+        let low = QuestDef::new(
+            QuestId(10),
+            "Low Prio",
+            "desc",
+            QuestCategory::Side,
+            QuestPriority::Low,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "do something",
+            ObjectiveType::Custom { key: "x".into() },
+            1,
+        ))
+        .with_reward(Reward::new());
+
+        let critical = QuestDef::new(
+            QuestId(11),
+            "Critical",
+            "desc",
+            QuestCategory::Main,
+            QuestPriority::Critical,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "do critical thing",
+            ObjectiveType::Custom { key: "y".into() },
+            1,
+        ))
+        .with_reward(Reward::new());
+
+        db.register(low.clone());
+        db.register(critical.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&low, 0.0).unwrap();
+        journal.accept_quest(&critical, 0.0).unwrap();
+
+        let top = journal.highest_priority_active(&db).unwrap();
+        assert_eq!(top.def_id, QuestId(11));
+    }
+
+    #[test]
+    fn has_active_with_tag_works() {
+        let mut db = QuestDatabase::new();
+        let tagged = QuestDef::new(
+            QuestId(20),
+            "Tagged Quest",
+            "desc",
+            QuestCategory::Exploration,
+            QuestPriority::Normal,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "explore",
+            ObjectiveType::Reach { location: "forest".into() },
+            1,
+        ))
+        .with_reward(Reward::new())
+        .with_tag("story_chapter_1");
+        db.register(tagged.clone());
+
+        let mut journal = QuestJournal::new();
+        assert!(!journal.has_active_with_tag("story_chapter_1", &db));
+
+        journal.accept_quest(&tagged, 0.0).unwrap();
+        assert!(journal.has_active_with_tag("story_chapter_1", &db));
+        assert!(!journal.has_active_with_tag("other_tag", &db));
+    }
+
+    #[test]
+    fn objective_fraction_is_computed() {
+        let mut db = QuestDatabase::new();
+        let def = simple_kill_quest(); // target_count = 3
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        // Initially 0.0
+        let frac = journal.objective_fraction(QuestId(1), ObjectiveId(1), &db);
+        assert!((frac.unwrap() - 0.0).abs() < f32::EPSILON);
+
+        journal.advance_objective(QuestId(1), ObjectiveId(1), 1, &db);
+        let frac = journal.objective_fraction(QuestId(1), ObjectiveId(1), &db).unwrap();
+        assert!((frac - 1.0 / 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn objective_current_returns_value() {
+        let mut db = QuestDatabase::new();
+        let def = simple_kill_quest();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        assert_eq!(journal.objective_current(QuestId(1), ObjectiveId(1)), Some(0));
+
+        journal.advance_objective(QuestId(1), ObjectiveId(1), 2, &db);
+        assert_eq!(journal.objective_current(QuestId(1), ObjectiveId(1)), Some(2));
+    }
+
+    #[test]
+    fn is_objective_complete_checks_state() {
+        let mut db = QuestDatabase::new();
+        let def = two_objective_quest();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        assert!(!journal.is_objective_complete(QuestId(2), ObjectiveId(1)));
+
+        journal.advance_objective(QuestId(2), ObjectiveId(1), 1, &db);
+        assert!(journal.is_objective_complete(QuestId(2), ObjectiveId(1)));
+        assert!(!journal.is_objective_complete(QuestId(2), ObjectiveId(2)));
+    }
+
+    #[test]
+    fn time_remaining_decreases_with_tick() {
+        let mut db = QuestDatabase::new();
+        let def = timed_quest(10.0);
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        let remaining_start = journal.time_remaining(QuestId(3), &db).unwrap();
+        assert!((remaining_start - 10.0).abs() < f32::EPSILON);
+
+        journal.tick(3.0, &db);
+        let remaining_after = journal.time_remaining(QuestId(3), &db).unwrap();
+        assert!((remaining_after - 7.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn time_fraction_elapsed_increases() {
+        let mut db = QuestDatabase::new();
+        let def = timed_quest(10.0);
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        journal.tick(5.0, &db);
+        let frac = journal.time_fraction_elapsed(QuestId(3), &db).unwrap();
+        assert!((frac - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn set_flags_bulk() {
+        let mut journal = QuestJournal::new();
+        journal.set_flags(["flag_a", "flag_b", "flag_c"]);
+        assert!(journal.has_flag("flag_a"));
+        assert!(journal.has_flag("flag_b"));
+        assert!(journal.has_flag("flag_c"));
+    }
+
+    #[test]
+    fn clear_flags_with_prefix() {
+        let mut journal = QuestJournal::new();
+        journal.set_flags(["chapter_1_done", "chapter_2_done", "boss_dead"]);
+        journal.clear_flags_with_prefix("chapter_");
+        assert!(!journal.has_flag("chapter_1_done"));
+        assert!(!journal.has_flag("chapter_2_done"));
+        assert!(journal.has_flag("boss_dead"));
+    }
+
+    #[test]
+    fn all_flags_returns_set_flags() {
+        let mut journal = QuestJournal::new();
+        journal.set_flag("alpha");
+        journal.set_flag("beta");
+        let flags = journal.all_flags();
+        assert!(flags.contains(&"alpha"));
+        assert!(flags.contains(&"beta"));
+        assert_eq!(flags.len(), 2);
+    }
+
+    #[test]
+    fn compact_removes_terminal_quests() {
+        let def1 = simple_kill_quest();
+        let def2 = two_objective_quest();
+
+        let mut db = QuestDatabase::new();
+        db.register(def1.clone());
+        db.register(def2.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def1, 0.0).unwrap();
+        journal.accept_quest(&def2, 0.0).unwrap();
+        journal.complete_quest(QuestId(1), 1.0, &db).unwrap();
+
+        assert_eq!(journal.quests.len(), 2);
+        journal.compact();
+        assert_eq!(journal.quests.len(), 1); // only active quest remains
+        assert!(journal.quests.contains_key(&QuestId(2)));
+    }
+
+    #[test]
+    fn reset_progress_clears_state() {
+        let def = simple_kill_quest();
+        let mut db = QuestDatabase::new();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        journal.set_flag("test_flag");
+
+        journal.reset_progress();
+
+        assert!(journal.quests.is_empty());
+        assert!(!journal.has_flag("test_flag"));
+        // Counters preserved
+        // (completed_count was not incremented since we didn't complete)
+    }
+
+    #[test]
+    fn accept_all_counts_successes() {
+        let def1 = simple_kill_quest();
+        let def2 = two_objective_quest();
+        let def3 = timed_quest(20.0);
+
+        let mut db = QuestDatabase::new();
+        db.register(def1.clone());
+        db.register(def2.clone());
+        db.register(def3.clone());
+
+        let mut journal = QuestJournal::new();
+        let accepted = journal.accept_all(&[def1, def2, def3], 0.0);
+        assert_eq!(accepted, 3);
+        assert_eq!(journal.active_count(), 3);
+    }
+
+    #[test]
+    fn script_complete_all_objectives_completes_quest() {
+        let def = two_objective_quest();
+        let mut db = QuestDatabase::new();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        journal.script_complete_all_objectives(QuestId(2), &db).unwrap();
+        assert!(journal.is_quest_complete(QuestId(2)));
+    }
+
+    #[test]
+    fn objective_snapshot_returns_all_active_objectives() {
+        let def = two_objective_quest();
+        let mut db = QuestDatabase::new();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        let snap = journal.objective_snapshot(&db);
+        assert_eq!(snap.len(), 2);
+        for (_, _, current, target) in &snap {
+            assert_eq!(*current, 0);
+            assert!(*target > 0);
+        }
+    }
+
+    #[test]
+    fn peek_events_does_not_consume() {
+        let def = simple_kill_quest();
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+
+        let peeked = journal.peek_events();
+        assert!(!peeked.is_empty());
+
+        // Queue still full after peek
+        let drained = journal.drain_events();
+        assert_eq!(drained.len(), peeked.len());
+    }
+
+    #[test]
+    fn quest_elapsed_tracks_time() {
+        let def = simple_kill_quest();
+        let mut db = QuestDatabase::new();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        assert_eq!(journal.quest_elapsed(QuestId(1)), Some(0.0));
+        journal.tick(7.5, &db);
+        let elapsed = journal.quest_elapsed(QuestId(1)).unwrap();
+        assert!((elapsed - 7.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn attempt_count_increments_on_reattempt() {
+        let mut db = QuestDatabase::new();
+        let def = QuestDef::new(
+            QuestId(100),
+            "Retry Quest",
+            "desc",
+            QuestCategory::Side,
+            QuestPriority::Low,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "obj",
+            ObjectiveType::Custom { key: "ev".into() },
+            1,
+        ))
+        .with_reward(Reward::new())
+        .repeatable();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        assert_eq!(journal.attempt_count(QuestId(100)), 1);
+
+        journal.fail_quest(QuestId(100)).unwrap();
+        journal.accept_quest(&def, 1.0).unwrap();
+        assert_eq!(journal.attempt_count(QuestId(100)), 2);
+    }
+
+    #[test]
+    fn quest_notes_are_accessible() {
+        let def = simple_kill_quest();
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+
+        journal.add_note(QuestId(1), "Manual note.");
+        journal.auto_note(QuestId(1), "Auto note.");
+
+        let notes = journal.quest_notes(QuestId(1));
+        assert!(notes.iter().any(|n| n.text == "Manual note." && !n.auto_generated));
+        assert!(notes.iter().any(|n| n.text == "Auto note." && n.auto_generated));
+    }
+
+    #[test]
+    fn finished_quests_includes_failed_and_abandoned() {
+        let def1 = simple_kill_quest();
+        let def2 = two_objective_quest();
+        let def3 = timed_quest(10.0);
+
+        let mut db = QuestDatabase::new();
+        db.register(def1.clone());
+        db.register(def2.clone());
+        db.register(def3.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def1, 0.0).unwrap();
+        journal.accept_quest(&def2, 0.0).unwrap();
+        journal.accept_quest(&def3, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        journal.fail_quest(QuestId(1)).unwrap();
+        journal.abandon_quest(QuestId(2));
+
+        let finished = journal.finished_quests();
+        assert_eq!(finished.len(), 2);
+    }
+
+    #[test]
+    fn active_by_priority_returns_correct_subset() {
+        let mut db = QuestDatabase::new();
+
+        let high = QuestDef::new(
+            QuestId(30),
+            "High Quest",
+            "desc",
+            QuestCategory::Main,
+            QuestPriority::High,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "obj",
+            ObjectiveType::Custom { key: "a".into() },
+            1,
+        ))
+        .with_reward(Reward::new());
+
+        let low = QuestDef::new(
+            QuestId(31),
+            "Low Quest",
+            "desc",
+            QuestCategory::Side,
+            QuestPriority::Low,
+        )
+        .with_objective(ObjectiveDef::new(
+            ObjectiveId(1),
+            "obj",
+            ObjectiveType::Custom { key: "b".into() },
+            1,
+        ))
+        .with_reward(Reward::new());
+
+        db.register(high.clone());
+        db.register(low.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&high, 0.0).unwrap();
+        journal.accept_quest(&low, 0.0).unwrap();
+
+        let high_active = journal.active_by_priority(QuestPriority::High, &db);
+        assert_eq!(high_active.len(), 1);
+        assert_eq!(high_active[0].def_id, QuestId(30));
+
+        let low_active = journal.active_by_priority(QuestPriority::Low, &db);
+        assert_eq!(low_active.len(), 1);
+        assert_eq!(low_active[0].def_id, QuestId(31));
+    }
+
+    #[test]
+    fn harness_add_and_accept() {
+        let mut h = JournalTestHarness::new();
+        h.add_kill_quest(1, 1, "zombie", 10, 250);
+        h.accept(1);
+        assert!(h.journal.is_quest_active(QuestId(1)));
+    }
+
+    #[test]
+    fn no_effect_advance_returns_no_effect() {
+        let mut db = QuestDatabase::new();
+        let def = simple_kill_quest();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        let result = journal.advance_objective(QuestId(1), ObjectiveId(1), 0, &db);
+        assert_eq!(result, ObjectiveAdvanceResult::NoEffect);
+    }
+
+    #[test]
+    fn advance_on_nonexistent_objective_returns_no_effect() {
+        let mut db = QuestDatabase::new();
+        let def = simple_kill_quest();
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        // ObjectiveId(99) does not exist
+        let result = journal.advance_objective(QuestId(1), ObjectiveId(99), 1, &db);
+        assert_eq!(result, ObjectiveAdvanceResult::NoEffect);
+    }
+
+    #[test]
+    fn complete_objective_on_missing_quest_returns_error() {
+        let mut db = QuestDatabase::new();
+        let def = simple_kill_quest();
+        db.register(def);
+
+        let mut journal = QuestJournal::new();
+        // Quest exists in db but was never accepted
+        let err = journal
+            .complete_objective(QuestId(1), ObjectiveId(1), &db)
+            .unwrap_err();
+        assert_eq!(err, JournalError::NotActive);
+    }
+
+    #[test]
+    fn fail_optional_objective_does_not_fail_quest() {
+        let mut db = QuestDatabase::new();
+        let def = QuestDef::new(
+            QuestId(200),
+            "Optional Test",
+            "desc",
+            QuestCategory::Side,
+            QuestPriority::Normal,
+        )
+        .with_objective(
+            ObjectiveDef::new(
+                ObjectiveId(1),
+                "Required obj",
+                ObjectiveType::Kill { enemy_type: "goblin".into() },
+                1,
+            )
+        )
+        .with_objective(
+            ObjectiveDef::new(
+                ObjectiveId(2),
+                "Optional bonus",
+                ObjectiveType::Collect { item_id: 55, count: 1 },
+                1,
+            )
+            .optional()
+        )
+        .with_reward(Reward::new().with_experience(100));
+        db.register(def.clone());
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let _ = journal.drain_events();
+
+        // Fail the optional objective — quest should survive
+        journal.fail_objective(QuestId(200), ObjectiveId(2), &db);
+        assert!(journal.is_quest_active(QuestId(200)));
+
+        // But failing the required one fails the quest
+        journal.fail_objective(QuestId(200), ObjectiveId(1), &db);
+        assert!(!journal.is_quest_active(QuestId(200)));
+    }
+
+    #[test]
+    fn game_time_advances_with_tick() {
+        let db = QuestDatabase::new();
+        let mut journal = QuestJournal::new();
+        assert!((journal.game_time() - 0.0).abs() < f32::EPSILON);
+
+        journal.tick(1.5, &db);
+        assert!((journal.game_time() - 1.5).abs() < 0.001);
+
+        journal.tick(2.5, &db);
+        assert!((journal.game_time() - 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn set_game_time_overrides() {
+        let mut journal = QuestJournal::new();
+        journal.set_game_time(100.0);
+        assert!((journal.game_time() - 100.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn drain_events_empty_after_drain() {
+        let def = simple_kill_quest();
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def, 0.0).unwrap();
+        let first = journal.drain_events();
+        assert!(!first.is_empty());
+        let second = journal.drain_events();
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn active_quest_ids_correct() {
+        let def1 = simple_kill_quest();
+        let def2 = two_objective_quest();
+
+        let mut journal = QuestJournal::new();
+        journal.accept_quest(&def1, 0.0).unwrap();
+        journal.accept_quest(&def2, 0.0).unwrap();
+
+        let mut ids = journal.active_quest_ids();
+        ids.sort();
+        assert_eq!(ids, vec![QuestId(1), QuestId(2)]);
+    }
 }

@@ -1336,8 +1336,772 @@ mod tests {
     fn builder_peek_next_id() {
         let mut b = DialogueBuilder::new(DialogueId(1));
         assert_eq!(b.peek_next_id(), NodeId(1));
-        // After consuming via say, ID increments:
         b = b.say(SpeakerId(1), "test");
         assert_eq!(b.peek_next_id(), NodeId(2));
+    }
+}
+
+// ── GraphAnalyser ─────────────────────────────────────────────────────────────
+
+/// Static analysis utilities for a [`DialogueTree`].
+///
+/// These are separate from the runtime runner — they operate on the immutable
+/// graph structure and are used by the editor, importers, and test suites.
+pub struct GraphAnalyser<'a> {
+    tree: &'a DialogueTree,
+}
+
+impl<'a> GraphAnalyser<'a> {
+    pub fn new(tree: &'a DialogueTree) -> Self {
+        Self { tree }
+    }
+
+    /// Collect all nodes that are never referenced as a successor of any other
+    /// node (other than the start node).  These are "orphaned" — the runner
+    /// can never reach them.
+    pub fn orphaned_nodes(&self) -> Vec<NodeId> {
+        let mut referenced: HashSet<NodeId> = HashSet::new();
+        referenced.insert(self.tree.start);
+
+        for node in self.tree.nodes.values() {
+            for s in node.successors() {
+                referenced.insert(s);
+            }
+        }
+
+        self.tree.nodes
+            .keys()
+            .copied()
+            .filter(|id| !referenced.contains(id))
+            .collect()
+    }
+
+    /// Collect all `End` nodes reachable from the start.
+    pub fn terminal_nodes(&self) -> Vec<NodeId> {
+        self.tree.reachable_nodes()
+            .into_iter()
+            .filter(|id| matches!(self.tree.nodes.get(id), Some(DialogueNode::End { .. })))
+            .collect()
+    }
+
+    /// Collect all `Choice` nodes reachable from the start.
+    pub fn choice_nodes(&self) -> Vec<NodeId> {
+        self.tree.reachable_nodes()
+            .into_iter()
+            .filter(|id| matches!(self.tree.nodes.get(id), Some(DialogueNode::Choice { .. })))
+            .collect()
+    }
+
+    /// Collect all `Branch` nodes reachable from the start.
+    pub fn branch_nodes(&self) -> Vec<NodeId> {
+        self.tree.reachable_nodes()
+            .into_iter()
+            .filter(|id| matches!(self.tree.nodes.get(id), Some(DialogueNode::Branch { .. })))
+            .collect()
+    }
+
+    /// Collect all `Say` nodes reachable from the start.
+    pub fn say_nodes(&self) -> Vec<NodeId> {
+        self.tree.reachable_nodes()
+            .into_iter()
+            .filter(|id| matches!(self.tree.nodes.get(id), Some(DialogueNode::Say { .. })))
+            .collect()
+    }
+
+    /// Count all unique variable names read or written by reachable nodes.
+    pub fn used_variable_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for nid in self.tree.reachable_nodes() {
+            if let Some(node) = self.tree.nodes.get(&nid) {
+                match node {
+                    DialogueNode::SetVar { name, .. } => { names.insert(name.clone()); }
+                    DialogueNode::Branch { condition, .. } => {
+                        collect_condition_vars(condition, &mut names);
+                    }
+                    DialogueNode::Choice { options, .. } => {
+                        for opt in options {
+                            if let Some(cond) = &opt.condition {
+                                collect_condition_vars(cond, &mut names);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        names
+    }
+
+    /// Count all unique flag names referenced in reachable conditions.
+    pub fn used_flag_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for nid in self.tree.reachable_nodes() {
+            if let Some(node) = self.tree.nodes.get(&nid) {
+                match node {
+                    DialogueNode::Branch { condition, .. } => {
+                        collect_condition_flags(condition, &mut names);
+                    }
+                    DialogueNode::Choice { options, .. } => {
+                        for opt in options {
+                            if let Some(cond) = &opt.condition {
+                                collect_condition_flags(cond, &mut names);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        names
+    }
+
+    /// Count the total number of reachable `Say` lines (the "word count").
+    pub fn line_count(&self) -> usize {
+        self.say_nodes().len()
+    }
+
+    /// Return the depth (longest path in terms of node hops) from start to any
+    /// `End` node via BFS level tracking.
+    ///
+    /// Returns `None` if no `End` node is reachable.
+    pub fn max_depth(&self) -> Option<usize> {
+        let mut visited: HashMap<NodeId, usize> = HashMap::new();
+        let mut queue: std::collections::VecDeque<(NodeId, usize)> = std::collections::VecDeque::new();
+        queue.push_back((self.tree.start, 0));
+        let mut max_end_depth: Option<usize> = None;
+
+        while let Some((nid, depth)) = queue.pop_front() {
+            if visited.contains_key(&nid) { continue; }
+            visited.insert(nid, depth);
+
+            if let Some(node) = self.tree.nodes.get(&nid) {
+                if node.is_terminal() {
+                    max_end_depth = Some(max_end_depth.map_or(depth, |d: usize| d.max(depth)));
+                }
+                for s in node.successors() {
+                    if !visited.contains_key(&s) {
+                        queue.push_back((s, depth + 1));
+                    }
+                }
+            }
+        }
+
+        max_end_depth
+    }
+
+    /// Detect simple cycles (nodes that appear in their own successor chain).
+    ///
+    /// Returns the set of node IDs that are part of at least one cycle.
+    /// This uses a colour-based DFS.
+    pub fn detect_cycles(&self) -> HashSet<NodeId> {
+        #[derive(PartialEq)]
+        enum Colour { White, Grey, Black }
+
+        let mut colour: HashMap<NodeId, Colour> = HashMap::new();
+        let mut in_cycle: HashSet<NodeId> = HashSet::new();
+
+        fn dfs(
+            nid:     NodeId,
+            tree:    &DialogueTree,
+            colour:  &mut HashMap<NodeId, Colour>,
+            in_cycle: &mut HashSet<NodeId>,
+            path:    &mut Vec<NodeId>,
+        ) {
+            colour.insert(nid, Colour::Grey);
+            path.push(nid);
+
+            if let Some(node) = tree.nodes.get(&nid) {
+                for s in node.successors() {
+                    match colour.get(&s) {
+                        Some(Colour::Grey) => {
+                            // Found a back-edge — everything in path from s is a cycle.
+                            if let Some(pos) = path.iter().position(|&n| n == s) {
+                                for &cn in &path[pos..] {
+                                    in_cycle.insert(cn);
+                                }
+                            }
+                        }
+                        Some(Colour::Black) => {}
+                        _ => {
+                            dfs(s, tree, colour, in_cycle, path);
+                        }
+                    }
+                }
+            }
+
+            path.pop();
+            colour.insert(nid, Colour::Black);
+        }
+
+        let mut path = Vec::new();
+        dfs(self.tree.start, self.tree, &mut colour, &mut in_cycle, &mut path);
+        in_cycle
+    }
+}
+
+/// Recursively collect all variable names referenced in a condition.
+fn collect_condition_vars(cond: &Condition, names: &mut HashSet<String>) {
+    match cond {
+        Condition::VarEquals(n, _)  |
+        Condition::VarGreater(n, _) |
+        Condition::VarLess(n, _)    => { names.insert(n.clone()); }
+        Condition::Not(inner)       => collect_condition_vars(inner, names),
+        Condition::And(children) |
+        Condition::Or(children)     => {
+            for c in children { collect_condition_vars(c, names); }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively collect all flag names referenced in a condition.
+fn collect_condition_flags(cond: &Condition, names: &mut HashSet<String>) {
+    match cond {
+        Condition::HasFlag(n)   => { names.insert(n.clone()); }
+        Condition::Not(inner)   => collect_condition_flags(inner, names),
+        Condition::And(children) |
+        Condition::Or(children) => {
+            for c in children { collect_condition_flags(c, names); }
+        }
+        _ => {}
+    }
+}
+
+// ── NodePatch ─────────────────────────────────────────────────────────────────
+
+/// A minimal patch operation for updating a single field of a node in place.
+///
+/// Used by the editor to make targeted mutations without rebuilding the whole
+/// tree.  The runner is not affected — patches take effect on the next call to
+/// `tree.get(id)`.
+#[derive(Debug, Clone)]
+pub enum NodePatch {
+    /// Change the text of a `Say` node.
+    SetText { node: NodeId, text: String },
+    /// Change the emotion of a `Say` node.
+    SetEmotion { node: NodeId, emotion: crate::dialogue::Emotion },
+    /// Add a tag to a `ChoiceOption`.
+    AddChoiceTag { node: NodeId, option_index: usize, tag: String },
+    /// Remove a tag from a `ChoiceOption`.
+    RemoveChoiceTag { node: NodeId, option_index: usize, tag: String },
+    /// Change the `once_only` flag on a `ChoiceOption`.
+    SetOnceOnly { node: NodeId, option_index: usize, once_only: bool },
+    /// Replace the condition on a `Branch` node.
+    SetBranchCondition { node: NodeId, condition: Condition },
+    /// Change the `if_false` arm of a `Branch` node.
+    SetBranchFalse { node: NodeId, target: Option<NodeId> },
+}
+
+impl NodePatch {
+    /// Apply this patch to a mutable [`DialogueTree`].
+    ///
+    /// Returns `Ok(())` on success or an error description if the patch could
+    /// not be applied (wrong node kind, out-of-range index, etc.).
+    pub fn apply(&self, tree: &mut DialogueTree) -> Result<(), String> {
+        match self {
+            NodePatch::SetText { node, text } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Say { text: t, .. }) => { *t = text.clone(); Ok(()) }
+                    Some(n) => Err(format!("NodePatch::SetText: node {:?} is {}, not Say", node, n.kind_name())),
+                    None    => Err(format!("NodePatch::SetText: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::SetEmotion { node, emotion } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Say { emotion: e, .. }) => { *e = *emotion; Ok(()) }
+                    Some(n) => Err(format!("NodePatch::SetEmotion: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("NodePatch::SetEmotion: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::AddChoiceTag { node, option_index, tag } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Choice { options, .. }) => {
+                        let opt = options.get_mut(*option_index)
+                            .ok_or_else(|| format!("option index {} out of range", option_index))?;
+                        if !opt.tags.contains(tag) { opt.tags.push(tag.clone()); }
+                        Ok(())
+                    }
+                    Some(n) => Err(format!("AddChoiceTag: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("AddChoiceTag: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::RemoveChoiceTag { node, option_index, tag } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Choice { options, .. }) => {
+                        let opt = options.get_mut(*option_index)
+                            .ok_or_else(|| format!("option index {} out of range", option_index))?;
+                        opt.tags.retain(|t| t != tag);
+                        Ok(())
+                    }
+                    Some(n) => Err(format!("RemoveChoiceTag: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("RemoveChoiceTag: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::SetOnceOnly { node, option_index, once_only } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Choice { options, .. }) => {
+                        let opt = options.get_mut(*option_index)
+                            .ok_or_else(|| format!("option index {} out of range", option_index))?;
+                        opt.once_only = *once_only;
+                        Ok(())
+                    }
+                    Some(n) => Err(format!("SetOnceOnly: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("SetOnceOnly: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::SetBranchCondition { node, condition } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Branch { condition: c, .. }) => { *c = condition.clone(); Ok(()) }
+                    Some(n) => Err(format!("SetBranchCondition: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("SetBranchCondition: node {:?} not found", node)),
+                }
+            }
+
+            NodePatch::SetBranchFalse { node, target } => {
+                match tree.nodes.get_mut(node) {
+                    Some(DialogueNode::Branch { if_false, .. }) => { *if_false = *target; Ok(()) }
+                    Some(n) => Err(format!("SetBranchFalse: node {:?} is {}", node, n.kind_name())),
+                    None    => Err(format!("SetBranchFalse: node {:?} not found", node)),
+                }
+            }
+        }
+    }
+}
+
+// ── TreeDiff ──────────────────────────────────────────────────────────────────
+
+/// The difference between two versions of a [`DialogueTree`].
+#[derive(Debug, Clone, Default)]
+pub struct TreeDiff {
+    /// Node IDs present in `after` but absent in `before`.
+    pub added_nodes:   Vec<NodeId>,
+    /// Node IDs present in `before` but absent in `after`.
+    pub removed_nodes: Vec<NodeId>,
+    /// Node IDs present in both but with different `kind_name` (type changed).
+    pub changed_kind:  Vec<NodeId>,
+}
+
+impl TreeDiff {
+    /// Compute the structural diff between two trees.
+    ///
+    /// This compares only which nodes exist and their variant type; it does not
+    /// do a deep field comparison (use [`NodePatch`] for that).
+    pub fn compute(before: &DialogueTree, after: &DialogueTree) -> Self {
+        let mut diff = TreeDiff::default();
+
+        for (&id, after_node) in &after.nodes {
+            match before.nodes.get(&id) {
+                None => diff.added_nodes.push(id),
+                Some(before_node) if before_node.kind_name() != after_node.kind_name() => {
+                    diff.changed_kind.push(id);
+                }
+                _ => {}
+            }
+        }
+
+        for &id in before.nodes.keys() {
+            if !after.nodes.contains_key(&id) {
+                diff.removed_nodes.push(id);
+            }
+        }
+
+        diff
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added_nodes.is_empty()
+            && self.removed_nodes.is_empty()
+            && self.changed_kind.is_empty()
+    }
+}
+
+// ── Extra tree.rs tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use crate::dialogue::{DialogueId, DialogueVar, NodeId, SpeakerId};
+
+    fn simple_tree() -> DialogueTree {
+        DialogueBuilder::new(DialogueId(1))
+            .say(SpeakerId(1), "Hello")
+            .say(SpeakerId(1), "World")
+            .end()
+            .build()
+    }
+
+    // ── GraphAnalyser ─────────────────────────────────────────────────────
+
+    #[test]
+    fn analyser_terminal_nodes() {
+        let tree = simple_tree();
+        let a = GraphAnalyser::new(&tree);
+        let terminals = a.terminal_nodes();
+        assert_eq!(terminals.len(), 1);
+    }
+
+    #[test]
+    fn analyser_say_nodes() {
+        let tree = simple_tree();
+        let a = GraphAnalyser::new(&tree);
+        assert_eq!(a.say_nodes().len(), 2);
+        assert_eq!(a.line_count(), 2);
+    }
+
+    #[test]
+    fn analyser_choice_nodes() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .choice(&[("A", NodeId(2)), ("B", NodeId(3))])
+            .build();
+        let a = GraphAnalyser::new(&tree);
+        assert_eq!(a.choice_nodes().len(), 1);
+    }
+
+    #[test]
+    fn analyser_branch_nodes() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .branch(Condition::Always, NodeId(2), Some(NodeId(3)))
+            .build();
+        let a = GraphAnalyser::new(&tree);
+        assert_eq!(a.branch_nodes().len(), 1);
+    }
+
+    #[test]
+    fn analyser_used_variable_names() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1),
+            NodeId(1),
+            DialogueMeta::new("VarTest"),
+        );
+        tree.insert(DialogueNode::SetVar {
+            id:    NodeId(1),
+            name:  "score".to_string(),
+            value: DialogueVar::Int(0),
+            next:  Some(NodeId(2)),
+        });
+        tree.insert(DialogueNode::Branch {
+            id:        NodeId(2),
+            condition: Condition::var_greater("score", 5i64),
+            if_true:   NodeId(3),
+            if_false:  Some(NodeId(3)),
+        });
+        tree.insert(DialogueNode::End { id: NodeId(3) });
+        let a = GraphAnalyser::new(&tree);
+        let vars = a.used_variable_names();
+        assert!(vars.contains("score"), "score must be in used vars");
+    }
+
+    #[test]
+    fn analyser_used_flag_names() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1),
+            NodeId(1),
+            DialogueMeta::new("FlagTest"),
+        );
+        tree.insert(DialogueNode::Branch {
+            id:        NodeId(1),
+            condition: Condition::HasFlag("quest_done".to_string()),
+            if_true:   NodeId(2),
+            if_false:  None,
+        });
+        tree.insert(DialogueNode::End { id: NodeId(2) });
+        let a = GraphAnalyser::new(&tree);
+        let flags = a.used_flag_names();
+        assert!(flags.contains("quest_done"));
+    }
+
+    #[test]
+    fn analyser_max_depth_linear() {
+        let tree = simple_tree(); // 3 nodes deep
+        let a = GraphAnalyser::new(&tree);
+        let depth = a.max_depth();
+        assert_eq!(depth, Some(2), "linear 3-node tree has max depth 2");
+    }
+
+    #[test]
+    fn analyser_orphaned_nodes() {
+        let mut tree = simple_tree();
+        // Insert a node that nothing points to.
+        tree.insert(DialogueNode::Say {
+            id:        NodeId(99),
+            speaker:   SpeakerId(1),
+            text:      "orphan".to_string(),
+            emotion:   crate::dialogue::Emotion::Neutral,
+            audio_key: None,
+            next:      None,
+        });
+        let a = GraphAnalyser::new(&tree);
+        let orphans = a.orphaned_nodes();
+        assert!(orphans.contains(&NodeId(99)), "NodeId(99) must be orphaned");
+    }
+
+    #[test]
+    fn analyser_no_cycles_in_linear_tree() {
+        let tree = simple_tree();
+        let a = GraphAnalyser::new(&tree);
+        assert!(a.detect_cycles().is_empty());
+    }
+
+    // ── NodePatch ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn patch_set_text() {
+        let mut tree = simple_tree();
+        let patch = NodePatch::SetText {
+            node: NodeId(1),
+            text: "Updated text".to_string(),
+        };
+        patch.apply(&mut tree).expect("patch must succeed");
+        if let Some(DialogueNode::Say { text, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(text, "Updated text");
+        } else {
+            panic!("Node 1 should be Say");
+        }
+    }
+
+    #[test]
+    fn patch_set_emotion() {
+        let mut tree = simple_tree();
+        let patch = NodePatch::SetEmotion {
+            node:    NodeId(1),
+            emotion: crate::dialogue::Emotion::Happy,
+        };
+        patch.apply(&mut tree).expect("patch must succeed");
+        if let Some(DialogueNode::Say { emotion, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(*emotion, crate::dialogue::Emotion::Happy);
+        }
+    }
+
+    #[test]
+    fn patch_wrong_node_kind_returns_error() {
+        let mut tree = simple_tree();
+        // Node 3 is End, not Say.
+        let patch = NodePatch::SetText {
+            node: NodeId(3),
+            text: "nope".to_string(),
+        };
+        assert!(patch.apply(&mut tree).is_err());
+    }
+
+    #[test]
+    fn patch_add_choice_tag() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1),
+            NodeId(1),
+            DialogueMeta::new("T"),
+        );
+        tree.insert(DialogueNode::Choice {
+            id:      NodeId(1),
+            speaker: SpeakerId::NARRATOR,
+            prompt:  None,
+            options: vec![ChoiceOption::new("Yes", NodeId(2))],
+        });
+        tree.insert(DialogueNode::End { id: NodeId(2) });
+
+        let patch = NodePatch::AddChoiceTag {
+            node:         NodeId(1),
+            option_index: 0,
+            tag:          "brave".to_string(),
+        };
+        patch.apply(&mut tree).unwrap();
+
+        if let Some(DialogueNode::Choice { options, .. }) = tree.get(NodeId(1)) {
+            assert!(options[0].tags.contains(&"brave".to_string()));
+        }
+    }
+
+    #[test]
+    fn patch_set_branch_condition() {
+        let mut tree = DialogueTree::new(
+            DialogueId(1),
+            NodeId(1),
+            DialogueMeta::new("T"),
+        );
+        tree.insert(DialogueNode::Branch {
+            id:        NodeId(1),
+            condition: Condition::Always,
+            if_true:   NodeId(2),
+            if_false:  None,
+        });
+        tree.insert(DialogueNode::End { id: NodeId(2) });
+
+        let patch = NodePatch::SetBranchCondition {
+            node:      NodeId(1),
+            condition: Condition::Never,
+        };
+        patch.apply(&mut tree).unwrap();
+
+        if let Some(DialogueNode::Branch { condition, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(*condition, Condition::Never);
+        }
+    }
+
+    // ── TreeDiff ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn tree_diff_no_change() {
+        let tree = simple_tree();
+        let diff = TreeDiff::compute(&tree, &tree);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn tree_diff_added_node() {
+        let tree_before = simple_tree();
+        let mut tree_after = tree_before.clone();
+        tree_after.insert(DialogueNode::End { id: NodeId(99) });
+        let diff = TreeDiff::compute(&tree_before, &tree_after);
+        assert_eq!(diff.added_nodes.len(), 1);
+        assert!(diff.added_nodes.contains(&NodeId(99)));
+    }
+
+    #[test]
+    fn tree_diff_removed_node() {
+        let tree_before = simple_tree();
+        let mut tree_after = tree_before.clone();
+        tree_after.nodes.remove(&NodeId(3));
+        let diff = TreeDiff::compute(&tree_before, &tree_after);
+        assert_eq!(diff.removed_nodes.len(), 1);
+    }
+
+    // ── Condition helper constructors ─────────────────────────────────────
+
+    #[test]
+    fn condition_clone_and_eq() {
+        let c = Condition::and(vec![
+            Condition::var_equals("x", 1i64),
+            Condition::not(Condition::HasFlag("f".to_string())),
+        ]);
+        let c2 = c.clone();
+        assert_eq!(c, c2);
+    }
+
+    #[test]
+    fn condition_or_short_circuits() {
+        let vars  = std::collections::HashMap::new();
+        let flags = std::collections::HashSet::new();
+        // First condition is true → whole Or is true even without evaluating second.
+        let c = Condition::Or(vec![Condition::Always, Condition::Never]);
+        assert!(c.evaluate(&vars, &flags));
+    }
+
+    #[test]
+    fn condition_and_short_circuits() {
+        let vars  = std::collections::HashMap::new();
+        let flags = std::collections::HashSet::new();
+        let c = Condition::And(vec![Condition::Never, Condition::Always]);
+        assert!(!c.evaluate(&vars, &flags));
+    }
+
+    // ── Builder edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn builder_call_script() {
+        use crate::dialogue::DialogueVar;
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .call_script("add_gold", vec![DialogueVar::Int(100)])
+            .end()
+            .build();
+        if let Some(DialogueNode::CallScript { function, args, next, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(function, "add_gold");
+            assert_eq!(args[0], DialogueVar::Int(100));
+            assert_eq!(*next, Some(NodeId(2)));
+        } else {
+            panic!("Node 1 should be CallScript");
+        }
+    }
+
+    #[test]
+    fn builder_jump() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .jump(NodeId(99))
+            .build();
+        if let Some(DialogueNode::Jump { target, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(*target, NodeId(99));
+        }
+    }
+
+    #[test]
+    fn builder_random_choice() {
+        let opts = vec![(NodeId(2), 0.3), (NodeId(3), 0.7)];
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .random_choice(opts.clone())
+            .build();
+        if let Some(DialogueNode::RandomChoice { options, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(options.len(), 2);
+        }
+    }
+
+    #[test]
+    fn builder_say_with_emotion() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .say_with_emotion(SpeakerId(1), "Angry line", crate::dialogue::Emotion::Angry)
+            .end()
+            .build();
+        if let Some(DialogueNode::Say { emotion, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(*emotion, crate::dialogue::Emotion::Angry);
+        }
+    }
+
+    #[test]
+    fn builder_say_audio() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .say_audio(SpeakerId(1), "Voiced line", "vo_001")
+            .end()
+            .build();
+        if let Some(DialogueNode::Say { audio_key, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(audio_key.as_deref(), Some("vo_001"));
+        }
+    }
+
+    #[test]
+    fn builder_choice_with_prompt() {
+        let tree = DialogueBuilder::new(DialogueId(1))
+            .choice_with_prompt(SpeakerId(1), "What do you do?", &[
+                ("Fight", NodeId(2)),
+                ("Run",   NodeId(3)),
+            ])
+            .build();
+        if let Some(DialogueNode::Choice { prompt, options, .. }) = tree.get(NodeId(1)) {
+            assert_eq!(prompt.as_deref(), Some("What do you do?"));
+            assert_eq!(options.len(), 2);
+        }
+    }
+
+    // ── Library ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn library_ids() {
+        let mut lib = DialogueLibrary::new();
+        lib.register(DialogueBuilder::new(DialogueId(1)).end().build());
+        lib.register(DialogueBuilder::new(DialogueId(2)).end().build());
+        lib.register(DialogueBuilder::new(DialogueId(3)).end().build());
+        let mut ids = lib.ids();
+        ids.sort();
+        assert_eq!(ids, vec![DialogueId(1), DialogueId(2), DialogueId(3)]);
+    }
+
+    #[test]
+    fn library_iter() {
+        let mut lib = DialogueLibrary::new();
+        for i in 1..=5u32 {
+            lib.register(DialogueBuilder::new(DialogueId(i)).end().build());
+        }
+        assert_eq!(lib.iter().count(), 5);
+    }
+
+    #[test]
+    fn dialogue_meta_has_tag() {
+        let meta = DialogueMeta::new("Test")
+            .with_tag("tutorial")
+            .with_tag("act1");
+        assert!(meta.has_tag("tutorial"));
+        assert!(meta.has_tag("act1"));
+        assert!(!meta.has_tag("boss"));
     }
 }

@@ -824,16 +824,22 @@ impl Market {
                 .map(|t| (t.price, t.quantity))
                 .collect();
             if trades.is_empty() { continue; }
+            // Compute the candle seed before taking a mutable borrow on price_history.
+            let seed_price = self.commodities.get(&id).map(|c| c.spot_price).unwrap_or(0.0);
+            let current_tick = self.current_tick;
             let hist = self.price_history.entry(id).or_default();
-            let candle = match hist.back_mut() {
-                Some(c) if c.tick == self.current_tick => c,
-                _ => {
-                    let c = self.open_candle(id);
-                    // Can't borrow self mutably twice; push and get back
-                    hist.push_back(c);
-                    hist.back_mut().unwrap()
-                }
-            };
+            let needs_new = hist.back().map(|c| c.tick != current_tick).unwrap_or(true);
+            if needs_new {
+                hist.push_back(PricePoint {
+                    tick: current_tick,
+                    open: seed_price,
+                    high: seed_price,
+                    low: seed_price,
+                    close: seed_price,
+                    volume: 0.0,
+                });
+            }
+            let candle = hist.back_mut().unwrap();
             for (price, qty) in trades {
                 if price > candle.high { candle.high = price; }
                 if price < candle.low { candle.low = price; }
