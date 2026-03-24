@@ -39,3 +39,27 @@ pub enum MusicVibe {
     Victory,
     Silence,
 }
+
+/// The audio engine — spawns a cpal synthesis thread and accepts events.
+///
+/// If no audio device is available, `try_new()` returns None and all
+/// `emit()` calls are silently dropped (the engine runs fine without audio).
+pub struct AudioEngine {
+    sender: std::sync::mpsc::SyncSender<AudioEvent>,
+    _output: output::AudioOutput,
+}
+
+impl AudioEngine {
+    /// Open the default audio device and start the synthesis thread.
+    /// Returns None if no output device is available (runs silently).
+    pub fn try_new() -> Option<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(512);
+        let output = output::AudioOutput::try_new(rx)?;
+        Some(Self { sender: tx, _output: output })
+    }
+
+    /// Send an audio event to the synthesis thread. Non-blocking — drops if full.
+    pub fn emit(&self, event: AudioEvent) {
+        let _ = self.sender.try_send(event);
+    }
+}
