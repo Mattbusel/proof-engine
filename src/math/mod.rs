@@ -12,6 +12,10 @@ pub mod fields;
 pub mod color;
 pub mod complex;
 pub mod curves;
+pub mod numerical;
+pub mod geometry;
+pub mod statistics;
+pub mod simulation;
 
 pub use eval::MathFunction;
 pub use fields::{ForceField, Falloff, FieldTarget};
