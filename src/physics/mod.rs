@@ -18,6 +18,7 @@ use glam::{Vec2, Vec3};
 
 pub mod fluid;
 pub mod soft_body;
+pub mod rigid_body;
 
 pub use fluid::FluidGrid;
 pub use soft_body::SoftBody;
