@@ -9,6 +9,8 @@ pub mod achievements;
 pub mod fluids;
 pub mod debris;
 pub mod cloth_rope;
+pub mod arena_physics;
+pub mod weapon_physics;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
