@@ -70,6 +70,9 @@ pub mod economy;
 pub mod behavior;
 pub mod weather;
 pub mod rendergraph;
+pub mod compute;
+pub mod shader_graph;
+pub mod lighting;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
