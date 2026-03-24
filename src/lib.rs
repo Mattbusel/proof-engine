@@ -64,6 +64,8 @@ pub mod vfx;
 pub mod network;
 pub mod world;
 pub mod crafting;
+pub mod pathfinding;
+pub mod economy;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
