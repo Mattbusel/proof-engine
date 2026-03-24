@@ -7,5 +7,7 @@ pub mod shader_graph;
 pub mod shaders;
 pub mod text_renderer;
 pub mod lighting;
+#[path = "compute/mod.rs"] pub mod compute;
+pub mod render_graph;
 
 pub use pipeline::Pipeline;
