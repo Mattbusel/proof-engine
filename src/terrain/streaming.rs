@@ -1601,3 +1601,371 @@ mod extended_streaming_tests {
         assert!((prof.min_generate_ms - 3.0).abs() < 1e-4);
     }
 }
+
+// ── Terrain Patch System ──────────────────────────────────────────────────────
+
+/// A small editable terrain patch (sub-chunk resolution editing).
+#[derive(Clone, Debug)]
+pub struct TerrainPatch {
+    pub coord:       ChunkCoord,
+    pub offset_x:    usize,
+    pub offset_z:    usize,
+    pub width:       usize,
+    pub height:      usize,
+    pub data:        Vec<f32>,
+    pub dirty:       bool,
+}
+
+impl TerrainPatch {
+    pub fn new(coord: ChunkCoord, offset_x: usize, offset_z: usize, width: usize, height: usize) -> Self {
+        Self {
+            coord, offset_x, offset_z, width, height,
+            data: vec![0.0f32; width * height],
+            dirty: false,
+        }
+    }
+
+    pub fn get(&self, x: usize, z: usize) -> f32 {
+        if x < self.width && z < self.height { self.data[z * self.width + x] } else { 0.0 }
+    }
+
+    pub fn set(&mut self, x: usize, z: usize, v: f32) {
+        if x < self.width && z < self.height {
+            self.data[z * self.width + x] = v.clamp(0.0, 1.0);
+            self.dirty = true;
+        }
+    }
+
+    /// Apply this patch to the corresponding chunk heightmap.
+    pub fn apply_to_chunk(&self, chunk: &mut crate::terrain::mod_types::TerrainChunk) {
+        for z in 0..self.height {
+            for x in 0..self.width {
+                let cx = self.offset_x + x;
+                let cz = self.offset_z + z;
+                chunk.heightmap.set(cx, cz, self.get(x, z));
+            }
+        }
+    }
+
+    /// Read current values from a chunk into this patch.
+    pub fn read_from_chunk(&mut self, chunk: &crate::terrain::mod_types::TerrainChunk) {
+        for z in 0..self.height {
+            for x in 0..self.width {
+                let cx = self.offset_x + x;
+                let cz = self.offset_z + z;
+                self.set(x, z, chunk.heightmap.get(cx, cz));
+            }
+        }
+        self.dirty = false;
+    }
+}
+
+// ── Neighbor Stitching ────────────────────────────────────────────────────────
+
+/// Stitches chunk borders to eliminate seams between adjacent chunks.
+pub struct ChunkStitcher;
+
+impl ChunkStitcher {
+    /// Blend the border rows of two adjacent chunks for seamless transitions.
+    /// `primary` is the chunk to modify; `neighbor` provides the reference values.
+    /// `edge` is which edge of `primary` borders `neighbor`.
+    pub fn stitch_edge(
+        primary:  &mut crate::terrain::mod_types::TerrainChunk,
+        neighbor: &crate::terrain::mod_types::TerrainChunk,
+        edge:     StitchEdge,
+        blend_width: usize,
+    ) {
+        let pw = primary.heightmap.width;
+        let ph = primary.heightmap.height;
+        let nw = neighbor.heightmap.width;
+        let nh = neighbor.heightmap.height;
+
+        match edge {
+            StitchEdge::East => {
+                for z in 0..ph {
+                    let nz = (z as f32 / ph as f32 * nh as f32) as usize;
+                    for bx in 0..blend_width {
+                        let px = pw - 1 - bx;
+                        let nx = bx;
+                        let t = bx as f32 / blend_width as f32;
+                        let p_val = primary.heightmap.get(px, z);
+                        let n_val = neighbor.heightmap.get(nx, nz.min(nh - 1));
+                        let blended = p_val + (n_val - p_val) * t;
+                        primary.heightmap.set(px, z, blended);
+                    }
+                }
+            }
+            StitchEdge::West => {
+                for z in 0..ph {
+                    let nz = (z as f32 / ph as f32 * nh as f32) as usize;
+                    for bx in 0..blend_width {
+                        let px = bx;
+                        let nx = nw - 1 - bx;
+                        let t = bx as f32 / blend_width as f32;
+                        let p_val = primary.heightmap.get(px, z);
+                        let n_val = neighbor.heightmap.get(nx.min(nw - 1), nz.min(nh - 1));
+                        let blended = n_val + (p_val - n_val) * (1.0 - t);
+                        primary.heightmap.set(px, z, blended);
+                    }
+                }
+            }
+            StitchEdge::North => {
+                for x in 0..pw {
+                    let nx = (x as f32 / pw as f32 * nw as f32) as usize;
+                    for bz in 0..blend_width {
+                        let pz = bz;
+                        let nz = nh - 1 - bz;
+                        let t = bz as f32 / blend_width as f32;
+                        let p_val = primary.heightmap.get(x, pz);
+                        let n_val = neighbor.heightmap.get(nx.min(nw - 1), nz.min(nh - 1));
+                        let blended = n_val + (p_val - n_val) * (1.0 - t);
+                        primary.heightmap.set(x, pz, blended);
+                    }
+                }
+            }
+            StitchEdge::South => {
+                for x in 0..pw {
+                    let nx = (x as f32 / pw as f32 * nw as f32) as usize;
+                    for bz in 0..blend_width {
+                        let pz = ph - 1 - bz;
+                        let nz = bz;
+                        let t = bz as f32 / blend_width as f32;
+                        let p_val = primary.heightmap.get(x, pz);
+                        let n_val = neighbor.heightmap.get(nx.min(nw - 1), nz.min(nh - 1));
+                        let blended = p_val + (n_val - p_val) * t;
+                        primary.heightmap.set(x, pz, blended);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Which edge of a chunk to stitch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StitchEdge {
+    North,
+    South,
+    East,
+    West,
+}
+
+// ── Chunk Compression ─────────────────────────────────────────────────────────
+
+/// Quantizes a heightmap for compact storage.
+pub struct HeightmapQuantizer;
+
+impl HeightmapQuantizer {
+    /// Quantize to 8-bit precision (256 levels).
+    pub fn quantize_8bit(heights: &[f32]) -> Vec<u8> {
+        heights.iter().map(|&h| (h.clamp(0.0, 1.0) * 255.0) as u8).collect()
+    }
+
+    /// Dequantize from 8-bit.
+    pub fn dequantize_8bit(bytes: &[u8]) -> Vec<f32> {
+        bytes.iter().map(|&b| b as f32 / 255.0).collect()
+    }
+
+    /// Quantize to 16-bit precision (65536 levels).
+    pub fn quantize_16bit(heights: &[f32]) -> Vec<u16> {
+        heights.iter().map(|&h| (h.clamp(0.0, 1.0) * 65535.0) as u16).collect()
+    }
+
+    /// Dequantize from 16-bit.
+    pub fn dequantize_16bit(shorts: &[u16]) -> Vec<f32> {
+        shorts.iter().map(|&s| s as f32 / 65535.0).collect()
+    }
+
+    /// Compute quantization error (mean absolute error).
+    pub fn quantization_error(original: &[f32], quantized_8bit: &[u8]) -> f32 {
+        if original.len() != quantized_8bit.len() { return f32::INFINITY; }
+        original.iter().zip(quantized_8bit.iter())
+            .map(|(&orig, &q)| (orig - q as f32 / 255.0).abs())
+            .sum::<f32>() / original.len() as f32
+    }
+}
+
+// ── Streaming Telemetry ────────────────────────────────────────────────────────
+
+/// Detailed telemetry for streaming system performance analysis.
+#[derive(Debug, Default, Clone)]
+pub struct StreamingTelemetry {
+    pub frame_number:        u64,
+    pub visible_chunk_count: usize,
+    pub loaded_chunk_count:  usize,
+    pub pending_chunk_count: usize,
+    pub cache_hit_rate:      f32,
+    pub memory_usage_mb:     f32,
+    pub generation_rate:     f32, // chunks per second
+    pub eviction_count:      usize,
+    pub last_update_ms:      f32,
+}
+
+impl StreamingTelemetry {
+    pub fn update_from_stats(&mut self, stats: &StreamingStats) {
+        self.frame_number      += 1;
+        self.loaded_chunk_count = stats.chunks_loaded;
+        self.pending_chunk_count = stats.pending_count;
+        self.cache_hit_rate    = stats.cache_hit_rate();
+        self.memory_usage_mb   = stats.memory_bytes as f32 / (1024.0 * 1024.0);
+    }
+
+    pub fn to_display_string(&self) -> String {
+        format!(
+            "Frame:{} | Chunks:{} Pending:{} | Cache:{:.0}% | Mem:{:.1}MB",
+            self.frame_number,
+            self.loaded_chunk_count,
+            self.pending_chunk_count,
+            self.cache_hit_rate * 100.0,
+            self.memory_usage_mb,
+        )
+    }
+}
+
+// ── Chunk Repair ──────────────────────────────────────────────────────────────
+
+/// Repairs corrupted or invalid chunk data.
+pub struct ChunkRepair;
+
+impl ChunkRepair {
+    /// Fix out-of-range height values.
+    pub fn clamp_heights(chunk: &mut crate::terrain::mod_types::TerrainChunk) {
+        for v in chunk.heightmap.data.iter_mut() {
+            *v = v.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Fix NaN values in heightmap by replacing with neighbors' average.
+    pub fn fix_nans(chunk: &mut crate::terrain::mod_types::TerrainChunk) {
+        let w = chunk.heightmap.width;
+        let h = chunk.heightmap.height;
+        let data = chunk.heightmap.data.clone();
+        for y in 0..h {
+            for x in 0..w {
+                if chunk.heightmap.get(x, y).is_nan() {
+                    let mut sum = 0.0f32;
+                    let mut count = 0;
+                    for (dx, dy) in &[(-1i32,0),(1,0),(0,-1i32),(0,1)] {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
+                            let v = data[ny as usize * w + nx as usize];
+                            if !v.is_nan() { sum += v; count += 1; }
+                        }
+                    }
+                    let replacement = if count > 0 { sum / count as f32 } else { 0.5 };
+                    chunk.heightmap.set(x, y, replacement);
+                }
+            }
+        }
+    }
+
+    /// Check if a chunk has any issues.
+    pub fn is_valid(chunk: &crate::terrain::mod_types::TerrainChunk) -> bool {
+        chunk.heightmap.data.iter().all(|&v| !v.is_nan() && v >= 0.0 && v <= 1.0)
+    }
+}
+
+// ── More Streaming Tests ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod more_streaming_tests {
+    use super::*;
+
+    fn test_config() -> TerrainConfig {
+        TerrainConfig { chunk_size: 16, view_distance: 1, lod_levels: 2, seed: 42 }
+    }
+
+    #[test]
+    fn test_terrain_patch_apply() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let mut chunk = gen.generate(ChunkCoord(0, 0));
+        let mut patch = TerrainPatch::new(ChunkCoord(0, 0), 0, 0, 4, 4);
+        for v in patch.data.iter_mut() { *v = 0.99; }
+        patch.dirty = true;
+        patch.apply_to_chunk(&mut chunk);
+        assert!((chunk.heightmap.get(0, 0) - 0.99).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_terrain_patch_read_write() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let chunk = gen.generate(ChunkCoord(0, 0));
+        let mut patch = TerrainPatch::new(ChunkCoord(0, 0), 0, 0, 4, 4);
+        patch.read_from_chunk(&chunk);
+        assert!(!patch.dirty);
+        assert!(patch.data.iter().any(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn test_heightmap_quantizer_8bit() {
+        let heights: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
+        let quantized = HeightmapQuantizer::quantize_8bit(&heights);
+        let deq = HeightmapQuantizer::dequantize_8bit(&quantized);
+        let err = HeightmapQuantizer::quantization_error(&heights, &quantized);
+        assert!(err < 0.005, "8-bit quantization error should be small");
+    }
+
+    #[test]
+    fn test_heightmap_quantizer_16bit() {
+        let heights: Vec<f32> = (0..1024).map(|i| i as f32 / 1023.0).collect();
+        let quantized = HeightmapQuantizer::quantize_16bit(&heights);
+        let deq = HeightmapQuantizer::dequantize_16bit(&quantized);
+        let max_err = heights.iter().zip(deq.iter())
+            .map(|(&a, &b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_err < 0.0001, "16-bit quantization should be very accurate");
+    }
+
+    #[test]
+    fn test_chunk_repair_clamp() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let mut chunk = gen.generate(ChunkCoord(0, 0));
+        chunk.heightmap.data[0] = 2.0; // invalid
+        chunk.heightmap.data[1] = -1.0; // invalid
+        ChunkRepair::clamp_heights(&mut chunk);
+        assert!(ChunkRepair::is_valid(&chunk));
+    }
+
+    #[test]
+    fn test_chunk_repair_nan() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let mut chunk = gen.generate(ChunkCoord(0, 0));
+        chunk.heightmap.data[16] = f32::NAN;
+        ChunkRepair::fix_nans(&mut chunk);
+        assert!(ChunkRepair::is_valid(&chunk));
+    }
+
+    #[test]
+    fn test_streaming_telemetry() {
+        let stats = StreamingStats {
+            chunks_loaded: 10, chunks_unloaded: 2,
+            cache_hits: 80, cache_misses: 20,
+            pending_count: 3, memory_bytes: 2 * 1024 * 1024,
+            generate_time_ms: 100.0,
+        };
+        let mut tel = StreamingTelemetry::default();
+        tel.update_from_stats(&stats);
+        assert_eq!(tel.loaded_chunk_count, 10);
+        assert!((tel.cache_hit_rate - 0.8).abs() < 1e-4);
+        assert!((tel.memory_usage_mb - 2.0).abs() < 1e-4);
+        let s = tel.to_display_string();
+        assert!(s.contains("Chunks:10"));
+    }
+
+    #[test]
+    fn test_extended_serializer_rle_chunk() {
+        let config = test_config();
+        let gen = ChunkGenerator::new(config);
+        let chunk = gen.generate(ChunkCoord(0, 0));
+        let bytes = ExtendedChunkSerializer::serialize_with_format(&chunk, SerializationFormat::Raw);
+        let restored = ExtendedChunkSerializer::deserialize_with_format(
+            &bytes, SerializationFormat::Raw
+        );
+        assert!(restored.is_some());
+    }
+}

@@ -59,6 +59,11 @@ pub mod save;
 pub mod character;
 pub mod dsp;
 pub mod game;
+pub mod profiler;
+pub mod vfx;
+pub mod network;
+pub mod world;
+pub mod crafting;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};

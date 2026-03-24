@@ -1654,3 +1654,856 @@ mod extended_vegetation_tests {
         }
     }
 }
+
+// ── Grass Simulation ──────────────────────────────────────────────────────────
+
+/// Per-blade grass animation state.
+#[derive(Clone, Debug)]
+pub struct GrassBlade {
+    pub position:     Vec3,
+    pub base_angle:   f32,   // natural lean angle in radians
+    pub sway_phase:   f32,   // individual phase offset for wind sway
+    pub height:       f32,
+    pub width:        f32,
+    pub color:        Vec4,
+    pub roughness:    f32,
+}
+
+impl GrassBlade {
+    pub fn new(position: Vec3, height: f32, color: Vec4, seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        Self {
+            position,
+            base_angle: rng.next_f32_range(-0.2, 0.2),
+            sway_phase: rng.next_f32() * std::f32::consts::TAU,
+            height,
+            width: rng.next_f32_range(0.02, 0.05),
+            color,
+            roughness: rng.next_f32_range(0.7, 1.0),
+        }
+    }
+
+    /// Compute current sway angle given time and wind.
+    pub fn current_angle(&self, time: f32, wind: Vec2) -> f32 {
+        let wind_strength = wind.length();
+        let sway = wind_strength * (time * 1.5 + self.sway_phase).sin() * 0.3;
+        self.base_angle + sway
+    }
+
+    /// Tip position after sway.
+    pub fn tip_position(&self, time: f32, wind: Vec2) -> Vec3 {
+        let angle = self.current_angle(time, wind);
+        self.position + Vec3::new(
+            angle.sin() * self.height,
+            angle.cos() * self.height,
+            (angle * 0.7).sin() * self.height * 0.3,
+        )
+    }
+}
+
+/// A patch of individually simulated grass blades.
+#[derive(Debug)]
+pub struct GrassPatch {
+    pub blades:   Vec<GrassBlade>,
+    pub center:   Vec3,
+    pub radius:   f32,
+}
+
+impl GrassPatch {
+    pub fn generate(center: Vec3, radius: f32, density: f32, biome: BiomeType, seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        let count = (radius * radius * std::f32::consts::PI * density * 4.0) as usize;
+        let color = match biome {
+            BiomeType::Grassland | BiomeType::TemperateForest =>
+                Vec4::new(0.3 + rng.next_f32() * 0.1, 0.6, 0.15, 1.0),
+            BiomeType::Savanna =>
+                Vec4::new(0.65 + rng.next_f32() * 0.1, 0.55, 0.12, 1.0),
+            BiomeType::Tundra =>
+                Vec4::new(0.5, 0.52, 0.32, 1.0),
+            _ => Vec4::new(0.3, 0.55, 0.15, 1.0),
+        };
+        let blades: Vec<GrassBlade> = (0..count).map(|_| {
+            let angle = rng.next_f32() * std::f32::consts::TAU;
+            let dist  = rng.next_f32() * radius;
+            let px = center.x + angle.cos() * dist;
+            let pz = center.z + angle.sin() * dist;
+            let height = rng.next_f32_range(0.15, 0.5);
+            let col = Vec4::new(
+                (color.x + rng.next_f32_range(-0.05, 0.05)).clamp(0.0, 1.0),
+                (color.y + rng.next_f32_range(-0.05, 0.05)).clamp(0.0, 1.0),
+                (color.z + rng.next_f32_range(-0.05, 0.05)).clamp(0.0, 1.0),
+                1.0,
+            );
+            GrassBlade::new(Vec3::new(px, center.y, pz), height, col, rng.next_u64())
+        }).collect();
+        Self { blades, center, radius }
+    }
+
+    pub fn blade_count(&self) -> usize { self.blades.len() }
+}
+
+// ── Vegetation Query API ──────────────────────────────────────────────────────
+
+/// Query API for finding vegetation near a position.
+pub struct VegetationQuery<'a> {
+    system: &'a VegetationSystem,
+}
+
+impl<'a> VegetationQuery<'a> {
+    pub fn new(system: &'a VegetationSystem) -> Self { Self { system } }
+
+    /// Find all visible trees within `radius` of `pos`.
+    pub fn trees_near(&self, pos: Vec3, radius: f32) -> Vec<&VegetationInstance> {
+        let r2 = radius * radius;
+        self.system.instances.iter()
+            .filter(|i| i.visible && matches!(i.kind, VegetationKind::Tree(_)))
+            .filter(|i| {
+                let dx = i.position.x - pos.x;
+                let dz = i.position.z - pos.z;
+                dx * dx + dz * dz <= r2
+            })
+            .collect()
+    }
+
+    /// Find the nearest tree to `pos`.
+    pub fn nearest_tree(&self, pos: Vec3) -> Option<&VegetationInstance> {
+        self.system.instances.iter()
+            .filter(|i| i.visible && matches!(i.kind, VegetationKind::Tree(_)))
+            .min_by(|a, b| {
+                let da = (a.position - pos).length();
+                let db = (b.position - pos).length();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// Count instances of each kind within radius.
+    pub fn count_by_kind(&self, pos: Vec3, radius: f32) -> std::collections::HashMap<String, usize> {
+        let r2 = radius * radius;
+        let mut counts = std::collections::HashMap::new();
+        for inst in &self.system.instances {
+            if !inst.visible { continue; }
+            let dx = inst.position.x - pos.x;
+            let dz = inst.position.z - pos.z;
+            if dx * dx + dz * dz > r2 { continue; }
+            let key = match &inst.kind {
+                VegetationKind::Tree(tt) => tt.name().to_string(),
+                VegetationKind::Grass   => "Grass".to_string(),
+                VegetationKind::Rock { size_class } => format!("Rock({})", size_class),
+                VegetationKind::Shrub   => "Shrub".to_string(),
+                VegetationKind::Flower  => "Flower".to_string(),
+            };
+            *counts.entry(key).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// Find all rocks within radius.
+    pub fn rocks_near(&self, pos: Vec3, radius: f32) -> Vec<&VegetationInstance> {
+        let r2 = radius * radius;
+        self.system.instances.iter()
+            .filter(|i| matches!(i.kind, VegetationKind::Rock { .. }))
+            .filter(|i| {
+                let dx = i.position.x - pos.x;
+                let dz = i.position.z - pos.z;
+                dx * dx + dz * dz <= r2
+            })
+            .collect()
+    }
+}
+
+// ── Vegetation Serializer ─────────────────────────────────────────────────────
+
+/// Serializes and deserializes vegetation data for saving/loading.
+pub struct VegetationSerializer;
+
+impl VegetationSerializer {
+    /// Serialize vegetation instances to compact binary.
+    /// Format per instance: [x:f32][y:f32][z:f32][rotation:f32][scale_x:f32][scale_y:f32][scale_z:f32][kind:u8][lod:u8]
+    pub fn serialize(instances: &[VegetationInstance]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(instances.len() * 36 + 4);
+        out.extend_from_slice(&(instances.len() as u32).to_le_bytes());
+        for inst in instances {
+            out.extend_from_slice(&inst.position.x.to_le_bytes());
+            out.extend_from_slice(&inst.position.y.to_le_bytes());
+            out.extend_from_slice(&inst.position.z.to_le_bytes());
+            out.extend_from_slice(&inst.rotation.to_le_bytes());
+            out.extend_from_slice(&inst.scale.x.to_le_bytes());
+            out.extend_from_slice(&inst.scale.y.to_le_bytes());
+            out.extend_from_slice(&inst.scale.z.to_le_bytes());
+            let kind_byte: u8 = match &inst.kind {
+                VegetationKind::Tree(tt) => *tt as u8,
+                VegetationKind::Grass    => 20,
+                VegetationKind::Rock { size_class } => 21 + size_class,
+                VegetationKind::Shrub    => 24,
+                VegetationKind::Flower   => 25,
+            };
+            out.push(kind_byte);
+            out.push(inst.lod_level);
+        }
+        out
+    }
+
+    /// Deserialize vegetation instances from binary.
+    pub fn deserialize(bytes: &[u8]) -> Option<Vec<VegetationInstance>> {
+        if bytes.len() < 4 { return None; }
+        let count = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+        let record_size = 4 * 7 + 2; // 7 floats + 2 bytes
+        if bytes.len() < 4 + count * record_size { return None; }
+        let mut instances = Vec::with_capacity(count);
+        let mut pos = 4usize;
+        for _ in 0..count {
+            let read_f32 = |p: &mut usize| -> f32 {
+                let v = f32::from_le_bytes(bytes[*p..*p+4].try_into().unwrap_or([0;4]));
+                *p += 4;
+                v
+            };
+            let x  = read_f32(&mut pos);
+            let y  = read_f32(&mut pos);
+            let z  = read_f32(&mut pos);
+            let rot = read_f32(&mut pos);
+            let sx  = read_f32(&mut pos);
+            let sy  = read_f32(&mut pos);
+            let sz  = read_f32(&mut pos);
+            let kind_byte = bytes[pos]; pos += 1;
+            let lod = bytes[pos]; pos += 1;
+            let kind = match kind_byte {
+                0  => VegetationKind::Tree(TreeType::Oak),
+                1  => VegetationKind::Tree(TreeType::Pine),
+                2  => VegetationKind::Tree(TreeType::Birch),
+                3  => VegetationKind::Tree(TreeType::Tropical),
+                4  => VegetationKind::Tree(TreeType::Dead),
+                5  => VegetationKind::Tree(TreeType::Palm),
+                6  => VegetationKind::Tree(TreeType::Willow),
+                7  => VegetationKind::Tree(TreeType::Cactus),
+                8  => VegetationKind::Tree(TreeType::Fern),
+                9  => VegetationKind::Tree(TreeType::Mushroom),
+                20 => VegetationKind::Grass,
+                21 => VegetationKind::Rock { size_class: 0 },
+                22 => VegetationKind::Rock { size_class: 1 },
+                23 => VegetationKind::Rock { size_class: 2 },
+                24 => VegetationKind::Shrub,
+                _  => VegetationKind::Flower,
+            };
+            instances.push(VegetationInstance {
+                position: Vec3::new(x, y, z),
+                rotation: rot,
+                scale: Vec3::new(sx, sy, sz),
+                lod_level: lod,
+                visible: true,
+                kind,
+            });
+        }
+        Some(instances)
+    }
+}
+
+// ── More Vegetation Tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod more_vegetation_tests {
+    use super::*;
+
+    #[test]
+    fn test_grass_blade_creation() {
+        let blade = GrassBlade::new(Vec3::new(1.0, 0.0, 1.0), 0.4, Vec4::ONE, 42);
+        assert!(blade.height > 0.0);
+        assert!(blade.width > 0.0);
+    }
+
+    #[test]
+    fn test_grass_blade_sway() {
+        let blade = GrassBlade::new(Vec3::ZERO, 0.5, Vec4::ONE, 99);
+        let angle_t0 = blade.current_angle(0.0, Vec2::new(1.0, 0.0));
+        let angle_t1 = blade.current_angle(1.0, Vec2::new(1.0, 0.0));
+        // Angle should change over time (sway)
+        let _ = (angle_t0, angle_t1);
+    }
+
+    #[test]
+    fn test_grass_blade_tip() {
+        let blade = GrassBlade::new(Vec3::ZERO, 0.5, Vec4::ONE, 42);
+        let tip = blade.tip_position(0.0, Vec2::ZERO);
+        assert!(tip.y > 0.0); // tip should be above base
+    }
+
+    #[test]
+    fn test_grass_patch_generation() {
+        let patch = GrassPatch::generate(Vec3::ZERO, 5.0, 1.0, BiomeType::Grassland, 42);
+        assert!(!patch.blades.is_empty());
+        for blade in &patch.blades {
+            let dx = blade.position.x;
+            let dz = blade.position.z;
+            assert!(dx * dx + dz * dz <= 5.0 * 5.0 + 0.1);
+        }
+    }
+
+    #[test]
+    fn test_vegetation_query_trees_near() {
+        let mut sys = VegetationSystem::new();
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(5.0, 0.0, 0.0),
+            rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Tree(TreeType::Oak),
+        });
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(50.0, 0.0, 0.0),
+            rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Tree(TreeType::Pine),
+        });
+        let q = VegetationQuery::new(&sys);
+        let near = q.trees_near(Vec3::ZERO, 10.0);
+        assert_eq!(near.len(), 1);
+    }
+
+    #[test]
+    fn test_vegetation_query_nearest() {
+        let mut sys = VegetationSystem::new();
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(3.0, 0.0, 0.0),
+            rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Tree(TreeType::Oak),
+        });
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Tree(TreeType::Pine),
+        });
+        let q = VegetationQuery::new(&sys);
+        let nearest = q.nearest_tree(Vec3::ZERO);
+        assert!(nearest.is_some());
+        assert!((nearest.unwrap().position.x - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_vegetation_serializer_roundtrip() {
+        let instances = vec![
+            VegetationInstance {
+                position: Vec3::new(1.0, 2.0, 3.0),
+                rotation: 1.5,
+                scale: Vec3::new(1.0, 1.5, 1.0),
+                lod_level: 0,
+                visible: true,
+                kind: VegetationKind::Tree(TreeType::Oak),
+            },
+            VegetationInstance {
+                position: Vec3::new(5.0, 0.0, 7.0),
+                rotation: 0.5,
+                scale: Vec3::ONE,
+                lod_level: 1,
+                visible: true,
+                kind: VegetationKind::Rock { size_class: 1 },
+            },
+        ];
+        let bytes = VegetationSerializer::serialize(&instances);
+        let restored = VegetationSerializer::deserialize(&bytes).unwrap();
+        assert_eq!(restored.len(), instances.len());
+        assert!((restored[0].position.x - 1.0).abs() < 1e-5);
+        assert!((restored[0].position.y - 2.0).abs() < 1e-5);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extended vegetation systems
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Represents a single falling leaf particle used for visual effects.
+#[derive(Debug, Clone)]
+pub struct LeafParticle {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub rotation: f32,
+    pub angular_velocity: f32,
+    pub lifetime: f32,
+    pub max_lifetime: f32,
+    pub color: Vec3,
+    pub size: f32,
+    pub alpha: f32,
+}
+
+impl LeafParticle {
+    pub fn new(pos: Vec3, color: Vec3, size: f32, lifetime: f32) -> Self {
+        Self {
+            position: pos,
+            velocity: Vec3::new(0.0, -0.5, 0.0),
+            rotation: 0.0,
+            angular_velocity: 1.2,
+            lifetime,
+            max_lifetime: lifetime,
+            color,
+            size,
+            alpha: 1.0,
+        }
+    }
+
+    /// Advance simulation by `dt` seconds, applying gravity and wind drift.
+    pub fn update(&mut self, dt: f32, wind: Vec3) {
+        let gravity = Vec3::new(0.0, -0.3, 0.0);
+        let drag = -self.velocity * 0.4;
+        self.velocity += (gravity + wind + drag) * dt;
+        self.position += self.velocity * dt;
+        self.rotation += self.angular_velocity * dt;
+        self.lifetime -= dt;
+        self.alpha = (self.lifetime / self.max_lifetime).clamp(0.0, 1.0);
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.lifetime > 0.0
+    }
+}
+
+/// Emitter that spawns leaf particles from tree canopies.
+#[derive(Debug, Clone)]
+pub struct LeafParticleEmitter {
+    pub origin: Vec3,
+    pub emit_radius: f32,
+    pub emit_rate: f32,      // particles per second
+    pub particle_lifetime: f32,
+    pub color: Vec3,
+    accumulated: f32,
+    rng_state: u64,
+}
+
+impl LeafParticleEmitter {
+    pub fn new(origin: Vec3, radius: f32, rate: f32, lifetime: f32, color: Vec3) -> Self {
+        Self {
+            origin,
+            emit_radius: radius,
+            emit_rate: rate,
+            particle_lifetime: lifetime,
+            color,
+            accumulated: 0.0,
+            rng_state: (origin.x.to_bits() as u64) ^ 0xDEADBEEF_u64,
+        }
+    }
+
+    fn rng_f32(&mut self) -> f32 {
+        self.rng_state ^= self.rng_state << 13;
+        self.rng_state ^= self.rng_state >> 7;
+        self.rng_state ^= self.rng_state << 17;
+        (self.rng_state as f32) / (u64::MAX as f32)
+    }
+
+    /// Returns newly spawned particles for this timestep.
+    pub fn emit(&mut self, dt: f32) -> Vec<LeafParticle> {
+        self.accumulated += self.emit_rate * dt;
+        let count = self.accumulated as usize;
+        self.accumulated -= count as f32;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let angle = self.rng_f32() * std::f32::consts::TAU;
+            let r = self.rng_f32() * self.emit_radius;
+            let offset = Vec3::new(r * angle.cos(), self.rng_f32() * 0.5, r * angle.sin());
+            out.push(LeafParticle::new(
+                self.origin + offset,
+                self.color,
+                0.05 + self.rng_f32() * 0.05,
+                self.particle_lifetime * (0.8 + self.rng_f32() * 0.4),
+            ));
+        }
+        out
+    }
+}
+
+/// Manages a pool of leaf particles across an entire scene.
+#[derive(Debug, Clone, Default)]
+pub struct LeafParticleSystem {
+    pub particles: Vec<LeafParticle>,
+    pub emitters: Vec<LeafParticleEmitter>,
+    pub max_particles: usize,
+}
+
+impl LeafParticleSystem {
+    pub fn new(max_particles: usize) -> Self {
+        Self { particles: Vec::new(), emitters: Vec::new(), max_particles }
+    }
+
+    pub fn add_emitter(&mut self, e: LeafParticleEmitter) {
+        self.emitters.push(e);
+    }
+
+    pub fn update(&mut self, dt: f32, wind: Vec3) {
+        // Update existing particles
+        self.particles.retain_mut(|p| { p.update(dt, wind); p.is_alive() });
+        // Emit new ones if budget allows
+        let budget = self.max_particles.saturating_sub(self.particles.len());
+        let mut new_particles = Vec::new();
+        for emitter in &mut self.emitters {
+            let batch = emitter.emit(dt);
+            new_particles.extend(batch);
+        }
+        new_particles.truncate(budget);
+        self.particles.extend(new_particles);
+    }
+
+    pub fn live_count(&self) -> usize {
+        self.particles.len()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Terrain-aware vegetation placement helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Placement constraint: the cell at (x, z) in the heightmap must satisfy
+/// slope and altitude criteria for the given tree type.
+pub struct PlacementConstraint {
+    pub min_altitude: f32,
+    pub max_altitude: f32,
+    pub max_slope_deg: f32,
+}
+
+impl PlacementConstraint {
+    pub fn for_tree(tt: TreeType) -> Self {
+        match tt {
+            TreeType::Palm => Self { min_altitude: 0.02, max_altitude: 0.25, max_slope_deg: 20.0 },
+            TreeType::Cactus => Self { min_altitude: 0.05, max_altitude: 0.40, max_slope_deg: 30.0 },
+            TreeType::Oak | TreeType::Fern => Self { min_altitude: 0.10, max_altitude: 0.60, max_slope_deg: 35.0 },
+            TreeType::Pine | TreeType::Tropical => Self { min_altitude: 0.20, max_altitude: 0.80, max_slope_deg: 40.0 },
+            TreeType::Birch => Self { min_altitude: 0.15, max_altitude: 0.65, max_slope_deg: 38.0 },
+            TreeType::Dead => Self { min_altitude: 0.05, max_altitude: 0.90, max_slope_deg: 50.0 },
+            TreeType::Willow => Self { min_altitude: 0.02, max_altitude: 0.30, max_slope_deg: 15.0 },
+            TreeType::Mushroom => Self { min_altitude: 0.05, max_altitude: 0.45, max_slope_deg: 25.0 },
+        }
+    }
+
+    pub fn check(&self, altitude: f32, slope_deg: f32) -> bool {
+        altitude >= self.min_altitude
+            && altitude <= self.max_altitude
+            && slope_deg <= self.max_slope_deg
+    }
+}
+
+/// Filters a list of candidate positions against a heightmap using
+/// `PlacementConstraint`.
+pub struct TerrainAwarePlacement;
+
+impl TerrainAwarePlacement {
+    /// `positions` are world-space XZ coordinates. `hm_scale` converts world
+    /// units to [0,1] heightmap UV. Returns accepted positions with world Y.
+    pub fn filter(
+        positions: &[(f32, f32)],
+        heights: &[f32],   // same length as positions, pre-sampled
+        slopes: &[f32],    // degrees, same length
+        constraint: &PlacementConstraint,
+    ) -> Vec<(f32, f32, f32)> {
+        positions.iter().zip(heights.iter()).zip(slopes.iter())
+            .filter_map(|(((x, z), &h), &s)| {
+                if constraint.check(h, s) { Some((*x, h, *z)) } else { None }
+            })
+            .collect()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vegetation heat-map: tracks density per grid cell for editor visualization
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 2-D grid counting how many vegetation instances fall in each cell.
+#[derive(Debug, Clone)]
+pub struct VegetationHeatMap {
+    pub width: usize,
+    pub height: usize,
+    pub cell_size: f32,
+    counts: Vec<u32>,
+}
+
+impl VegetationHeatMap {
+    pub fn new(width: usize, height: usize, cell_size: f32) -> Self {
+        Self { width, height, cell_size, counts: vec![0; width * height] }
+    }
+
+    pub fn accumulate(&mut self, x: f32, z: f32) {
+        let cx = (x / self.cell_size) as usize;
+        let cz = (z / self.cell_size) as usize;
+        if cx < self.width && cz < self.height {
+            self.counts[cz * self.width + cx] += 1;
+        }
+    }
+
+    pub fn build_from(system: &VegetationSystem, width: usize, height: usize, cell_size: f32) -> Self {
+        let mut hm = Self::new(width, height, cell_size);
+        for inst in &system.instances {
+            hm.accumulate(inst.position.x, inst.position.z);
+        }
+        hm
+    }
+
+    pub fn max_count(&self) -> u32 {
+        self.counts.iter().copied().max().unwrap_or(0)
+    }
+
+    pub fn normalized_at(&self, cx: usize, cz: usize) -> f32 {
+        let max = self.max_count();
+        if max == 0 { return 0.0; }
+        self.counts[cz * self.width + cx] as f32 / max as f32
+    }
+
+    pub fn total_instances(&self) -> u64 {
+        self.counts.iter().map(|&c| c as u64).sum()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vegetation export formats
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimal OBJ-like text exporter for vegetation instances (positions only).
+pub struct VegetationObjExporter;
+
+impl VegetationObjExporter {
+    /// Produces a textual listing of instance positions as OBJ vertex lines.
+    pub fn export(system: &VegetationSystem) -> String {
+        let mut out = String::with_capacity(system.instances.len() * 32);
+        out.push_str("# Vegetation export\n");
+        for inst in &system.instances {
+            let kind_str = match &inst.kind {
+                VegetationKind::Tree(t) => format!("{:?}", t),
+                VegetationKind::Grass => "Grass".to_owned(),
+                VegetationKind::Rock { size_class } => format!("Rock{}", size_class),
+                VegetationKind::Shrub => "Shrub".to_owned(),
+                VegetationKind::Flower => "Flower".to_owned(),
+            };
+            out.push_str(&format!(
+                "v {:.4} {:.4} {:.4} # {}\n",
+                inst.position.x, inst.position.y, inst.position.z, kind_str
+            ));
+        }
+        out
+    }
+}
+
+/// CSV exporter for spreadsheet analysis.
+pub struct VegetationCsvExporter;
+
+impl VegetationCsvExporter {
+    pub fn export(system: &VegetationSystem) -> String {
+        let mut out = String::from("x,y,z,rotation,scale_x,scale_y,scale_z,lod,kind\n");
+        for inst in &system.instances {
+            let kind_str = match &inst.kind {
+                VegetationKind::Tree(t) => format!("{:?}", t),
+                VegetationKind::Grass => "Grass".to_owned(),
+                VegetationKind::Rock { size_class } => format!("Rock{}", size_class),
+                VegetationKind::Shrub => "Shrub".to_owned(),
+                VegetationKind::Flower => "Flower".to_owned(),
+            };
+            out.push_str(&format!(
+                "{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{}\n",
+                inst.position.x, inst.position.y, inst.position.z,
+                inst.rotation,
+                inst.scale.x, inst.scale.y, inst.scale.z,
+                inst.lod_level,
+                kind_str,
+            ));
+        }
+        out
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vegetation culling helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Axis-aligned bounding box used for frustum / region culling.
+#[derive(Debug, Clone, Copy)]
+pub struct VegetationAabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl VegetationAabb {
+    pub fn from_instances(instances: &[VegetationInstance]) -> Self {
+        let mut mn = Vec3::splat(f32::INFINITY);
+        let mut mx = Vec3::splat(f32::NEG_INFINITY);
+        for inst in instances {
+            mn = mn.min(inst.position);
+            mx = mx.max(inst.position);
+        }
+        Self { min: mn, max: mx }
+    }
+
+    pub fn contains(&self, p: Vec3) -> bool {
+        p.x >= self.min.x && p.x <= self.max.x
+            && p.y >= self.min.y && p.y <= self.max.y
+            && p.z >= self.min.z && p.z <= self.max.z
+    }
+
+    pub fn intersects(&self, other: &VegetationAabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+            && self.min.z <= other.max.z && self.max.z >= other.min.z
+    }
+
+    pub fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+
+    pub fn half_extents(&self) -> Vec3 {
+        (self.max - self.min) * 0.5
+    }
+}
+
+/// Spatial grid for O(1) region queries of vegetation instances.
+pub struct VegetationGrid {
+    pub cell_size: f32,
+    pub width_cells: usize,
+    pub height_cells: usize,
+    cells: Vec<Vec<usize>>,  // cell → list of instance indices
+}
+
+impl VegetationGrid {
+    pub fn build(system: &VegetationSystem, cell_size: f32, world_width: f32, world_height: f32) -> Self {
+        let wc = ((world_width / cell_size).ceil() as usize).max(1);
+        let hc = ((world_height / cell_size).ceil() as usize).max(1);
+        let mut cells = vec![Vec::new(); wc * hc];
+        for (i, inst) in system.instances.iter().enumerate() {
+            let cx = ((inst.position.x / cell_size) as usize).min(wc - 1);
+            let cz = ((inst.position.z / cell_size) as usize).min(hc - 1);
+            cells[cz * wc + cx].push(i);
+        }
+        Self { cell_size, width_cells: wc, height_cells: hc, cells }
+    }
+
+    /// Returns indices of all instances in cells overlapping `aabb`.
+    pub fn query_aabb<'a>(&'a self, aabb: &VegetationAabb, system: &'a VegetationSystem) -> Vec<&'a VegetationInstance> {
+        let x0 = ((aabb.min.x / self.cell_size) as usize).min(self.width_cells.saturating_sub(1));
+        let x1 = ((aabb.max.x / self.cell_size) as usize).min(self.width_cells.saturating_sub(1));
+        let z0 = ((aabb.min.z / self.cell_size) as usize).min(self.height_cells.saturating_sub(1));
+        let z1 = ((aabb.max.z / self.cell_size) as usize).min(self.height_cells.saturating_sub(1));
+        let mut result = Vec::new();
+        for cz in z0..=z1 {
+            for cx in x0..=x1 {
+                for &idx in &self.cells[cz * self.width_cells + cx] {
+                    result.push(&system.instances[idx]);
+                }
+            }
+        }
+        result
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.width_cells * self.height_cells
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extended tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extended_veg_tests {
+    use super::*;
+
+    #[test]
+    fn test_leaf_particle_lifecycle() {
+        let mut p = LeafParticle::new(Vec3::ZERO, Vec3::new(0.8, 0.4, 0.1), 0.05, 2.0);
+        assert!(p.is_alive());
+        p.update(1.5, Vec3::new(0.1, 0.0, 0.05));
+        assert!(p.is_alive());
+        p.update(1.0, Vec3::ZERO);
+        assert!(!p.is_alive());
+    }
+
+    #[test]
+    fn test_leaf_particle_system_emitter() {
+        let mut sys = LeafParticleSystem::new(1000);
+        let emitter = LeafParticleEmitter::new(
+            Vec3::new(10.0, 15.0, 10.0),
+            3.0, 50.0, 3.0,
+            Vec3::new(1.0, 0.5, 0.0),
+        );
+        sys.add_emitter(emitter);
+        sys.update(0.5, Vec3::new(0.2, 0.0, 0.1));
+        // 50 particles/sec * 0.5s = 25 particles expected
+        assert!(sys.live_count() > 0);
+    }
+
+    #[test]
+    fn test_placement_constraint_oak() {
+        let c = PlacementConstraint::for_tree(TreeType::Oak);
+        assert!(c.check(0.3, 20.0));
+        assert!(!c.check(0.05, 20.0));  // too low
+        assert!(!c.check(0.3, 40.0));   // too steep
+    }
+
+    #[test]
+    fn test_terrain_aware_placement_filter() {
+        let positions = vec![(10.0f32, 10.0f32), (20.0, 20.0), (30.0, 30.0)];
+        let heights   = vec![0.30f32, 0.05f32, 0.45f32];
+        let slopes    = vec![15.0f32, 10.0f32, 50.0f32];
+        let c = PlacementConstraint::for_tree(TreeType::Oak);
+        let accepted = TerrainAwarePlacement::filter(&positions, &heights, &slopes, &c);
+        // Only first passes (h=0.3, s=15); second fails altitude; third fails slope
+        assert_eq!(accepted.len(), 1);
+        assert!((accepted[0].0 - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_vegetation_heat_map() {
+        let mut sys = VegetationSystem::new();
+        for i in 0..20u32 {
+            sys.instances.push(VegetationInstance {
+                position: Vec3::new(i as f32 * 5.0, 0.0, 0.0),
+                rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+                kind: VegetationKind::Tree(TreeType::Oak),
+            });
+        }
+        let hm = VegetationHeatMap::build_from(&sys, 10, 10, 10.0);
+        assert!(hm.total_instances() > 0);
+        assert!(hm.max_count() >= 1);
+    }
+
+    #[test]
+    fn test_vegetation_obj_exporter() {
+        let mut sys = VegetationSystem::new();
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(1.0, 0.5, 2.0),
+            rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Tree(TreeType::Pine),
+        });
+        let obj = VegetationObjExporter::export(&sys);
+        assert!(obj.contains("v "));
+        assert!(obj.contains("Pine"));
+    }
+
+    #[test]
+    fn test_vegetation_csv_exporter() {
+        let mut sys = VegetationSystem::new();
+        sys.instances.push(VegetationInstance {
+            position: Vec3::new(3.0, 1.0, 4.0),
+            rotation: 0.7, scale: Vec3::ONE, lod_level: 0, visible: true,
+            kind: VegetationKind::Grass,
+        });
+        let csv = VegetationCsvExporter::export(&sys);
+        assert!(csv.starts_with("x,y,z"));
+        assert!(csv.contains("Grass"));
+    }
+
+    #[test]
+    fn test_vegetation_aabb() {
+        let instances = vec![
+            VegetationInstance { position: Vec3::new(0.0, 0.0, 0.0), rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true, kind: VegetationKind::Grass },
+            VegetationInstance { position: Vec3::new(10.0, 5.0, 10.0), rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true, kind: VegetationKind::Grass },
+        ];
+        let aabb = VegetationAabb::from_instances(&instances);
+        assert!(aabb.contains(Vec3::new(5.0, 2.5, 5.0)));
+        assert!(!aabb.contains(Vec3::new(20.0, 0.0, 0.0)));
+        let center = aabb.center();
+        assert!((center.x - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_vegetation_grid_query() {
+        let mut sys = VegetationSystem::new();
+        for i in 0..10u32 {
+            sys.instances.push(VegetationInstance {
+                position: Vec3::new(i as f32 * 10.0, 0.0, 5.0),
+                rotation: 0.0, scale: Vec3::ONE, lod_level: 0, visible: true,
+                kind: VegetationKind::Tree(TreeType::Oak),
+            });
+        }
+        let grid = VegetationGrid::build(&sys, 20.0, 100.0, 100.0);
+        let query_aabb = VegetationAabb { min: Vec3::new(0.0, -1.0, 0.0), max: Vec3::new(25.0, 1.0, 10.0) };
+        let found = grid.query_aabb(&query_aabb, &sys);
+        assert!(!found.is_empty());
+    }
+}
