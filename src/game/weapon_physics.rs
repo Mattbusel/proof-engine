@@ -5,7 +5,7 @@
 //! with physics-based arcs, combo-trail integration, block/parry feedback, and
 //! per-element visual effect descriptors.
 
-use glam::{Vec2, Vec3, Quat};
+use glam::{Vec2, Vec3};
 use crate::combat::Element;
 
 // ============================================================================
