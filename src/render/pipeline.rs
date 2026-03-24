@@ -80,9 +80,6 @@ void main() {
     ) * i_scale;
 
     gl_Position = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
-    // Flip X in clip space: look_at_rh from +Z gives right=-X which mirrors.
-    // Negating clip X makes +X world = screen right without affecting Y or depth.
-    gl_Position.x = -gl_Position.x;
 
     f_uv         = i_uv_offset + v_uv * i_uv_size;
     f_color      = i_color;
