@@ -1,0 +1,72 @@
+[package]
+name = "proof-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Matthew Busel <matt@tensorust.com>"]
+license = "MIT"
+description = "A mathematical rendering engine for Rust. Every visual is the output of a mathematical function."
+repository = "https://github.com/Mattbusel/proof-engine"
+homepage = "https://github.com/Mattbusel/proof-engine"
+keywords = ["game-engine", "rendering", "mathematics", "ascii", "opengl"]
+categories = ["game-engines", "graphics", "rendering"]
+readme = "README.md"
+
+[dependencies]
+# OpenGL / windowing
+glutin = "0.31"
+glow = "0.13"
+winit = "0.29"
+
+# Math
+glam = "0.25"
+noise = "0.9"
+
+# Audio
+rodio = { version = "0.17", default-features = false, features = ["wav"] }
+cpal = "0.15"
+
+# Image loading (for font atlas)
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Bytemuck for GPU buffer casting (glyph instances)
+bytemuck = { version = "1", features = ["derive"] }
+
+# Serialization (config)
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "particle_bench"
+harness = false
+
+[[bench]]
+name = "glyph_bench"
+harness = false
+
+[[example]]
+name = "hello_glyph"
+
+[[example]]
+name = "chaos_field"
+
+[[example]]
+name = "particle_demo"
+
+[[example]]
+name = "force_fields"
+
+[[example]]
+name = "amorphous_entity"
+
+[[example]]
+name = "strange_attractors"
+
+[[example]]
+name = "full_combat"
