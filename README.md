@@ -1,6 +1,6 @@
 # Proof Engine
 
-A mathematical rendering engine for Rust. **171,000+ lines of fully implemented systems across 205 source files.**
+A mathematical rendering engine for Rust. **172,000+ lines of fully implemented systems across 205 source files.**
 
 Every visual is the output of a mathematical function. Every animation is a continuous function over time. Every particle follows a real equation. Characters are rendered as textured quads in 3D space with bloom, distortion, motion blur, and force field physics.
 
