@@ -9,5 +9,6 @@ pub mod text_renderer;
 pub mod lighting;
 #[path = "compute/mod.rs"] pub mod compute;
 pub mod render_graph;
+pub mod pbr;
 
 pub use pipeline::Pipeline;
