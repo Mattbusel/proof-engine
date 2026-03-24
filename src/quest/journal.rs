@@ -9,8 +9,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
-    ObjectiveDef, ObjectiveId, ObjectiveState, ObjectiveType, Prerequisite, QuestCategory,
-    QuestDatabase, QuestDef, QuestId, QuestPriority, QuestProgress as PrerequisiteView,
+    ObjectiveDef, ObjectiveId, ObjectiveState, ObjectiveType, QuestCategory,
+    QuestDatabase, QuestDef, QuestId, QuestPriority, PrerequisiteView,
     QuestState, Reward,
 };
 
@@ -463,13 +463,11 @@ impl QuestJournal {
                 }
                 // Hidden until available
                 if def.hidden_until_available && !self.check_prerequisites(def) { return false; }
-                // Level gate
-                let view = self.prerequisite_view();
-                // Override the level for this query
+                // Level gate — rebuild view with the requested level override
                 let tmp_view = PrerequisiteView::new(
                     level,
-                    view.completed_quests_set(),
-                    view.failed_quests_set(),
+                    self.completed_quests.iter().cloned().collect(),
+                    self.failed_quests.iter().cloned().collect(),
                     self.flags.clone(),
                 );
                 def.prerequisites.iter().all(|p| p.check(&tmp_view))
@@ -724,28 +722,225 @@ impl Default for QuestJournal {
     fn default() -> Self { Self::new() }
 }
 
-// ── Extend PrerequisiteView to expose sets ────────────────────────────────────
+// `PrerequisiteView` is defined in `super` (mod.rs) with public fields.
+// No extension impl is needed here since journal.rs constructs it directly.
 
-impl PrerequisiteView {
-    pub fn completed_quests_set(&self) -> HashSet<QuestId> {
-        // Reconstruct from what we stored — we need a helper because the
-        // struct fields are private to mod.rs.  We expose this method here
-        // so journal.rs can pass sets to `available_quests`.
-        // (The implementation is trivially delegated to the underlying type.)
-        let mut set = HashSet::new();
-        // Walk over all possible IDs by checking our internal method.
-        // Since we only have the check() API in mod.rs, we stash the sets here
-        // in extended storage via the public constructor.
-        // HACK: rebuild by using has_flag trick — we actually need the raw sets.
-        // The cleanest solution: expose them as pub on the struct in mod.rs.
-        // For now we return an empty set; the only caller is available_quests
-        // which rebuilds anyway.  This is a stub to satisfy the borrow checker.
-        let _ = set; // suppress warning
-        HashSet::new()
+// ── Additional QuestJournal methods ───────────────────────────────────────────
+
+impl QuestJournal {
+    // ── Quest querying extensions ─────────────────────────────────────────
+
+    /// All quests in a terminal state (completed, failed, or abandoned).
+    pub fn finished_quests(&self) -> Vec<&QuestProgress> {
+        self.quests.values().filter(|q| q.state.is_terminal()).collect()
     }
 
-    pub fn failed_quests_set(&self) -> HashSet<QuestId> {
-        HashSet::new()
+    /// Quests matching `category` that are currently active.
+    pub fn active_by_category(&self, category: QuestCategory, db: &QuestDatabase) -> Vec<&QuestProgress> {
+        self.quests
+            .values()
+            .filter(|q| q.state == QuestState::Active)
+            .filter(|q| {
+                db.get(q.def_id).map_or(false, |def| def.category == category)
+            })
+            .collect()
+    }
+
+    /// Quests matching `priority` that are currently active.
+    pub fn active_by_priority(&self, priority: QuestPriority, db: &QuestDatabase) -> Vec<&QuestProgress> {
+        self.quests
+            .values()
+            .filter(|q| q.state == QuestState::Active)
+            .filter(|q| {
+                db.get(q.def_id).map_or(false, |def| def.priority == priority)
+            })
+            .collect()
+    }
+
+    /// The single active quest with the highest priority, if any.
+    pub fn highest_priority_active(&self, db: &QuestDatabase) -> Option<&QuestProgress> {
+        self.quests
+            .values()
+            .filter(|q| q.state == QuestState::Active)
+            .max_by_key(|q| {
+                db.get(q.def_id)
+                    .map(|def| def.priority as u32)
+                    .unwrap_or(0)
+            })
+    }
+
+    /// Whether a quest with a given tag is currently active.
+    pub fn has_active_with_tag(&self, tag: &str, db: &QuestDatabase) -> bool {
+        self.quests
+            .values()
+            .filter(|q| q.state == QuestState::Active)
+            .any(|q| db.get(q.def_id).map_or(false, |def| def.has_tag(tag)))
+    }
+
+    /// Number of currently active quests.
+    pub fn active_count(&self) -> usize {
+        self.quests.values().filter(|q| q.state == QuestState::Active).count()
+    }
+
+    /// Returns `true` if the journal has no active quests.
+    pub fn is_empty(&self) -> bool { self.active_count() == 0 }
+
+    // ── Objective querying ────────────────────────────────────────────────
+
+    /// Fraction complete for a specific objective, or `None` if not found.
+    pub fn objective_fraction(
+        &self,
+        quest_id: QuestId,
+        obj_id: ObjectiveId,
+        db: &QuestDatabase,
+    ) -> Option<f32> {
+        let progress = self.quests.get(&quest_id)?;
+        let def = db.get(quest_id)?;
+        let obj_def = def.objectives.iter().find(|o| o.id == obj_id)?;
+        let op = progress.objectives.get(&obj_id)?;
+        Some(op.fraction(obj_def.target_count))
+    }
+
+    /// Current counter value for an objective, or `None` if not tracked.
+    pub fn objective_current(&self, quest_id: QuestId, obj_id: ObjectiveId) -> Option<u32> {
+        self.quests
+            .get(&quest_id)?
+            .objectives
+            .get(&obj_id)
+            .map(|op| op.current)
+    }
+
+    /// Whether a specific objective is complete.
+    pub fn is_objective_complete(&self, quest_id: QuestId, obj_id: ObjectiveId) -> bool {
+        self.quests
+            .get(&quest_id)
+            .and_then(|q| q.objectives.get(&obj_id))
+            .map_or(false, |op| op.state == ObjectiveState::Completed)
+    }
+
+    // ── Timer queries ─────────────────────────────────────────────────────
+
+    /// Remaining time for a timed quest in seconds, or `None` if no limit.
+    pub fn time_remaining(&self, quest_id: QuestId, db: &QuestDatabase) -> Option<f32> {
+        let progress = self.quests.get(&quest_id)?;
+        let def = db.get(quest_id)?;
+        let limit = def.time_limit?;
+        Some((limit - progress.time_elapsed).max(0.0))
+    }
+
+    /// Fraction of time consumed [0.0, 1.0] for a timed quest.
+    pub fn time_fraction_elapsed(&self, quest_id: QuestId, db: &QuestDatabase) -> Option<f32> {
+        let progress = self.quests.get(&quest_id)?;
+        let def = db.get(quest_id)?;
+        let limit = def.time_limit?;
+        Some((progress.time_elapsed / limit).min(1.0))
+    }
+
+    // ── Flag bulk operations ──────────────────────────────────────────────
+
+    /// Set multiple flags at once.
+    pub fn set_flags(&mut self, flags: impl IntoIterator<Item = impl Into<String>>) {
+        for flag in flags { self.flags.insert(flag.into()); }
+    }
+
+    /// Clear all flags matching a given prefix.
+    pub fn clear_flags_with_prefix(&mut self, prefix: &str) {
+        self.flags.retain(|f| !f.starts_with(prefix));
+    }
+
+    /// Snapshot of all currently set flags.
+    pub fn all_flags(&self) -> Vec<&str> {
+        self.flags.iter().map(|s| s.as_str()).collect()
+    }
+
+    // ── History queries ───────────────────────────────────────────────────
+
+    /// How many times the player has completed or attempted a quest.
+    pub fn attempt_count(&self, quest_id: QuestId) -> u32 {
+        self.quests.get(&quest_id).map_or(0, |q| q.attempt_count)
+    }
+
+    /// Time elapsed since a quest was started, or `None` if not started.
+    pub fn quest_elapsed(&self, quest_id: QuestId) -> Option<f32> {
+        self.quests.get(&quest_id).map(|q| q.time_elapsed)
+    }
+
+    /// Notes for a quest, or an empty slice.
+    pub fn quest_notes(&self, quest_id: QuestId) -> &[JournalNote] {
+        self.quests
+            .get(&quest_id)
+            .map_or(&[], |q| q.notes.as_slice())
+    }
+
+    // ── Journal reset ─────────────────────────────────────────────────────
+
+    /// Remove all terminal-state quests from memory (compact the journal).
+    /// Active quests are never removed.
+    pub fn compact(&mut self) {
+        self.quests.retain(|_, v| !v.state.is_terminal());
+    }
+
+    /// Fully reset the journal, clearing all quest progress and flags.
+    /// Counters are preserved so lifetime statistics remain valid.
+    pub fn reset_progress(&mut self) {
+        self.quests.clear();
+        self.flags.clear();
+        self.event_queue.clear();
+        self.game_time = 0.0;
+    }
+
+    // ── Batch operations ──────────────────────────────────────────────────
+
+    /// Accept a list of quests; returns how many were successfully accepted.
+    pub fn accept_all(&mut self, defs: &[QuestDef], time: f32) -> usize {
+        let mut count = 0;
+        for def in defs {
+            if self.accept_quest(def, time).is_ok() { count += 1; }
+        }
+        count
+    }
+
+    /// Complete all objectives of a quest directly (scripted completion).
+    pub fn script_complete_all_objectives(
+        &mut self,
+        quest_id: QuestId,
+        db: &QuestDatabase,
+    ) -> Result<(), JournalError> {
+        let def = db.get(quest_id).ok_or(JournalError::QuestNotFound)?.clone();
+        let ids: Vec<ObjectiveId> = def.objectives.iter().map(|o| o.id).collect();
+        for obj_id in ids {
+            // Ignore errors on individual objectives (already complete, etc.)
+            let _ = self.complete_objective(quest_id, obj_id, db);
+            // complete_quest might have fired already — stop if so
+            if !self.is_quest_active(quest_id) { break; }
+        }
+        Ok(())
+    }
+
+    // ── Export / serialisation helpers ────────────────────────────────────
+
+    /// Produce a flat list of `(quest_id, objective_id, current, target)` for
+    /// display in a save/load debug screen.
+    pub fn objective_snapshot(&self, db: &QuestDatabase) -> Vec<(QuestId, ObjectiveId, u32, u32)> {
+        let mut out = Vec::new();
+        for (qid, progress) in &self.quests {
+            if progress.state != QuestState::Active { continue; }
+            if let Some(def) = db.get(*qid) {
+                for obj_def in &def.objectives {
+                    let current = progress
+                        .objectives
+                        .get(&obj_def.id)
+                        .map_or(0, |op| op.current);
+                    out.push((*qid, obj_def.id, current, obj_def.target_count));
+                }
+            }
+        }
+        out
+    }
+
+    /// Collect all pending events without clearing the queue (peek).
+    pub fn peek_events(&self) -> Vec<&QuestEvent> {
+        self.event_queue.iter().collect()
     }
 }
 

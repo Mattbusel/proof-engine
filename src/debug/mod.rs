@@ -19,6 +19,8 @@
 pub mod profiler;
 pub mod graph;
 pub mod console;
+pub mod metrics;
+pub mod inspector;
 
 pub use profiler::FrameProfiler;
 pub use graph::MathGraph;

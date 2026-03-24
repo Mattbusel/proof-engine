@@ -39,6 +39,9 @@ pub use journal::{
     JournalError, JournalNote, JournalSummary, ObjectiveAdvanceResult, ObjectiveProgress,
     QuestEvent, QuestJournal, QuestProgress,
 };
+
+// `PrerequisiteView` is defined below in this file.  It is intentionally
+// separate from `journal::QuestProgress` to avoid a naming collision.
 pub use tracker::{
     GameEventType, ObjectiveMapper, QuestTracker, RewardDistributor, TrackerSession, TrackerStats,
 };
@@ -291,19 +294,20 @@ pub enum Prerequisite {
 }
 
 impl Prerequisite {
-    /// Evaluate this prerequisite against `progress`.
+    /// Evaluate this prerequisite against a `PrerequisiteView`.
     ///
-    /// `progress` is passed here so we can query the journal's flags/quests
-    /// without introducing a circular dependency.
-    pub fn check(&self, progress: &QuestProgress) -> bool {
+    /// `view` is constructed from the journal's current state and passed in
+    /// so we can query completed/failed quests and flags without introducing
+    /// a circular module dependency.
+    pub fn check(&self, view: &PrerequisiteView) -> bool {
         match self {
-            Prerequisite::QuestComplete(id) => progress.quest_is_complete(*id),
-            Prerequisite::QuestFailed(id)   => progress.quest_is_failed(*id),
-            Prerequisite::MinLevel(lvl)     => progress.player_level >= *lvl,
-            Prerequisite::HasFlag(flag)     => progress.has_flag(flag),
-            Prerequisite::NotFlag(flag)     => !progress.has_flag(flag),
-            Prerequisite::All(list)         => list.iter().all(|p| p.check(progress)),
-            Prerequisite::Any(list)         => list.iter().any(|p| p.check(progress)),
+            Prerequisite::QuestComplete(id) => view.quest_is_complete(*id),
+            Prerequisite::QuestFailed(id)   => view.quest_is_failed(*id),
+            Prerequisite::MinLevel(lvl)     => view.player_level >= *lvl,
+            Prerequisite::HasFlag(flag)     => view.has_flag(flag),
+            Prerequisite::NotFlag(flag)     => !view.has_flag(flag),
+            Prerequisite::All(list)         => list.iter().all(|p| p.check(view)),
+            Prerequisite::Any(list)         => list.iter().any(|p| p.check(view)),
         }
     }
 }
@@ -482,18 +486,22 @@ impl QuestDef {
     }
 }
 
-// ── QuestProgress (lightweight view used by Prerequisite::check) ──────────────
+// ── PrerequisiteView (lightweight view used by Prerequisite::check) ───────────
 
-/// A thin read-only view provided to `Prerequisite::check` so it can query
-/// completed/failed quests and flags without depending on the full journal type.
-pub struct QuestProgress {
+/// A thin read-only snapshot provided to `Prerequisite::check` so it can
+/// query completed/failed quests and flags without a dependency on the full
+/// journal type (which would create a circular module dependency).
+///
+/// Constructed by `QuestJournal::prerequisite_view()`.
+#[derive(Debug, Clone)]
+pub struct PrerequisiteView {
     pub player_level: u32,
-    completed_quests: std::collections::HashSet<QuestId>,
-    failed_quests: std::collections::HashSet<QuestId>,
-    flags: std::collections::HashSet<String>,
+    pub completed_quests: std::collections::HashSet<QuestId>,
+    pub failed_quests: std::collections::HashSet<QuestId>,
+    pub flags: std::collections::HashSet<String>,
 }
 
-impl QuestProgress {
+impl PrerequisiteView {
     pub fn new(
         player_level: u32,
         completed: std::collections::HashSet<QuestId>,
@@ -641,7 +649,7 @@ mod tests {
 
     #[test]
     fn prerequisite_flag_check() {
-        let progress = QuestProgress::new(
+        let progress = PrerequisiteView::new(
             1,
             HashSet::new(),
             HashSet::new(),
@@ -694,7 +702,7 @@ mod tests {
 
     #[test]
     fn prerequisite_all_any() {
-        let progress = QuestProgress::new(
+        let progress = PrerequisiteView::new(
             5,
             [QuestId(1)].iter().cloned().collect(),
             HashSet::new(),

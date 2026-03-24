@@ -1601,3 +1601,718 @@ mod tests {
         assert!(loot.item_count() <= 3);
     }
 }
+
+// ── InventoryGrid ──────────────────────────────────────────────────────────────
+
+/// A 2-D grid layout wrapping a flat [`Inventory`].
+///
+/// Provides row/column coordinate access for UI rendering without duplicating
+/// item storage.
+#[derive(Debug, Clone)]
+pub struct InventoryGrid {
+    pub inventory: Inventory,
+    pub columns:   u32,
+}
+
+impl InventoryGrid {
+    pub fn new(id: u32, rows: u32, columns: u32) -> Self {
+        let config = ContainerConfig::new(rows * columns);
+        Self { inventory: Inventory::new(id, config), columns }
+    }
+
+    pub fn rows(&self) -> u32 {
+        let n = self.inventory.slot_count() as u32;
+        if self.columns == 0 { return 0; }
+        (n + self.columns - 1) / self.columns
+    }
+
+    /// Convert (row, col) to a flat [`SlotIndex`].
+    pub fn slot_at(&self, row: u32, col: u32) -> Option<SlotIndex> {
+        if col >= self.columns { return None; }
+        let idx = row * self.columns + col;
+        if (idx as usize) < self.inventory.slot_count() {
+            Some(SlotIndex(idx))
+        } else {
+            None
+        }
+    }
+
+    /// Convert a flat [`SlotIndex`] to (row, col).
+    pub fn coords_of(&self, idx: SlotIndex) -> (u32, u32) {
+        let raw = idx.raw() as u32;
+        (raw / self.columns, raw % self.columns)
+    }
+
+    /// Get the item at grid position (row, col).
+    pub fn get_at(&self, row: u32, col: u32) -> Option<&ItemInstance> {
+        let idx = self.slot_at(row, col)?;
+        self.inventory.get_slot(idx)?.item.as_ref()
+    }
+
+    /// True if the grid cell is occupied.
+    pub fn is_occupied_at(&self, row: u32, col: u32) -> bool {
+        self.get_at(row, col).is_some()
+    }
+
+    pub fn add_item(
+        &mut self,
+        item: ItemInstance,
+        weight_info: ItemWeightInfo,
+    ) -> Result<SlotIndex, InventoryError> {
+        self.inventory.add_item(item, weight_info)
+    }
+
+    pub fn remove_from_cell(
+        &mut self,
+        row: u32,
+        col: u32,
+    ) -> Result<ItemInstance, InventoryError> {
+        let idx = self.slot_at(row, col).ok_or(InventoryError::InvalidSlot)?;
+        self.inventory.remove_from_slot(idx)
+    }
+
+    /// Move the item at `from` to `to`, honoring stacking rules.
+    pub fn move_cell(
+        &mut self,
+        from_row: u32, from_col: u32,
+        to_row:   u32, to_col:   u32,
+        weight_per: f32,
+        max_stack:  u32,
+    ) -> Result<(), InventoryError> {
+        let from = self.slot_at(from_row, from_col).ok_or(InventoryError::InvalidSlot)?;
+        let to   = self.slot_at(to_row,   to_col  ).ok_or(InventoryError::InvalidSlot)?;
+        self.inventory.move_item(from, to, weight_per, max_stack)
+    }
+
+    /// Iterate occupied cells as (row, col, &ItemInstance).
+    pub fn iter_occupied(&self) -> impl Iterator<Item = (u32, u32, &ItemInstance)> {
+        let cols = self.columns;
+        self.inventory.iter_occupied().map(move |(idx, inst)| {
+            let raw = idx.raw() as u32;
+            (raw / cols, raw % cols, inst)
+        })
+    }
+}
+
+// ── BoundedInventory ──────────────────────────────────────────────────────────
+
+/// An inventory that also tracks a hard cap on the number of *unique* item
+/// types it can hold simultaneously (useful for quest-item bags, key rings, etc.)
+#[derive(Debug, Clone)]
+pub struct BoundedInventory {
+    pub inventory:       Inventory,
+    pub max_unique_types: usize,
+}
+
+impl BoundedInventory {
+    pub fn new(id: u32, config: ContainerConfig, max_unique_types: usize) -> Self {
+        Self { inventory: Inventory::new(id, config), max_unique_types }
+    }
+
+    /// Count distinct item ids currently held.
+    pub fn unique_type_count(&self) -> usize {
+        let mut ids: Vec<ItemId> = self.inventory.iter_occupied()
+            .map(|(_, inst)| inst.def_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    }
+
+    /// Add an item, respecting the unique-type cap.
+    pub fn add_item(
+        &mut self,
+        item: ItemInstance,
+        weight_info: ItemWeightInfo,
+    ) -> Result<SlotIndex, InventoryError> {
+        // If the item is a new type and we're at the cap, reject it.
+        let is_new_type = !self.inventory.has_item(item.def_id, 1);
+        if is_new_type && self.unique_type_count() >= self.max_unique_types {
+            return Err(InventoryError::Full);
+        }
+        self.inventory.add_item(item, weight_info)
+    }
+
+    pub fn remove_item(
+        &mut self,
+        item_id: ItemId,
+        qty: u32,
+        weight_per: f32,
+    ) -> Result<Vec<ItemInstance>, InventoryError> {
+        self.inventory.remove_item(item_id, qty, weight_per)
+    }
+
+    pub fn has_item(&self, id: ItemId, qty: u32) -> bool {
+        self.inventory.has_item(id, qty)
+    }
+
+    pub fn count_item(&self, id: ItemId) -> u32 {
+        self.inventory.count_item(id)
+    }
+}
+
+// ── InventoryDiff ──────────────────────────────────────────────────────────────
+
+/// Records what changed between two inventory snapshots.
+/// Useful for sync / delta-update systems.
+#[derive(Debug, Clone, Default)]
+pub struct InventoryDiff {
+    pub added:   Vec<(SlotIndex, ItemInstance)>,
+    pub removed: Vec<(SlotIndex, ItemInstance)>,
+    pub changed: Vec<(SlotIndex, ItemInstance, ItemInstance)>, // (slot, old, new)
+}
+
+impl InventoryDiff {
+    pub fn new() -> Self { Self::default() }
+
+    /// Compute the difference between `before` and `after`.
+    pub fn compute(before: &Inventory, after: &Inventory) -> Self {
+        let mut diff = Self::new();
+        let n = before.slot_count().max(after.slot_count());
+
+        for i in 0..n {
+            let idx = SlotIndex(i as u32);
+            let b = before.get_slot(idx).and_then(|s| s.item.as_ref());
+            let a = after.get_slot(idx).and_then(|s| s.item.as_ref());
+            match (b, a) {
+                (None, Some(new_item)) => diff.added.push((idx, new_item.clone())),
+                (Some(old_item), None) => diff.removed.push((idx, old_item.clone())),
+                (Some(old_item), Some(new_item))
+                    if old_item.def_id != new_item.def_id
+                    || old_item.stack_size != new_item.stack_size =>
+                {
+                    diff.changed.push((idx, old_item.clone(), new_item.clone()));
+                }
+                _ => {}
+            }
+        }
+        diff
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+
+    pub fn total_changes(&self) -> usize {
+        self.added.len() + self.removed.len() + self.changed.len()
+    }
+}
+
+// ── InventoryHistory ──────────────────────────────────────────────────────────
+
+/// A bounded undo/redo history of inventory states.
+#[derive(Debug, Clone)]
+pub struct InventoryHistory {
+    states: std::collections::VecDeque<Inventory>,
+    cursor: usize,
+    max_depth: usize,
+}
+
+impl InventoryHistory {
+    pub fn new(max_depth: usize) -> Self {
+        Self { states: std::collections::VecDeque::new(), cursor: 0, max_depth }
+    }
+
+    /// Snapshot the current state.
+    pub fn push(&mut self, inv: &Inventory) {
+        // Truncate redo history.
+        while self.states.len() > self.cursor {
+            self.states.pop_back();
+        }
+        self.states.push_back(inv.clone());
+        if self.states.len() > self.max_depth {
+            self.states.pop_front();
+        }
+        self.cursor = self.states.len();
+    }
+
+    /// Undo — returns the previous state if available.
+    pub fn undo(&mut self) -> Option<Inventory> {
+        if self.cursor < 2 { return None; }
+        self.cursor -= 1;
+        self.states.get(self.cursor - 1).cloned()
+    }
+
+    /// Redo — returns the next state if available.
+    pub fn redo(&mut self) -> Option<Inventory> {
+        if self.cursor >= self.states.len() { return None; }
+        let inv = self.states.get(self.cursor).cloned();
+        self.cursor += 1;
+        inv
+    }
+
+    pub fn can_undo(&self) -> bool { self.cursor >= 2 }
+    pub fn can_redo(&self) -> bool { self.cursor < self.states.len() }
+    pub fn depth(&self) -> usize   { self.states.len() }
+}
+
+// ── CurrencyWallet ────────────────────────────────────────────────────────────
+
+/// A multi-denomination currency wallet.
+///
+/// Models games that have copper/silver/gold/platinum or similar hierarchies.
+#[derive(Debug, Clone, Default)]
+pub struct CurrencyWallet {
+    /// Denomination name → quantity.
+    denominations: HashMap<String, u64>,
+    /// Conversion rates: 1 unit of key = N units of the denomination below it.
+    /// Stored as ordered tiers from lowest to highest value.
+    tiers: Vec<(String, u64)>,
+}
+
+impl CurrencyWallet {
+    pub fn new() -> Self { Self::default() }
+
+    /// Register a denomination tier.  Call in ascending value order.
+    /// `rate` is how many of the *previous* tier equal 1 of this tier.
+    /// For the base tier pass `rate = 1`.
+    pub fn add_tier(&mut self, name: impl Into<String>, rate: u64) {
+        let name = name.into();
+        self.tiers.push((name.clone(), rate));
+        self.denominations.entry(name).or_insert(0);
+    }
+
+    pub fn get(&self, denom: &str) -> u64 {
+        *self.denominations.get(denom).unwrap_or(&0)
+    }
+
+    pub fn add(&mut self, denom: &str, amount: u64) {
+        *self.denominations.entry(denom.to_string()).or_insert(0) += amount;
+    }
+
+    pub fn total_in_base(&self) -> u64 {
+        let mut total = 0u64;
+        let mut multiplier = 1u64;
+        for (name, rate) in &self.tiers {
+            multiplier = multiplier.saturating_mul(*rate);
+            let qty = *self.denominations.get(name).unwrap_or(&0);
+            total = total.saturating_add(qty.saturating_mul(multiplier));
+        }
+        total
+    }
+
+    /// Normalize: convert excess lower tiers into higher ones.
+    pub fn normalize(&mut self) {
+        for i in 0..self.tiers.len().saturating_sub(1) {
+            let rate = self.tiers[i + 1].1;
+            if rate == 0 { continue; }
+            let low_name  = self.tiers[i].0.clone();
+            let high_name = self.tiers[i + 1].0.clone();
+            let qty = *self.denominations.get(&low_name).unwrap_or(&0);
+            let carry = qty / rate;
+            if carry > 0 {
+                *self.denominations.entry(low_name).or_insert(0) -= carry * rate;
+                *self.denominations.entry(high_name).or_insert(0) += carry;
+            }
+        }
+    }
+
+    /// Try to spend `amount` of `denom`.  Returns false if insufficient.
+    pub fn spend(&mut self, denom: &str, amount: u64) -> bool {
+        let have = self.get(denom);
+        if have < amount { return false; }
+        *self.denominations.entry(denom.to_string()).or_insert(0) -= amount;
+        true
+    }
+}
+
+// ── ItemSearchIndex ───────────────────────────────────────────────────────────
+
+/// A secondary index that maps item names (lowercased) to their ids for fast
+/// substring searches — useful for chat-driven item lookup.
+#[derive(Debug, Clone, Default)]
+pub struct ItemSearchIndex {
+    entries: Vec<(String, ItemId)>,
+}
+
+impl ItemSearchIndex {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn insert(&mut self, name: &str, id: ItemId) {
+        self.entries.push((name.to_lowercase(), id));
+    }
+
+    /// Find all ids whose name contains `query` (case-insensitive).
+    pub fn search(&self, query: &str) -> Vec<ItemId> {
+        let q = query.to_lowercase();
+        self.entries.iter()
+            .filter(|(name, _)| name.contains(&q))
+            .map(|(_, id)| *id)
+            .collect()
+    }
+
+    /// Find the best match (longest name prefix).
+    pub fn best_match(&self, query: &str) -> Option<ItemId> {
+        let q = query.to_lowercase();
+        self.entries.iter()
+            .filter(|(name, _)| name.starts_with(&q))
+            .max_by_key(|(name, _)| name.len())
+            .map(|(_, id)| *id)
+    }
+
+    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+}
+
+// ── Pickup queue ──────────────────────────────────────────────────────────────
+
+/// A FIFO queue of items waiting to be picked up by the player.
+/// Items are added from the world and consumed by the inventory system.
+#[derive(Debug, Clone, Default)]
+pub struct PickupQueue {
+    queue: std::collections::VecDeque<(ItemId, u32)>,
+}
+
+impl PickupQueue {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn enqueue(&mut self, id: ItemId, qty: u32) {
+        self.queue.push_back((id, qty));
+    }
+
+    pub fn dequeue(&mut self) -> Option<(ItemId, u32)> {
+        self.queue.pop_front()
+    }
+
+    pub fn peek(&self) -> Option<(ItemId, u32)> {
+        self.queue.front().copied()
+    }
+
+    pub fn len(&self) -> usize { self.queue.len() }
+    pub fn is_empty(&self) -> bool { self.queue.is_empty() }
+
+    /// Flush all pending pickups into `inventory`.
+    ///
+    /// Returns the list of items that could not be added (inventory full or
+    /// weight exceeded).
+    pub fn flush_into(
+        &mut self,
+        inventory:  &mut Inventory,
+        weight_fn:  &dyn Fn(ItemId) -> ItemWeightInfo,
+    ) -> Vec<(ItemId, u32)> {
+        let mut rejected = Vec::new();
+        while let Some((id, qty)) = self.queue.pop_front() {
+            let wi = weight_fn(id);
+            let inst = ItemInstance::new_stack(id, qty);
+            match inventory.add_item(inst, wi) {
+                Ok(_) => {}
+                Err(_) => rejected.push((id, qty)),
+            }
+        }
+        rejected
+    }
+}
+
+// ── Additional container tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    // ── InventoryGrid ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn grid_coords_round_trip() {
+        let grid = InventoryGrid::new(1, 4, 5);
+        let idx = grid.slot_at(2, 3).unwrap();
+        let (r, c) = grid.coords_of(idx);
+        assert_eq!((r, c), (2, 3));
+    }
+
+    #[test]
+    fn grid_out_of_bounds_col() {
+        let grid = InventoryGrid::new(1, 4, 5);
+        assert!(grid.slot_at(0, 5).is_none());
+    }
+
+    #[test]
+    fn grid_add_and_retrieve() {
+        let mut grid = InventoryGrid::new(1, 4, 5);
+        let wi = ItemWeightInfo { weight_per_unit: 0.5, max_stack: 10, category: ItemCategory::Consumable };
+        grid.add_item(ItemInstance::new_stack(ItemId(10), 3), wi).unwrap();
+        assert!(grid.get_at(0, 0).is_some());
+    }
+
+    #[test]
+    fn grid_rows_calculation() {
+        let grid = InventoryGrid::new(1, 3, 5); // 15 slots
+        assert_eq!(grid.rows(), 3);
+    }
+
+    // ── BoundedInventory ──────────────────────────────────────────────────────
+
+    #[test]
+    fn bounded_inv_rejects_excess_types() {
+        let mut inv = BoundedInventory::new(1, ContainerConfig::new(20), 2);
+        let wi = ItemWeightInfo { weight_per_unit: 0.1, max_stack: 10, category: ItemCategory::Material };
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap();
+        inv.add_item(ItemInstance::new(ItemId(2)), wi).unwrap();
+        // Third unique type should be rejected.
+        let result = inv.add_item(ItemInstance::new(ItemId(3)), wi);
+        assert_eq!(result, Err(InventoryError::Full));
+    }
+
+    #[test]
+    fn bounded_inv_allows_same_type_addition() {
+        let mut inv = BoundedInventory::new(1, ContainerConfig::new(20), 1);
+        let wi = ItemWeightInfo { weight_per_unit: 0.1, max_stack: 10, category: ItemCategory::Material };
+        inv.add_item(ItemInstance::new_stack(ItemId(1), 3), wi).unwrap();
+        // Same type, more of it — should succeed.
+        inv.add_item(ItemInstance::new_stack(ItemId(1), 2), wi).unwrap();
+        assert_eq!(inv.count_item(ItemId(1)), 5);
+    }
+
+    // ── InventoryDiff ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_detects_added_item() {
+        let before = Inventory::new(1, ContainerConfig::new(5));
+        let mut after = before.clone();
+        let wi = ItemWeightInfo { weight_per_unit: 1.0, max_stack: 1, category: ItemCategory::Weapon };
+        after.add_item(ItemInstance::new(ItemId(7)), wi).unwrap();
+        let diff = InventoryDiff::compute(&before, &after);
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].1.def_id, ItemId(7));
+    }
+
+    #[test]
+    fn diff_detects_removed_item() {
+        let mut before = Inventory::new(1, ContainerConfig::new(5));
+        let wi = ItemWeightInfo { weight_per_unit: 1.0, max_stack: 1, category: ItemCategory::Weapon };
+        before.add_item(ItemInstance::new(ItemId(8)), wi).unwrap();
+        let mut after = before.clone();
+        after.remove_from_slot(SlotIndex(0)).unwrap();
+        let diff = InventoryDiff::compute(&before, &after);
+        assert_eq!(diff.removed.len(), 1);
+    }
+
+    #[test]
+    fn diff_empty_for_identical_snapshots() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(5));
+        let wi = ItemWeightInfo { weight_per_unit: 1.0, max_stack: 1, category: ItemCategory::Weapon };
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap();
+        let diff = InventoryDiff::compute(&inv, &inv.clone());
+        assert!(diff.is_empty());
+    }
+
+    // ── InventoryHistory ──────────────────────────────────────────────────────
+
+    #[test]
+    fn history_undo_redo() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(5));
+        let wi = ItemWeightInfo { weight_per_unit: 1.0, max_stack: 1, category: ItemCategory::Weapon };
+        let mut hist = InventoryHistory::new(10);
+
+        hist.push(&inv);
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap();
+        hist.push(&inv);
+
+        assert!(hist.can_undo());
+        let prev = hist.undo().unwrap();
+        assert!(prev.is_empty_bag());
+
+        assert!(hist.can_redo());
+        let next = hist.redo().unwrap();
+        assert!(next.has_item(ItemId(1), 1));
+    }
+
+    #[test]
+    fn history_bounded_by_max_depth() {
+        let inv = Inventory::new(1, ContainerConfig::new(5));
+        let mut hist = InventoryHistory::new(3);
+        for _ in 0..6 {
+            hist.push(&inv);
+        }
+        assert!(hist.depth() <= 3);
+    }
+
+    // ── CurrencyWallet ────────────────────────────────────────────────────────
+
+    #[test]
+    fn wallet_normalize_copper_to_silver() {
+        let mut wallet = CurrencyWallet::new();
+        wallet.add_tier("copper", 1);
+        wallet.add_tier("silver", 100);
+        wallet.add_tier("gold",   100);
+        wallet.add("copper", 250);
+        wallet.normalize();
+        assert_eq!(wallet.get("silver"), 2);
+        assert_eq!(wallet.get("copper"), 50);
+    }
+
+    #[test]
+    fn wallet_spend_succeeds() {
+        let mut wallet = CurrencyWallet::new();
+        wallet.add_tier("gold", 1);
+        wallet.add("gold", 50);
+        assert!(wallet.spend("gold", 30));
+        assert_eq!(wallet.get("gold"), 20);
+    }
+
+    #[test]
+    fn wallet_spend_fails_insufficient() {
+        let mut wallet = CurrencyWallet::new();
+        wallet.add_tier("gold", 1);
+        wallet.add("gold", 5);
+        assert!(!wallet.spend("gold", 10));
+        assert_eq!(wallet.get("gold"), 5);
+    }
+
+    // ── ItemSearchIndex ───────────────────────────────────────────────────────
+
+    #[test]
+    fn search_index_finds_partial() {
+        let mut idx = ItemSearchIndex::new();
+        idx.insert("Iron Sword", ItemId(1));
+        idx.insert("Iron Shield", ItemId(2));
+        idx.insert("Flame Staff", ItemId(3));
+        let results = idx.search("iron");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_index_best_match() {
+        let mut idx = ItemSearchIndex::new();
+        idx.insert("health potion", ItemId(10));
+        idx.insert("health potion (large)", ItemId(11));
+        let best = idx.best_match("health potion");
+        assert_eq!(best, Some(ItemId(11)));
+    }
+
+    // ── PickupQueue ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn pickup_queue_flush() {
+        let mut q = PickupQueue::new();
+        q.enqueue(ItemId(20), 5);
+        q.enqueue(ItemId(21), 2);
+        let mut inv = Inventory::new(1, ContainerConfig::new(10));
+        let rejected = q.flush_into(&mut inv, &|id| ItemWeightInfo {
+            weight_per_unit: 0.1,
+            max_stack: 10,
+            category: if id == ItemId(20) { ItemCategory::Material } else { ItemCategory::Consumable },
+        });
+        assert!(rejected.is_empty());
+        assert_eq!(inv.count_item(ItemId(20)), 5);
+        assert_eq!(inv.count_item(ItemId(21)), 2);
+    }
+
+    #[test]
+    fn pickup_queue_rejected_when_full() {
+        let mut q = PickupQueue::new();
+        q.enqueue(ItemId(30), 1);
+        let mut inv = Inventory::new(1, ContainerConfig::new(0));
+        let rejected = q.flush_into(&mut inv, &|_| ItemWeightInfo {
+            weight_per_unit: 1.0,
+            max_stack: 1,
+            category: ItemCategory::Misc,
+        });
+        assert_eq!(rejected.len(), 1);
+    }
+
+    // ── LootTable rolling statistics ──────────────────────────────────────────
+
+    #[test]
+    fn loot_table_weighted_distribution() {
+        // Item A has 9x the weight of Item B — over many rolls A should dominate.
+        let mut t = LootTable::new().with_rolls(1).with_drop_chance(1.0);
+        t.add_item(ItemId(1), 9.0, 1); // common
+        t.add_item(ItemId(2), 1.0, 1); // rare
+        let mut rng = Rng::new(12345);
+        let mut count_a = 0u32;
+        let mut count_b = 0u32;
+        for _ in 0..1000 {
+            let loot = t.roll(&mut rng, 1, &[]);
+            for (id, _) in &loot.drops {
+                if *id == ItemId(1) { count_a += 1; }
+                if *id == ItemId(2) { count_b += 1; }
+            }
+        }
+        // A should be rolled roughly 9× more than B.
+        assert!(count_a > count_b * 4, "count_a={} count_b={}", count_a, count_b);
+    }
+
+    #[test]
+    fn loot_table_flag_condition() {
+        let mut t = LootTable::new().with_rolls(1).with_drop_chance(1.0);
+        t.add_entry(
+            LootEntry::new(ItemId(50), 1.0, 1, 1)
+                .with_condition(LootCondition::HasFlag("elite_kill".to_string())),
+        );
+        let mut rng = Rng::new(0);
+        // Without flag: no drops.
+        let no_flag = t.roll(&mut rng, 1, &[]);
+        // With flag: should drop.
+        let with_flag = t.roll(&mut rng, 1, &["elite_kill".to_string()]);
+        assert!(no_flag.is_empty());
+        assert!(!with_flag.is_empty());
+    }
+
+    // ── Slot index arithmetic ─────────────────────────────────────────────────
+
+    #[test]
+    fn slot_index_display() {
+        let s = SlotIndex(7);
+        assert_eq!(format!("{}", s), "slot[7]");
+    }
+
+    // ── Weight tracking accuracy ──────────────────────────────────────────────
+
+    #[test]
+    fn weight_tracking_after_split() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(10).with_max_weight(20.0));
+        let wi = ItemWeightInfo { weight_per_unit: 1.0, max_stack: 10, category: ItemCategory::Material };
+        inv.add_item(ItemInstance::new_stack(ItemId(1), 8), wi).unwrap();
+        assert!((inv.total_weight() - 8.0).abs() < 1e-4);
+
+        inv.split_stack(SlotIndex(0), 3, 1.0).unwrap();
+        // Total weight should remain 8.
+        assert!((inv.total_weight() - 8.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn weight_tracking_after_remove() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(10).with_max_weight(50.0));
+        let wi = ItemWeightInfo { weight_per_unit: 2.5, max_stack: 1, category: ItemCategory::Weapon };
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap();
+        inv.add_item(ItemInstance::new(ItemId(2)), wi).unwrap();
+        assert!((inv.total_weight() - 5.0).abs() < 1e-4);
+        inv.remove_from_slot(SlotIndex(0)).unwrap();
+        assert!((inv.total_weight() - 2.5).abs() < 1e-4);
+    }
+
+    // ── Inventory sort ────────────────────────────────────────────────────────
+
+    #[test]
+    fn sort_by_name_alphabetical() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(5));
+        let wi = ItemWeightInfo { weight_per_unit: 0.1, max_stack: 1, category: ItemCategory::Misc };
+        inv.add_item(ItemInstance::new(ItemId(3)), wi).unwrap(); // "Zebra"
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap(); // "Apple"
+        inv.add_item(ItemInstance::new(ItemId(2)), wi).unwrap(); // "Mango"
+
+        // name lookup: 1->"Apple", 2->"Mango", 3->"Zebra"
+        inv.sort_by_name(|id| match id.raw() {
+            1 => "Apple".to_string(),
+            2 => "Mango".to_string(),
+            3 => "Zebra".to_string(),
+            _ => "Unknown".to_string(),
+        });
+
+        let order: Vec<u32> = inv.iter_occupied().map(|(_, i)| i.def_id.raw()).collect();
+        assert_eq!(order, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn sort_by_value_descending() {
+        let mut inv = Inventory::new(1, ContainerConfig::new(5));
+        let wi = ItemWeightInfo { weight_per_unit: 0.1, max_stack: 1, category: ItemCategory::Misc };
+        inv.add_item(ItemInstance::new(ItemId(1)), wi).unwrap(); // value 10
+        inv.add_item(ItemInstance::new(ItemId(2)), wi).unwrap(); // value 500
+        inv.add_item(ItemInstance::new(ItemId(3)), wi).unwrap(); // value 100
+
+        inv.sort_by_value(|id| match id.raw() { 1 => 10, 2 => 500, 3 => 100, _ => 0 });
+        let first = inv.get_slot(SlotIndex(0)).unwrap().item.as_ref().unwrap().def_id;
+        assert_eq!(first, ItemId(2));
+    }
+}

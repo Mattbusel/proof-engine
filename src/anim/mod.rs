@@ -9,6 +9,9 @@
 //! - Sub-state machines (nested HSM)
 //! - Sample-accurate animation events
 
+pub mod skeleton;
+pub mod clips;
+
 use std::collections::HashMap;
 
 // ── AnimCurve ─────────────────────────────────────────────────────────────────

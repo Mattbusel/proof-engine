@@ -417,6 +417,408 @@ impl EventSink {
     }
 }
 
+// ── DialogueVarTable ─────────────────────────────────────────────────────────
+
+/// A typed variable store used by the dialogue runtime.
+///
+/// Wraps `HashMap<String, DialogueVar>` with ergonomic helpers for common
+/// patterns: increment, clamp, typed getters, merge.
+#[derive(Debug, Clone, Default)]
+pub struct DialogueVarTable {
+    inner: std::collections::HashMap<String, DialogueVar>,
+}
+
+impl DialogueVarTable {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn set(&mut self, name: impl Into<String>, value: impl Into<DialogueVar>) {
+        self.inner.insert(name.into(), value.into());
+    }
+
+    pub fn get(&self, name: &str) -> Option<&DialogueVar> {
+        self.inner.get(name)
+    }
+
+    pub fn get_or(&self, name: &str, default: DialogueVar) -> DialogueVar {
+        self.inner.get(name).cloned().unwrap_or(default)
+    }
+
+    pub fn get_int(&self, name: &str) -> i64 {
+        self.inner.get(name).map_or(0, |v| v.as_int())
+    }
+
+    pub fn get_float(&self, name: &str) -> f64 {
+        self.inner.get(name).map_or(0.0, |v| v.as_float())
+    }
+
+    pub fn get_bool(&self, name: &str) -> bool {
+        self.inner.get(name).map_or(false, |v| v.as_bool())
+    }
+
+    pub fn get_str(&self, name: &str) -> String {
+        self.inner.get(name).map_or_else(String::new, |v| v.as_str())
+    }
+
+    pub fn remove(&mut self, name: &str) -> Option<DialogueVar> {
+        self.inner.remove(name)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.inner.contains_key(name)
+    }
+
+    pub fn len(&self) -> usize { self.inner.len() }
+    pub fn is_empty(&self) -> bool { self.inner.is_empty() }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &DialogueVar)> {
+        self.inner.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Merge `other` into `self`; keys from `other` overwrite.
+    pub fn merge(&mut self, other: &DialogueVarTable) {
+        for (k, v) in &other.inner {
+            self.inner.insert(k.clone(), v.clone());
+        }
+    }
+
+    pub fn raw(&self) -> &std::collections::HashMap<String, DialogueVar> {
+        &self.inner
+    }
+
+    /// Increment an integer variable by `delta`.  Initialises to 0 if absent.
+    pub fn increment(&mut self, name: &str, delta: i64) {
+        let current = self.get_int(name);
+        self.set(name, DialogueVar::Int(current + delta));
+    }
+
+    /// Clamp an integer variable to `[min, max]`.
+    pub fn clamp_int(&mut self, name: &str, min: i64, max: i64) {
+        let current = self.get_int(name);
+        self.set(name, DialogueVar::Int(current.clamp(min, max)));
+    }
+
+    pub fn clear(&mut self) { self.inner.clear(); }
+}
+
+impl From<std::collections::HashMap<String, DialogueVar>> for DialogueVarTable {
+    fn from(map: std::collections::HashMap<String, DialogueVar>) -> Self {
+        Self { inner: map }
+    }
+}
+
+// ── FlagSet ──────────────────────────────────────────────────────────────────
+
+/// A set of boolean flags used by the dialogue runtime.
+///
+/// Flags are lighter than `Bool` variables — no value, just presence/absence.
+/// Typical uses: `"met_alice"`, `"quest_started"`, `"door_unlocked"`.
+#[derive(Debug, Clone, Default)]
+pub struct FlagSet {
+    inner: std::collections::HashSet<String>,
+}
+
+impl FlagSet {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn set(&mut self, name: impl Into<String>) {
+        self.inner.insert(name.into());
+    }
+
+    pub fn clear_flag(&mut self, name: &str) -> bool {
+        self.inner.remove(name)
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.inner.contains(name)
+    }
+
+    /// Toggle: set if absent, clear if present.  Returns the new state.
+    pub fn toggle(&mut self, name: &str) -> bool {
+        if self.inner.contains(name) {
+            self.inner.remove(name);
+            false
+        } else {
+            self.inner.insert(name.to_string());
+            true
+        }
+    }
+
+    pub fn len(&self) -> usize { self.inner.len() }
+    pub fn is_empty(&self) -> bool { self.inner.is_empty() }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.inner.iter().map(|s| s.as_str())
+    }
+
+    pub fn raw(&self) -> &std::collections::HashSet<String> {
+        &self.inner
+    }
+
+    pub fn merge(&mut self, other: &FlagSet) {
+        for flag in &other.inner {
+            self.inner.insert(flag.clone());
+        }
+    }
+
+    pub fn clear_all(&mut self) { self.inner.clear(); }
+}
+
+impl From<std::collections::HashSet<String>> for FlagSet {
+    fn from(set: std::collections::HashSet<String>) -> Self {
+        Self { inner: set }
+    }
+}
+
+// ── LocalisedText ─────────────────────────────────────────────────────────────
+
+/// A piece of text with variants in multiple locales.
+///
+/// Used by `Say` nodes when you need the same dialogue tree to serve multiple
+/// languages without duplicating the graph structure.
+#[derive(Debug, Clone, Default)]
+pub struct LocalisedText {
+    translations:    std::collections::HashMap<String, String>,
+    fallback_locale: String,
+}
+
+impl LocalisedText {
+    pub fn new(locale: impl Into<String>, text: impl Into<String>) -> Self {
+        let locale = locale.into();
+        let text   = text.into();
+        let mut translations = std::collections::HashMap::new();
+        translations.insert(locale.clone(), text);
+        Self { translations, fallback_locale: locale }
+    }
+
+    pub fn add(mut self, locale: impl Into<String>, text: impl Into<String>) -> Self {
+        self.translations.insert(locale.into(), text.into());
+        self
+    }
+
+    pub fn get(&self, locale: &str) -> &str {
+        self.translations
+            .get(locale)
+            .or_else(|| self.translations.get(&self.fallback_locale))
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn with_fallback(mut self, locale: impl Into<String>) -> Self {
+        self.fallback_locale = locale.into();
+        self
+    }
+
+    pub fn locales(&self) -> Vec<&str> {
+        self.translations.keys().map(|s| s.as_str()).collect()
+    }
+
+    pub fn has_locale(&self, locale: &str) -> bool {
+        self.translations.contains_key(locale)
+    }
+}
+
+// ── DialogueVarDiff ───────────────────────────────────────────────────────────
+
+/// Records the difference between two variable table snapshots.
+#[derive(Debug, Clone, Default)]
+pub struct DialogueVarDiff {
+    pub added:   Vec<(String, DialogueVar)>,
+    pub removed: Vec<(String, DialogueVar)>,
+    pub changed: Vec<(String, DialogueVar, DialogueVar)>,
+}
+
+impl DialogueVarDiff {
+    pub fn compute(
+        before: &std::collections::HashMap<String, DialogueVar>,
+        after:  &std::collections::HashMap<String, DialogueVar>,
+    ) -> Self {
+        let mut diff = DialogueVarDiff::default();
+        for (k, new_v) in after {
+            match before.get(k) {
+                None          => diff.added.push((k.clone(), new_v.clone())),
+                Some(old_v) if old_v != new_v => {
+                    diff.changed.push((k.clone(), old_v.clone(), new_v.clone()))
+                }
+                _ => {}
+            }
+        }
+        for (k, old_v) in before {
+            if !after.contains_key(k) {
+                diff.removed.push((k.clone(), old_v.clone()));
+            }
+        }
+        diff
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+
+    pub fn total_changes(&self) -> usize {
+        self.added.len() + self.removed.len() + self.changed.len()
+    }
+}
+
+// ── DialogueTag ───────────────────────────────────────────────────────────────
+
+/// A dot-separated hierarchical tag: e.g. `"quest.main.chapter1"`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DialogueTag {
+    raw: String,
+}
+
+impl DialogueTag {
+    pub fn new(tag: impl Into<String>) -> Self { Self { raw: tag.into() } }
+    pub fn as_str(&self) -> &str { &self.raw }
+
+    pub fn parts(&self) -> Vec<&str> { self.raw.split('.').collect() }
+
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        if self.raw == prefix { return true; }
+        self.raw.starts_with(&format!("{}.", prefix))
+    }
+
+    pub fn namespace(&self) -> &str {
+        self.raw.split('.').next().unwrap_or(&self.raw)
+    }
+
+    pub fn tail(&self) -> &str {
+        match self.raw.find('.') {
+            Some(pos) => &self.raw[pos + 1..],
+            None      => "",
+        }
+    }
+}
+
+impl std::fmt::Display for DialogueTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raw)
+    }
+}
+
+impl From<&str>   for DialogueTag { fn from(s: &str)   -> Self { DialogueTag::new(s) } }
+impl From<String> for DialogueTag { fn from(s: String) -> Self { DialogueTag::new(s) } }
+
+// ── PortraitSpec ──────────────────────────────────────────────────────────────
+
+/// Describes a portrait frame to display during a `Say` node.
+#[derive(Debug, Clone)]
+pub struct PortraitSpec {
+    pub key:     String,
+    pub flipped: bool,
+    pub tint:    [f32; 4],
+    pub scale:   f32,
+    pub offset:  [f32; 2],
+}
+
+impl PortraitSpec {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self { key: key.into(), flipped: false, tint: [1.0; 4], scale: 1.0, offset: [0.0; 2] }
+    }
+
+    pub fn flipped(mut self) -> Self { self.flipped = true; self }
+
+    pub fn with_tint(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.tint = [r, g, b, a]; self
+    }
+
+    pub fn with_scale(mut self, scale: f32) -> Self { self.scale = scale; self }
+
+    pub fn with_offset(mut self, x: f32, y: f32) -> Self { self.offset = [x, y]; self }
+}
+
+impl Default for PortraitSpec {
+    fn default() -> Self { Self::new("") }
+}
+
+// ── TypewriterState ───────────────────────────────────────────────────────────
+
+/// Tracks the typewriter-reveal animation for a single line of dialogue.
+#[derive(Debug, Clone)]
+pub struct TypewriterState {
+    full_text:      String,
+    chars_revealed: f32,
+    chars_per_sec:  f32,
+    finished:       bool,
+}
+
+impl TypewriterState {
+    pub fn new(text: impl Into<String>, chars_per_sec: f32) -> Self {
+        let full_text = text.into();
+        let finished  = full_text.is_empty();
+        Self { full_text, chars_revealed: 0.0, chars_per_sec: chars_per_sec.max(1.0), finished }
+    }
+
+    pub fn update(&mut self, delta: f32) {
+        if self.finished { return; }
+        self.chars_revealed += self.chars_per_sec * delta;
+        let total = self.full_text.chars().count() as f32;
+        if self.chars_revealed >= total {
+            self.chars_revealed = total;
+            self.finished = true;
+        }
+    }
+
+    pub fn visible_text(&self) -> &str {
+        if self.finished { return &self.full_text; }
+        let n = self.chars_revealed as usize;
+        let byte_idx = self.full_text
+            .char_indices()
+            .nth(n)
+            .map(|(i, _)| i)
+            .unwrap_or(self.full_text.len());
+        &self.full_text[..byte_idx]
+    }
+
+    pub fn skip(&mut self) {
+        self.chars_revealed = self.full_text.chars().count() as f32;
+        self.finished = true;
+    }
+
+    pub fn is_finished(&self) -> bool { self.finished }
+
+    pub fn progress(&self) -> f32 {
+        if self.full_text.is_empty() { return 1.0; }
+        let total = self.full_text.chars().count() as f32;
+        (self.chars_revealed / total).clamp(0.0, 1.0)
+    }
+
+    pub fn full_text(&self) -> &str { &self.full_text }
+}
+
+// ── DialogueError ─────────────────────────────────────────────────────────────
+
+/// Top-level error type wrapping both runner and validation failures.
+#[derive(Debug, Clone)]
+pub enum DialogueError {
+    Runner(runner::RunnerError),
+    Validation(tree::ValidationError),
+    MissingLocale { key: String, locale: String },
+    Other(String),
+}
+
+impl std::fmt::Display for DialogueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DialogueError::Runner(e)     => write!(f, "runner error: {}", e),
+            DialogueError::Validation(e) => write!(f, "validation error: {:?}", e),
+            DialogueError::MissingLocale { key, locale } =>
+                write!(f, "missing locale '{}' for key '{}'", locale, key),
+            DialogueError::Other(msg)    => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for DialogueError {}
+
+impl From<runner::RunnerError> for DialogueError {
+    fn from(e: runner::RunnerError) -> Self { DialogueError::Runner(e) }
+}
+
+impl From<tree::ValidationError> for DialogueError {
+    fn from(e: tree::ValidationError) -> Self { DialogueError::Validation(e) }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -530,7 +932,312 @@ mod tests {
             name:  "reputation".to_string(),
             value: DialogueVar::Int(10),
         };
-        // Just confirm it clones without panic.
         let _cloned = evt.clone();
+    }
+
+    // ── DialogueVarTable ──────────────────────────────────────────────────
+
+    #[test]
+    fn var_table_set_get() {
+        let mut t = DialogueVarTable::new();
+        t.set("gold", 50i64);
+        assert_eq!(t.get_int("gold"), 50);
+        assert!(t.get_bool("gold"));
+        assert_eq!(t.get_float("gold"), 50.0);
+    }
+
+    #[test]
+    fn var_table_get_or_default() {
+        let t = DialogueVarTable::new();
+        let v = t.get_or("missing", DialogueVar::Int(99));
+        assert_eq!(v, DialogueVar::Int(99));
+    }
+
+    #[test]
+    fn var_table_increment_and_clamp() {
+        let mut t = DialogueVarTable::new();
+        t.increment("score", 10);
+        t.increment("score", 5);
+        assert_eq!(t.get_int("score"), 15);
+        t.clamp_int("score", 0, 12);
+        assert_eq!(t.get_int("score"), 12);
+    }
+
+    #[test]
+    fn var_table_merge() {
+        let mut a = DialogueVarTable::new();
+        a.set("x", 1i64);
+        let mut b = DialogueVarTable::new();
+        b.set("x", 2i64);
+        b.set("y", 3i64);
+        a.merge(&b);
+        assert_eq!(a.get_int("x"), 2);
+        assert_eq!(a.get_int("y"), 3);
+    }
+
+    #[test]
+    fn var_table_remove() {
+        let mut t = DialogueVarTable::new();
+        t.set("temp", "hello");
+        assert!(t.contains("temp"));
+        t.remove("temp");
+        assert!(!t.contains("temp"));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn var_table_iter() {
+        let mut t = DialogueVarTable::new();
+        t.set("a", 1i64);
+        t.set("b", 2i64);
+        assert_eq!(t.iter().count(), 2);
+    }
+
+    #[test]
+    fn var_table_get_str() {
+        let mut t = DialogueVarTable::new();
+        t.set("name", "hero");
+        assert_eq!(t.get_str("name"), "hero");
+        assert_eq!(t.get_str("absent"), "");
+    }
+
+    // ── FlagSet ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn flag_set_basic() {
+        let mut fs = FlagSet::new();
+        fs.set("quest_started");
+        assert!(fs.has("quest_started"));
+        assert!(!fs.has("other"));
+        fs.clear_flag("quest_started");
+        assert!(!fs.has("quest_started"));
+    }
+
+    #[test]
+    fn flag_set_toggle() {
+        let mut fs = FlagSet::new();
+        let s1 = fs.toggle("flag_a");
+        assert!(s1);
+        let s2 = fs.toggle("flag_a");
+        assert!(!s2);
+    }
+
+    #[test]
+    fn flag_set_merge() {
+        let mut a = FlagSet::new();
+        a.set("f1");
+        let mut b = FlagSet::new();
+        b.set("f2");
+        a.merge(&b);
+        assert!(a.has("f1"));
+        assert!(a.has("f2"));
+    }
+
+    #[test]
+    fn flag_set_clear_all() {
+        let mut fs = FlagSet::new();
+        fs.set("a");
+        fs.set("b");
+        fs.clear_all();
+        assert!(fs.is_empty());
+    }
+
+    #[test]
+    fn flag_set_iter() {
+        let mut fs = FlagSet::new();
+        fs.set("x");
+        fs.set("y");
+        fs.set("z");
+        assert_eq!(fs.iter().count(), 3);
+    }
+
+    // ── LocalisedText ─────────────────────────────────────────────────────
+
+    #[test]
+    fn localised_text_basic() {
+        let lt = LocalisedText::new("en-US", "Hello!")
+            .add("ja-JP", "こんにちは！")
+            .add("fr-FR", "Bonjour !");
+        assert_eq!(lt.get("en-US"), "Hello!");
+        assert_eq!(lt.get("ja-JP"), "こんにちは！");
+        assert_eq!(lt.get("fr-FR"), "Bonjour !");
+    }
+
+    #[test]
+    fn localised_text_fallback() {
+        let lt = LocalisedText::new("en-US", "Fallback text");
+        assert_eq!(lt.get("de-DE"), "Fallback text");
+    }
+
+    #[test]
+    fn localised_text_locales() {
+        let lt = LocalisedText::new("en-US", "Hi").add("es-MX", "Hola");
+        assert_eq!(lt.locales().len(), 2);
+        assert!(lt.has_locale("en-US"));
+        assert!(!lt.has_locale("zh-CN"));
+    }
+
+    // ── DialogueVarDiff ────────────────────────────────────────────────────
+
+    #[test]
+    fn var_diff_added() {
+        let before = std::collections::HashMap::new();
+        let mut after = std::collections::HashMap::new();
+        after.insert("x".to_string(), DialogueVar::Int(5));
+        let diff = DialogueVarDiff::compute(&before, &after);
+        assert_eq!(diff.added.len(), 1);
+        assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn var_diff_removed() {
+        let mut before = std::collections::HashMap::new();
+        before.insert("x".to_string(), DialogueVar::Int(5));
+        let after = std::collections::HashMap::new();
+        let diff = DialogueVarDiff::compute(&before, &after);
+        assert_eq!(diff.removed.len(), 1);
+    }
+
+    #[test]
+    fn var_diff_changed() {
+        let mut before = std::collections::HashMap::new();
+        before.insert("x".to_string(), DialogueVar::Int(5));
+        let mut after = std::collections::HashMap::new();
+        after.insert("x".to_string(), DialogueVar::Int(10));
+        let diff = DialogueVarDiff::compute(&before, &after);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.total_changes(), 1);
+    }
+
+    #[test]
+    fn var_diff_no_change() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("x".to_string(), DialogueVar::Int(5));
+        let diff = DialogueVarDiff::compute(&map, &map);
+        assert!(diff.is_empty());
+    }
+
+    // ── DialogueTag ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tag_namespace_and_tail() {
+        let tag = DialogueTag::new("quest.main.chapter1");
+        assert_eq!(tag.namespace(), "quest");
+        assert_eq!(tag.tail(), "main.chapter1");
+        assert!(tag.has_prefix("quest"));
+        assert!(tag.has_prefix("quest.main"));
+        assert!(!tag.has_prefix("ques"));
+    }
+
+    #[test]
+    fn tag_no_dot() {
+        let tag = DialogueTag::new("tutorial");
+        assert_eq!(tag.namespace(), "tutorial");
+        assert_eq!(tag.tail(), "");
+        assert_eq!(tag.parts().len(), 1);
+        assert!(tag.has_prefix("tutorial"));
+    }
+
+    #[test]
+    fn tag_display_and_from() {
+        let t1: DialogueTag = "npc.merchant".into();
+        let t2: DialogueTag = "npc.merchant".to_string().into();
+        assert_eq!(t1, t2);
+        assert_eq!(t1.to_string(), "npc.merchant");
+    }
+
+    // ── PortraitSpec ───────────────────────────────────────────────────────
+
+    #[test]
+    fn portrait_spec_defaults() {
+        let p = PortraitSpec::new("alice_neutral");
+        assert_eq!(p.key, "alice_neutral");
+        assert!(!p.flipped);
+        assert_eq!(p.scale, 1.0);
+    }
+
+    #[test]
+    fn portrait_spec_builder() {
+        let p = PortraitSpec::new("bob_angry")
+            .flipped()
+            .with_tint(1.0, 0.5, 0.5, 1.0)
+            .with_scale(1.2)
+            .with_offset(-10.0, 5.0);
+        assert!(p.flipped);
+        assert!((p.scale - 1.2).abs() < f32::EPSILON);
+        assert_eq!(p.offset, [-10.0, 5.0]);
+    }
+
+    // ── TypewriterState ────────────────────────────────────────────────────
+
+    #[test]
+    fn typewriter_reveals_incrementally() {
+        let mut tw = TypewriterState::new("Hello", 5.0);
+        assert_eq!(tw.visible_text(), "");
+        tw.update(0.2);
+        assert_eq!(tw.visible_text(), "H");
+        tw.update(0.2);
+        assert_eq!(tw.visible_text(), "He");
+        tw.update(10.0);
+        assert!(tw.is_finished());
+        assert_eq!(tw.visible_text(), "Hello");
+    }
+
+    #[test]
+    fn typewriter_skip() {
+        let mut tw = TypewriterState::new("Quick brown fox", 1.0);
+        assert!(!tw.is_finished());
+        tw.skip();
+        assert!(tw.is_finished());
+        assert_eq!(tw.visible_text(), "Quick brown fox");
+    }
+
+    #[test]
+    fn typewriter_progress() {
+        let mut tw = TypewriterState::new("1234", 4.0);
+        tw.update(0.5); // 2 chars revealed = 50%
+        let p = tw.progress();
+        assert!((p - 0.5).abs() < 0.01, "expected ~0.5, got {}", p);
+    }
+
+    #[test]
+    fn typewriter_empty_string() {
+        let tw = TypewriterState::new("", 10.0);
+        assert!(tw.is_finished());
+        assert_eq!(tw.progress(), 1.0);
+    }
+
+    #[test]
+    fn typewriter_unicode_safe() {
+        // "こんにちは" = 5 chars, each 3 bytes in UTF-8.
+        let mut tw = TypewriterState::new("こんにちは", 5.0);
+        tw.update(0.2); // reveal 1 char
+        assert_eq!(tw.visible_text(), "こ");
+    }
+
+    // ── DialogueError ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dialogue_error_display() {
+        let e = DialogueError::Other("something went wrong".to_string());
+        assert!(e.to_string().contains("something went wrong"));
+    }
+
+    #[test]
+    fn dialogue_error_from_runner_error() {
+        let re = runner::RunnerError::NotRunning;
+        let de = DialogueError::from(re);
+        assert!(matches!(de, DialogueError::Runner(_)));
+    }
+
+    #[test]
+    fn dialogue_error_missing_locale() {
+        let e = DialogueError::MissingLocale {
+            key:    "greeting".to_string(),
+            locale: "zh-CN".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("zh-CN"));
+        assert!(s.contains("greeting"));
     }
 }
