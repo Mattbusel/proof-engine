@@ -14,6 +14,7 @@ pub mod weapon_physics;
 pub mod dungeon;
 pub mod music;
 pub mod animation;
+pub mod bosses;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
