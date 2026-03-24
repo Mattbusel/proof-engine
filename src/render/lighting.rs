@@ -64,7 +64,7 @@ impl Attenuation {
             }
             Self::Math(f) => {
                 let t = (d / max_range.max(1e-4)).clamp(0.0, 1.0);
-                f.evaluate(t).max(0.0)
+                f.evaluate(t, t).max(0.0)
             }
             Self::Polynomial { constant, linear, quadratic } => {
                 1.0 / (constant + linear * d + quadratic * d * d).max(1e-4)
@@ -536,12 +536,12 @@ impl LightCuller {
             // Project light center to NDC
             let clip = view_proj * light.position.extend(1.0);
             if clip.w.abs() < 1e-6 { continue; }
-            let ndc = clip.xyz() / clip.w;
+            let ndc = clip.truncate() / clip.w;
 
             // Rough screen-space radius estimate
             let screen_radius = {
                 let edge = view_proj * (light.position + Vec3::X * light.range).extend(1.0);
-                let edge_ndc = if edge.w.abs() > 1e-6 { (edge.xyz() / edge.w) } else { continue };
+                let edge_ndc = if edge.w.abs() > 1e-6 { (edge.truncate() / edge.w) } else { continue };
                 ((edge_ndc - ndc).length()).abs() * 0.5
             };
 

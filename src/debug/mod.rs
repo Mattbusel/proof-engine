@@ -18,6 +18,7 @@
 
 pub mod profiler;
 pub mod graph;
+pub mod console;
 
 pub use profiler::FrameProfiler;
 pub use graph::MathGraph;

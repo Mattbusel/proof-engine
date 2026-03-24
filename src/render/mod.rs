@@ -6,5 +6,6 @@ pub mod postfx;
 pub mod shader_graph;
 pub mod shaders;
 pub mod text_renderer;
+pub mod lighting;
 
 pub use pipeline::Pipeline;
