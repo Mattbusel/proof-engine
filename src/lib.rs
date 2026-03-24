@@ -67,6 +67,7 @@ pub mod crafting;
 pub mod pathfinding;
 pub mod economy;
 pub mod behavior;
+pub mod weather;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};

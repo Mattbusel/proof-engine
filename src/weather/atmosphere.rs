@@ -477,7 +477,7 @@ impl WindField {
                     let turb_noise = fbm_2d(
                         x as f32 * 0.3 + alt * 0.001,
                         z as f32 * 0.3,
-                        3,
+                        3, 2.0, 0.5,
                     ) * 0.5 - 0.25;
                     let turb_vec = Vec3::new(turb_noise, 0.0, turb_noise * 0.7);
                     let wv = WindVector {
@@ -843,7 +843,7 @@ impl Atmosphere {
             p += sample - ISA_PRESSURE_PA;
         }
         // Add noise-based mesoscale variation
-        p += (fbm_2d(x * 0.000_01, z * 0.000_01, 3) - 0.5) * 400.0;
+        p += (fbm_2d(x * 0.000_01, z * 0.000_01, 3, 2.0, 0.5) - 0.5) * 400.0;
         p
     }
 
@@ -908,9 +908,9 @@ impl Atmosphere {
         // Turbulence
         let t = self.noise_offset;
         let turb = Vec3::new(
-            (fbm_2d(wx * 0.0005 + t, wz * 0.0005) * 2.0 - 1.0) * self.config.turbulence_scale,
+            (fbm_2d(wx * 0.0005 + t, wz * 0.0005, 3, 2.0, 0.5) * 2.0 - 1.0) * self.config.turbulence_scale,
             0.0,
-            (fbm_2d(wz * 0.0005 + t + 100.0, wx * 0.0005) * 2.0 - 1.0) * self.config.turbulence_scale * 0.5,
+            (fbm_2d(wz * 0.0005 + t + 100.0, wx * 0.0005, 3, 2.0, 0.5) * 2.0 - 1.0) * self.config.turbulence_scale * 0.5,
         );
         wind = wind.add(turb);
         [wind.x, wind.y, wind.z]

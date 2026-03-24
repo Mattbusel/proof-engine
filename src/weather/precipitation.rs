@@ -1335,7 +1335,7 @@ impl PrecipitationSystem {
         let band_contrib: f32 = self.rain_bands.iter()
             .map(|b| b.intensity_at(x, z))
             .fold(0.0_f32, f32::max);
-        let noise = fbm_2d(x * 0.0001 + self.noise_t, z * 0.0001, 3) * 0.2;
+        let noise = fbm_2d(x * 0.0001 + self.noise_t, z * 0.0001, 3, 2.0, 0.5) * 0.2;
         (base * 0.5 + band_contrib * 0.5 + noise).clamp(0.0, 1.0)
     }
 

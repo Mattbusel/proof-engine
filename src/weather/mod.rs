@@ -26,6 +26,11 @@ impl Vec3 {
     }
     pub fn dot(&self, other: &Self) -> f32 { self.x * other.x + self.y * other.y + self.z * other.z }
     pub fn scale(&self, s: f32) -> Self { Self { x: self.x * s, y: self.y * s, z: self.z * s } }
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        Self { x: self.x + (other.x - self.x) * t, y: self.y + (other.y - self.y) * t, z: self.z + (other.z - self.z) * t }
+    }
+    pub fn add(self, other: Self) -> Self { Self { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z } }
+    pub fn sub(self, other: Self) -> Self { Self { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z } }
 }
 
 impl std::ops::Add for Vec3 {
