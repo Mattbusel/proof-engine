@@ -80,7 +80,7 @@ void main() {
     ) * i_scale;
 
     gl_Position = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
-    gl_Position.xy = -gl_Position.xy;
+    gl_Position.y = -gl_Position.y;  // FBO renders upside-down relative to screen
 
     f_uv         = i_uv_offset + v_uv * i_uv_size;
     f_color      = i_color;
