@@ -160,7 +160,7 @@ fn main() {
         }
 
         // ── Background particles ──
-        for i in 0..300 {
+        for i in 0..500 {
             let chars = ['+', 'x', '*', '#', '-', '=', 'o', '.'];
             let bx = hf(i, 0) * 14.0 - 7.0;
             let by = hf(i, 1) * 6.0 - 2.5;
@@ -230,7 +230,7 @@ fn main() {
 
             // Death dissolution particles
             if phase == 5 && phase_time > 1.0 && e_dissolve < 1.0 {
-                for i in 0..50 {
+                for i in 0..120 {
                     let age = phase_time - 1.0;
                     let angle = hf(i + 9000, 0) * TAU + age * 0.5;
                     let speed = 0.5 + hf(i + 9000, 1) * 2.0;
@@ -254,7 +254,7 @@ fn main() {
             let t = phase_time / 1.5;
             let spell_x = player_pos.x + (enemy_pos.x - player_pos.x) * t.min(1.0);
             let spell_y = player_pos.y + 0.5 + (t * PI).sin() * 0.5; // arc
-            for i in 0..30 {
+            for i in 0..80 {
                 let spread = (hf(i + 1000, 0) - 0.5) * 0.3 * (1.0 - t);
                 engine.spawn_glyph(Glyph {
                     character: if i < 5 { '#' } else if i < 15 { '*' } else { '.' },
@@ -271,7 +271,7 @@ fn main() {
         // Impact sparks (phase 1, at 1.5s)
         if phase == 1 && phase_time > 1.5 && phase_time < 2.0 {
             let age = phase_time - 1.5;
-            for i in 0..25 {
+            for i in 0..150 {
                 let a = (i as f32 / 25.0) * TAU;
                 let spd = 0.2 + hf(i + 2000, 0) * 0.5;
                 let r = spd * age * 3.0;
@@ -291,7 +291,7 @@ fn main() {
             let t = phase_time / 1.5;
             let spell_x = enemy_pos.x + (player_pos.x - enemy_pos.x) * t.min(1.0);
             let spell_y = enemy_pos.y + 0.3 + (t * PI).sin() * 0.3;
-            for i in 0..25 {
+            for i in 0..150 {
                 let spread = (hf(i + 3000, 0) - 0.5) * 0.4 * (1.0 - t);
                 engine.spawn_glyph(Glyph {
                     character: if i < 4 { '#' } else { '*' },
@@ -308,7 +308,7 @@ fn main() {
         // Enemy impact sparks (phase 2, at 1.5s)
         if phase == 2 && phase_time > 1.5 && phase_time < 2.0 {
             let age = phase_time - 1.5;
-            for i in 0..20 {
+            for i in 0..50 {
                 let a = (i as f32 / 20.0) * TAU;
                 let r = (0.2 + hf(i + 4000, 0) * 0.4) * age * 3.0;
                 let fade = (1.0 - age / 0.5).max(0.0);
@@ -333,7 +333,7 @@ fn main() {
                 let sx = from.x + (to.x - from.x) * t.min(1.0);
                 let sy = from.y + 0.3 + (t * PI).sin() * 0.2;
                 let col = if from_player { Vec4::new(0.3, 0.6, 1.0, 0.7) } else { Vec4::new(1.0, 0.3, 0.15, 0.7) };
-                for i in 0..10 {
+                for i in 0..30 {
                     engine.spawn_glyph(Glyph {
                         character: '*', scale: Vec2::splat(0.15),
                         position: Vec3::new(sx + (hf(beat as usize * 10 + i, 0)-0.5)*0.15, sy + (hf(beat as usize*10+i,1)-0.5)*0.1, 0.0),
@@ -349,7 +349,7 @@ fn main() {
             let t = phase_time / 0.8;
             let sx = player_pos.x + (enemy_pos.x - player_pos.x) * t.min(1.0);
             let sy = player_pos.y + 0.5 + (t * PI).sin() * 0.8;
-            for i in 0..60 {
+            for i in 0..150 {
                 let spread = (hf(i + 7000, 0) - 0.5) * 0.5 * (1.0 - t);
                 let ch = if i < 8 { '#' } else if i < 25 { '*' } else if i < 40 { '+' } else { '.' };
                 engine.spawn_glyph(Glyph {
@@ -397,20 +397,56 @@ fn render_layered_humanoid(
 
     let vis = proof_engine::entity::layered_entity::LayerVisibility::from_hp(hp);
 
-    // Layer 4: Particle density (dots)
+    // Layer 4: Particle density cloud (2000 particles for solid look)
     if vis.density_opacity > 0.01 {
-        let count = (200.0 * vis.density_opacity) as usize;
+        let count = (2000.0 * vis.density_opacity) as usize;
+        // Body bones: (start_y, end_y, center_x, width)
+        let bones: &[(f32, f32, f32, f32, f32)] = &[
+            // (start_y, end_y, x_center, width, density_weight)
+            (0.6, 1.1, 0.0, 0.2, 2.0),   // head (dense, round)
+            (0.1, 0.6, 0.0, 0.3, 1.5),   // torso (wide, dense)
+            (-0.4, 0.1, 0.0, 0.2, 1.0),  // waist
+            (-0.9, -0.4, -0.15, 0.1, 0.8), // left leg
+            (-0.9, -0.4, 0.15, 0.1, 0.8),  // right leg
+            (0.3, 0.6, -0.5, 0.08, 0.6),   // left arm upper
+            (0.0, 0.3, -0.65, 0.06, 0.5),  // left arm lower
+            (0.3, 0.6, 0.5, 0.08, 0.6),    // right arm upper
+            (0.0, 0.3, 0.65, 0.06, 0.5),   // right arm lower
+        ];
+        let total_weight: f32 = bones.iter().map(|b| b.4 * (b.1 - b.0)).sum();
+
         for i in 0..count {
-            let t = i as f32 / count as f32;
-            let body_y = hf(i + 100, 0) * 2.0 - 0.5;
-            let body_x = (hf(i + 100, 1) - 0.5) * (0.4 + (1.0 - (body_y - 0.5).abs() / 1.0).max(0.0) * 0.4);
-            let jitter_x = hf(i + 100, 2) * 0.1 * (1.0 - hp).max(0.0);
-            let jitter_y = hf(i + 100, 3) * 0.1 * (1.0 - hp).max(0.0);
+            // Pick a bone proportional to weight
+            let mut w = hf(i + 100, 0) * total_weight;
+            let mut bone = bones[0];
+            for b in bones {
+                w -= b.4 * (b.1 - b.0);
+                if w <= 0.0 { bone = *b; break; }
+            }
+
+            // Sample along the bone with gaussian spread
+            let along = bone.0 + hf(i + 100, 1) * (bone.1 - bone.0);
+            let spread_x = (hf(i + 100, 2) + hf(i + 100, 3) - 1.0) * bone.3;
+            let spread_z = (hf(i + 100, 6) + hf(i + 100, 7) - 1.0) * bone.3 * 0.5;
+
+            // HP jitter
+            let jitter = (1.0 - hp).max(0.0) * 0.08;
+            let jx = (hf(i + 100, 4) - 0.5) * jitter;
+            let jy = (hf(i + 100, 5) - 0.5) * jitter;
+
+            let px = bone.2 + spread_x;
+            let py = along;
+
+            // Distance from bone center for density-based alpha
+            let dist = spread_x.abs() / bone.3.max(0.01);
+            let density_alpha = (1.0 - dist).max(0.0);
+
             engine.spawn_glyph(Glyph {
-                character: '.', scale: Vec2::splat(0.05 + hf(i+100,4) * 0.03),
-                position: Vec3::new(pos.x + body_x * breath + jitter_x, pos.y + body_y * breath + jitter_y, pos.z - 0.15),
-                color: Vec4::new(base_color.x, base_color.y, base_color.z, vis.density_opacity * 0.15),
-                emission: vis.density_opacity * 0.3, mass: 0.0, lifetime: dt * 1.5,
+                character: '.', scale: Vec2::splat(0.04 + density_alpha * 0.02),
+                position: Vec3::new(pos.x + px * breath + jx, pos.y + py * breath + jy, pos.z - 0.15 + spread_z),
+                color: Vec4::new(base_color.x, base_color.y, base_color.z, vis.density_opacity * 0.08 * (0.5 + density_alpha * 0.5)),
+                emission: vis.density_opacity * (0.15 + density_alpha * 0.2),
+                mass: 0.0, lifetime: dt * 1.5,
                 layer: RenderLayer::Particle, blend_mode: BlendMode::Additive, ..Default::default()
             });
         }
