@@ -15,5 +15,7 @@ pub mod ui_layer_renderer;
 pub mod ui_primitives;
 
 pub mod hdr;
+pub mod glyph_3d_renderer;
+pub mod glyph_depth_effects;
 
 pub use pipeline::Pipeline;

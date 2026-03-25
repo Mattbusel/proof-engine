@@ -8,6 +8,10 @@ pub mod atlas;
 pub mod sdf_generator;
 pub mod sdf_atlas;
 pub mod sdf_batch;
+pub mod font_to_mesh;
+pub mod glyph_mesh;
+pub mod glyph_materials;
+pub mod glyph_3d_dissolve;
 
 use glam::{Vec2, Vec3, Vec4};
 use crate::math::MathFunction;
