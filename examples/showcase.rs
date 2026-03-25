@@ -184,10 +184,12 @@ fn main() {
             let target_x = sum_x / count as f32;
             let target_y = sum_y / count as f32;
             // Smooth follow (lerp toward center of mass)
-            cam_x += (target_x - cam_x) * 1.5 * dt;
-            cam_y += (target_y - cam_y) * 1.5 * dt;
+            cam_x += (target_x - cam_x) * 2.0 * dt;
+            cam_y += (target_y - cam_y) * 2.0 * dt;
             engine.camera.position.x.target = cam_x;
             engine.camera.position.y.target = cam_y;
+            engine.camera.position.x.position = cam_x;
+            engine.camera.position.y.position = cam_y;
         }
 
         // Spell every 5 seconds
