@@ -87,6 +87,7 @@ pub mod geometry;
 pub mod symbolic;
 pub mod solver;
 pub mod fractal;
+pub mod metaball;
 pub mod worldgen;
 pub mod ecology;
 pub mod narrative;

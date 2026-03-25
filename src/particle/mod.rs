@@ -8,6 +8,8 @@ pub mod emitters;
 pub mod flock;
 pub mod gpu_particles;
 pub mod particle_render;
+pub mod density_entity;
+pub mod shape_templates;
 
 use crate::glyph::{Glyph, RenderLayer};
 use crate::math::{MathFunction, ForceField, Falloff, AttractorType};
