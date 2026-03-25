@@ -53,6 +53,8 @@ mod clipboard;
 mod preferences;
 #[allow(unused)]
 mod layout;
+#[allow(unused)]
+mod widgets;
 
 use proof_engine::prelude::*;
 use app::EditorApp;
