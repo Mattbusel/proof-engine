@@ -18,16 +18,71 @@ impl GlyphUv {
 }
 
 /// The characters the engine can render.
+///
+/// Covers: ASCII, box drawing (single + double), block elements, arrows,
+/// math operators, Greek alphabet, symbols, card suits, musical notes,
+/// geometric shapes, dingbats/stars, bullets, currency, braille-bar
+/// characters, and common game/UI glyphs.
 pub const ATLAS_CHARS: &str = concat!(
+    // ASCII printable (32-126)
     " !\"#$%&'()*+,-./0123456789:;<=>?",
     "@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_",
     "`abcdefghijklmnopqrstuvwxyz{|}~",
-    "░▒▓█▄▀▌▐■□▪▫",
-    "╔╗╚╝║═╠╣╦╩╬╟╢",
-    "┌┐└┘│─├┤┬┴┼",
-    "←→↑↓★✦✧☆▶▷",
-    "∞∑∫∂∇∆∏λαβγδεζηθπσφψω",
-    "☠☢☣☯✓✗⊕⊗⊙◆◇◈◉",
+
+    // Block elements
+    "░▒▓█▄▀▌▐■□▪▫▬▮▯▰▱",
+
+    // Box drawing — double lines
+    "╔╗╚╝║═╠╣╦╩╬╟╢╤╧╪╫",
+    // Box drawing — single lines
+    "┌┐└┘│─├┤┬┴┼┃━┏┓┗┛┣┫┳┻╋",
+    // Box drawing — mixed
+    "╭╮╯╰╱╲╳",
+
+    // Arrows
+    "←→↑↓↔↕↖↗↘↙⇐⇒⇑⇓⇔▲▼◀▶▷▸▹►◁◂◃",
+
+    // Math operators and symbols
+    "∞∑∫∂∇∆∏√±∓×÷≈≠≡≤≥«»∈∉⊂⊃∪∩∧∨¬∀∃∅∝∠",
+    "⌈⌉⌊⌋",
+
+    // Greek alphabet (upper + lower)
+    "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψω",
+
+    // Geometric shapes
+    "●○◉◎◌◍◐◑◒◓◔◕",
+    "◆◇◈□■▢▣▤▥▦▧▨▩",
+    "△▽▲▼◁▷◀▶",
+    "◯⬠⬡⬢⬣",
+
+    // Stars, dingbats, decorative
+    "★☆✦✧✩✪✫✬✭✮✯✰✱✲✳✴✵✶✷✸✹",
+    "⁂❖❘❙❚",
+    "⊕⊗⊙⊛⊜⊝",
+
+    // Bullets and dots
+    "·•‣⁃∙◦°※†‡§¶",
+
+    // Card suits
+    "♠♣♥♦♤♧♡♢",
+
+    // Musical
+    "♩♪♫♬♭♮♯",
+
+    // Misc symbols
+    "☠☢☣☯☮☸✓✗✘✔✕❌⚙⚡⚔⚒⚑⚐⚠⚰⚱⛏",
+    "☀☁☂☃☄☾☽❄❆❇",
+    "☹☺☻♻♲♳⚕⚖⚗⚛⚜",
+
+    // Currency
+    "¢£¥€₹₽₿",
+
+    // Bar chart characters (for spectrum visualizer, HP bars, etc.)
+    "▁▂▃▄▅▆▇█",
+
+    // Braces, brackets, misc punctuation
+    "‹›「」『』【】〈〉《》",
+    "…—–\u{2018}\u{2019}\u{201C}\u{201D}\u{201E}\u{201A}",
 );
 
 /// Complete font atlas ready to upload to the GPU.
