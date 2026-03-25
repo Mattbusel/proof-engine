@@ -5,13 +5,21 @@
 
 ![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
 
-Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, and fluid behavior all emerge from the same system with zero additional engineering, just different spring constants.
+## Live Demo
 
-This demo is running with **no lighting pipeline, no shaders, no post-processing, and no material system.** What you're seeing is raw particle simulation only. The engine's full rendering stack, voxel cone traced global illumination, spherical harmonics, Nishita atmospheric scattering, deferred caustics, PBR materials, and volumetric fog, has not been turned on yet. Every particle is a potential light emitter. The visual ceiling scales with particle count, which has no architectural limit.
+![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
 
-This is not a particle effect system bolted onto a polygon engine. Particles are the rendering primitive. Everything in the scene is made of them.
+**What you're looking at:** Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. Each particle is its own light source with emission, color, temperature, and physical mass. The engine does not distinguish between geometry and lighting. The matter IS the light.
 
-A mathematical rendering engine for Rust. Every visual is the output of a real equation.
+When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, cloth, fluid, fog, and soft-body behavior all emerge from the same particle system with zero additional engineering — just different spring constants on the same substrate. There is no polygon budget. There is no pre-fractured mesh. Destruction resolution is infinite because particles don't have polygon limits.
+
+**What you're NOT seeing:** This demo is running with no lighting pipeline, no shaders, no post-processing, and no material system connected. The engine's full rendering stack — clean-room SVOGI (Sparse Voxel Octree Global Illumination rebuilt from the published SIGGRAPH papers that powered CryEngine), spherical harmonics, Nishita atmospheric scattering, deferred caustics, PBR materials, and volumetric fog — exists in the codebase but has not been turned on yet. When it is, every particle becomes a light emitter whose glow bounces off every surface through voxel light propagation. The lighting doesn't approximate the scene. The scene IS the light field.
+
+**What matters:** 50 million particles is not the ceiling. It's a development parameter. The architecture has no hard limit on particle count. Visual fidelity scales by turning one number up, more particles means smoother surfaces, denser matter, higher-resolution destruction, and richer light fields. No other engine scales fidelity with a single parameter because no other engine uses continuous matter as its rendering primitive.
+
+Every other game engine renders polygons and then fakes destruction, fakes fluid, fakes cloth, fakes volumetric light, and fakes material behavior through separate engineered systems. This engine doesn't fake anything. The physics are real. The matter is real. The light emission is real. The visual output is what the mathematics produces.
+
+Particles are not an effect. Particles are the rendering primitive. Everything in the scene is made of them.
 
 ![Supernova Demo](assets/supernova-demo.gif)
 
