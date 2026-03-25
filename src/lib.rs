@@ -178,21 +178,24 @@ impl ProofEngine {
             // Step force fields and physics
             self.scene.tick(dt);
 
-            // Get GL context ref for the overlay
+            // User update (logic only — no GL calls here)
+            // We pass a dummy gl ref for the logic phase; the real painting
+            // happens after the scene render.
             let gl_ptr = self.pipeline.as_ref().map(|p| p.gl() as *const glow::Context);
 
-            // User update + overlay
+            // Render scene first
+            if let Some(ref mut p) = self.pipeline {
+                p.render(&self.scene, &self.camera);
+            }
+
+            // NOW paint the overlay (egui) on top of the rendered scene
             if let Some(ptr) = gl_ptr {
-                // SAFETY: the pipeline (and thus the GL context) is alive for
-                // the entire duration of this call. We use a raw pointer to
-                // break the borrow on self so the update closure can mutate engine.
                 let gl_ref = unsafe { &*ptr };
                 update(self, dt, gl_ref);
             }
 
-            // Render
+            // Swap
             if let Some(ref mut p) = self.pipeline {
-                p.render(&self.scene, &self.camera);
                 if !p.swap() {
                     break;
                 }
