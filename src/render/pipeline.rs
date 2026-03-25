@@ -265,6 +265,9 @@ pub struct Pipeline {
     // ── Font atlas ────────────────────────────────────────────────────────────
     atlas: FontAtlas,
 
+    // ── SVOGI Global Illumination ───────────────────────────────────────────
+    pub svogi: crate::svogi::integration::CascadedSvogi,
+
     // ── CPU-side glyph batch ──────────────────────────────────────────────────
     instances: Vec<GlyphInstance>,
 
@@ -403,6 +406,7 @@ impl Pipeline {
             mouse_pos_prev: Vec2::ZERO,
             mouse_ndc: Vec2::ZERO,
             raw_window_events: Vec::new(),
+            svogi: crate::svogi::integration::CascadedSvogi::new(3, 64, 50.0),
         }
     }
 
@@ -558,6 +562,31 @@ impl Pipeline {
         let view      = Mat4::look_at_rh(pos, tgt, Vec3::Y);
         let proj      = Mat4::perspective_rh_gl(fov.to_radians(), aspect, camera.near, camera.far);
         let view_proj = proj * view;
+
+        // ── Update SVOGI (voxelize scene, inject light, propagate) ───────────
+        {
+            use crate::svogi::inject::{LightSource, DirectionalLight, PointLight};
+            let sun = LightSource::Directional(DirectionalLight {
+                direction: Vec3::new(-0.5, 1.0, 0.8).normalize(),
+                color: Vec3::new(0.8, 0.75, 0.65),
+                intensity: 1.0,
+            });
+            let mut all_lights = vec![sun];
+            // Inject emissive glyphs as point lights
+            let mut emissive_count = 0;
+            for (_, glyph) in scene.glyphs.iter() {
+                if glyph.emission > 0.5 && emissive_count < 50 {
+                    all_lights.push(LightSource::Point(PointLight {
+                        position: glyph.position,
+                        color: glyph.glow_color,
+                        intensity: glyph.emission * 0.3,
+                        radius: glyph.glow_radius * 2.0,
+                    }));
+                    emissive_count += 1;
+                }
+            }
+            self.svogi.update(dt, &[], &all_lights, &[]);
+        }
 
         // ── Build glyph batch ──────────────────────────────────────────────────
         self.instances.clear();

@@ -94,6 +94,9 @@ pub mod electromagnetic;
 pub mod relativistic;
 pub mod quantum;
 pub mod svogi;
+pub mod nishita_sky;
+pub mod volumetric_fog;
+pub mod tiled_lighting;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
