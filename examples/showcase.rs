@@ -1,245 +1,280 @@
-//! showcase -- Combat arena scene. Everything stays on screen.
-//! Visible area: X[-10,10] Y[-5.7,5.7]. Safe zone: X[-8,8] Y[-4,4].
+//! showcase -- CHAOS RPG combat scene.
 //! Run: cargo run --release --example showcase
 
 use proof_engine::prelude::*;
-use proof_engine::math::attractors::AttractorType;
 use std::f32::consts::TAU;
-
-// Safe bounds (well inside visible area)
-const MAX_X: f32 = 8.0;
-const MAX_Y: f32 = 4.0;
 
 fn main() {
     env_logger::init();
     let mut engine = ProofEngine::new(EngineConfig {
-        window_title: "CHAOS RPG -- Combat Arena".to_string(),
+        window_title: "CHAOS RPG".to_string(),
         window_width: 1920, window_height: 1080,
         render: proof_engine::config::RenderConfig {
-            bloom_enabled: true, bloom_intensity: 2.0,
+            bloom_enabled: true, bloom_intensity: 2.2,
             chromatic_aberration: 0.002, film_grain: 0.008,
             ..Default::default()
         },
         ..Default::default()
     });
 
-    // ── Background: dim math rain (static, no velocity, no mass) ──
-    let rain = ['0','1','+','-','*','/','=','x','<','>'];
-    for i in 0..200 {
-        let x = h(i,0) * MAX_X * 2.0 - MAX_X;
-        let y = h(i,1) * MAX_Y * 2.0 - MAX_Y;
-        engine.spawn_glyph(Glyph {
-            character: rain[i % rain.len()],
-            scale: Vec2::splat(0.1 + h(i,2) * 0.06),
-            position: Vec3::new(x, y, -3.0),
-            color: Vec4::new(0.05, 0.1 + h(i,3)*0.06, 0.07, 0.1),
-            emission: 0.02, mass: 0.0,
-            layer: RenderLayer::Background,
-            life_function: Some(MathFunction::Sine {
-                amplitude: 0.015, frequency: 0.08 + h(i,4)*0.05, phase: h(i,5)*TAU,
-            }),
-            ..Default::default()
-        });
-    }
-
-    // ── Arena floor dots ──
-    for y in -6..=6 {
-        for x in -12..=12 {
-            if (x + y) % 3 != 0 { continue; }
-            let fx = x as f32 * 0.6;
-            let fy = y as f32 * 0.6;
-            if fx.abs() > MAX_X || fy.abs() > MAX_Y { continue; }
+    // ── Background: scrolling equation columns ──
+    let cols = ['0','1','0','1','+','=','x','-','0','1'];
+    for col in 0..30 {
+        for row in 0..20 {
+            let i = col * 20 + row;
+            let x = (col as f32 - 15.0) * 0.6;
+            let y = (row as f32 - 10.0) * 0.5 + h(i,0) * 0.3;
+            if x.abs() > 9.0 || y.abs() > 5.5 { continue; }
             engine.spawn_glyph(Glyph {
-                character: '.', scale: Vec2::splat(0.08),
-                position: Vec3::new(fx, fy, -1.5),
-                color: Vec4::new(0.1, 0.14, 0.22, 0.06),
-                emission: 0.01, mass: 0.0,
-                layer: RenderLayer::Background, ..Default::default()
+                character: cols[i % cols.len()],
+                scale: Vec2::splat(0.22),
+                position: Vec3::new(x, y, -3.0),
+                color: Vec4::new(0.04, 0.09, 0.05, 0.08 + h(i,1)*0.04),
+                emission: 0.015, mass: 0.0,
+                layer: RenderLayer::Background,
+                life_function: Some(MathFunction::Sine {
+                    amplitude: 0.01, frequency: 0.06, phase: h(i,2)*TAU,
+                }),
+                ..Default::default()
             });
         }
     }
 
-    // ── Player entity (left, blue) ──
-    let mut player = AmorphousEntity::new("Player", Vec3::new(-4.5, 0.0, 0.0));
-    player.entity_mass = 4.0; player.cohesion = 0.85;
-    player.pulse_rate = 0.5; player.pulse_depth = 0.12;
+    // ── Player: "Mage" class -- diamond formation, blue-white ──
+    // Recognizable shape: a diamond with a core
+    let mut player = AmorphousEntity::new("Mage", Vec3::new(-4.0, 0.0, 0.0));
+    player.entity_mass = 4.0; player.cohesion = 0.9;
+    player.pulse_rate = 0.5; player.pulse_depth = 0.1;
     player.hp = 100.0; player.max_hp = 100.0;
-    let pc = ['@','#','*','+','o','X','*','#','o','+','@','X'];
-    for i in 0..12 {
-        let a = (i as f32/12.0)*TAU;
-        let r = if i<4{0.25}else if i<8{0.5}else{0.75};
-        player.formation.push(Vec3::new(a.cos()*r, a.sin()*r, 0.0));
-        player.formation_chars.push(pc[i]);
-        player.formation_colors.push(Vec4::new(0.35, 0.55, 1.0, 0.95));
+    // Diamond shape with clear characters
+    let p_pos = [
+        // Core
+        (0.0, 0.0),
+        // Inner diamond
+        (0.0, 0.5), (0.5, 0.0), (0.0, -0.5), (-0.5, 0.0),
+        // Outer diamond
+        (0.0, 1.0), (0.7, 0.5), (1.0, 0.0), (0.7, -0.5),
+        (0.0, -1.0), (-0.7, -0.5), (-1.0, 0.0), (-0.7, 0.5),
+    ];
+    let p_chars = ['@', 'o', 'o', 'o', 'o', '+', '/', '+', '\\', '+', '/', '+', '\\'];
+    for (i, &(px, py)) in p_pos.iter().enumerate() {
+        player.formation.push(Vec3::new(px, py, 0.0));
+        player.formation_chars.push(p_chars[i % p_chars.len()]);
+        let brightness = if i == 0 { 1.0 } else if i < 5 { 0.85 } else { 0.65 };
+        player.formation_colors.push(Vec4::new(0.3*brightness, 0.5*brightness, 1.0*brightness, 0.95));
     }
     engine.spawn_entity(player);
 
-    // Player aura (orbiting, zero mass)
-    for i in 0..16 {
-        let a = (i as f32/16.0)*TAU;
-        let r = 1.1 + h(i+100,0)*0.3;
+    // Player shield aura
+    for i in 0..12 {
+        let a = (i as f32 / 12.0) * TAU;
+        let r = 1.5;
         engine.spawn_glyph(Glyph {
-            character: '.', scale: Vec2::splat(0.2),
-            position: Vec3::new(-4.5 + a.cos()*r, a.sin()*r, -0.1),
-            color: Vec4::new(0.25, 0.45, 1.0, 0.18), emission: 0.25, mass: 0.0,
-            layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
+            character: if i % 3 == 0 { '+' } else { '-' },
+            scale: Vec2::splat(0.3),
+            position: Vec3::new(-4.0 + a.cos()*r, a.sin()*r, -0.05),
+            color: Vec4::new(0.2, 0.4, 0.9, 0.2), emission: 0.3, mass: 0.0,
+            layer: RenderLayer::Entity, blend_mode: BlendMode::Additive,
             life_function: Some(MathFunction::Orbit {
-                center: Vec3::new(-4.5, 0.0, 0.0), radius: r, speed: 0.035, eccentricity: 0.08,
+                center: Vec3::new(-4.0, 0.0, 0.0), radius: r, speed: 0.04, eccentricity: 0.05,
             }),
             ..Default::default()
         });
     }
 
-    // ── Boss entity (right, red-purple, bigger) ──
-    let mut boss = AmorphousEntity::new("Boss", Vec3::new(4.5, 0.0, 0.0));
-    boss.entity_mass = 6.0; boss.cohesion = 0.7;
-    boss.pulse_rate = 0.3; boss.pulse_depth = 0.18;
+    // ── Boss: "Chaos Lord" -- bigger, menacing, red-purple ──
+    let mut boss = AmorphousEntity::new("Chaos Lord", Vec3::new(4.0, 0.0, 0.0));
+    boss.entity_mass = 7.0; boss.cohesion = 0.7;
+    boss.pulse_rate = 0.25; boss.pulse_depth = 0.2;
     boss.hp = 100.0; boss.max_hp = 100.0;
-    let bc = ['X','#','@','O','*','x','#','X','O','@','*','x','+','#','X','O','@','*'];
-    for i in 0..18 {
-        let a = (i as f32/18.0)*TAU;
-        let r = if i<6{0.3}else if i<12{0.6}else{0.95};
-        boss.formation.push(Vec3::new(a.cos()*r, a.sin()*r, 0.0));
-        boss.formation_chars.push(bc[i]);
-        boss.formation_colors.push(Vec4::new(1.0, 0.2, 0.35, 0.95));
+    // Skull-like shape
+    let b_pos = [
+        // Eyes
+        (-0.4, 0.3), (0.4, 0.3),
+        // Core body
+        (0.0, 0.0), (-0.3, -0.1), (0.3, -0.1),
+        // Jaw
+        (-0.2, -0.5), (0.0, -0.6), (0.2, -0.5),
+        // Crown
+        (-0.6, 0.7), (-0.2, 0.9), (0.2, 0.9), (0.6, 0.7),
+        // Wings/arms
+        (-1.0, 0.2), (-1.2, 0.0), (-1.0, -0.2),
+        (1.0, 0.2), (1.2, 0.0), (1.0, -0.2),
+    ];
+    let b_chars = ['X', 'X', '#', 'o', 'o', 'v', 'V', 'v', '^', '^', '^', '^',
+                   '<', '<', '<', '>', '>', '>'];
+    for (i, &(bx, by)) in b_pos.iter().enumerate() {
+        boss.formation.push(Vec3::new(bx, by, 0.0));
+        boss.formation_chars.push(b_chars[i % b_chars.len()]);
+        let is_eye = i < 2;
+        let is_crown = i >= 8 && i < 12;
+        let color = if is_eye { Vec4::new(1.0, 0.9, 0.1, 1.0) }
+            else if is_crown { Vec4::new(1.0, 0.3, 0.8, 0.95) }
+            else { Vec4::new(0.9, 0.15, 0.3, 0.95) };
+        boss.formation_colors.push(color);
     }
     engine.spawn_entity(boss);
 
-    // Boss aura (red, zero mass)
-    for i in 0..20 {
-        let a = (i as f32/20.0)*TAU;
-        let r = 1.3 + h(i+200,0)*0.4;
+    // Boss dark aura (counter-rotating)
+    for i in 0..16 {
+        let a = (i as f32 / 16.0) * TAU;
+        let r = 1.8;
         engine.spawn_glyph(Glyph {
-            character: '.', scale: Vec2::splat(0.2),
-            position: Vec3::new(4.5 + a.cos()*r, a.sin()*r, -0.1),
-            color: Vec4::new(1.0, 0.12, 0.25, 0.18), emission: 0.25, mass: 0.0,
-            layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
+            character: if i % 2 == 0 { 'x' } else { '.' },
+            scale: Vec2::splat(0.25),
+            position: Vec3::new(4.0 + a.cos()*r, a.sin()*r, -0.05),
+            color: Vec4::new(0.8, 0.1, 0.2, 0.15), emission: 0.2, mass: 0.0,
+            layer: RenderLayer::Entity, blend_mode: BlendMode::Additive,
             life_function: Some(MathFunction::Orbit {
-                center: Vec3::new(4.5, 0.0, 0.0), radius: r, speed: -0.03, eccentricity: 0.1,
+                center: Vec3::new(4.0, 0.0, 0.0), radius: r, speed: -0.03, eccentricity: 0.1,
             }),
             ..Default::default()
         });
     }
 
-    // ── Energy between them: orbiting particles (no force field, pure math) ──
-    for i in 0..200 {
-        let t = i as f32/200.0;
-        let a = t * TAU * 3.0;
+    // ── Energy field between them: orbiting runes ──
+    for i in 0..100 {
+        let t = i as f32 / 100.0;
         let r = 0.5 + t * 2.5;
+        let rune_chars = ['+', 'x', '*', 'o', '=', '#', '.', '-'];
         engine.spawn_glyph(Glyph {
-            character: '.', scale: Vec2::splat(0.16),
-            position: Vec3::new(r * a.cos(), r * a.sin() * 0.6, 0.0),
-            color: Vec4::new(0.4+t*0.4, 0.25, 0.7-t*0.2, 0.35),
-            emission: 0.4, mass: 0.0,
+            character: rune_chars[i % rune_chars.len()],
+            scale: Vec2::splat(0.15 + t * 0.08),
+            position: Vec3::new(r * (t*TAU*3.0).cos(), r * (t*TAU*3.0).sin() * 0.5, 0.0),
+            color: Vec4::new(0.5+t*0.3, 0.2, 0.7-t*0.2, 0.25+t*0.1),
+            emission: 0.3+t*0.2, mass: 0.0,
             layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
             life_function: Some(MathFunction::Orbit {
-                center: Vec3::ZERO,
-                radius: r,
-                speed: 0.02 + (1.0 - t) * 0.04, // inner faster
-                eccentricity: 0.3 + t * 0.2,
+                center: Vec3::ZERO, radius: r,
+                speed: 0.015 + (1.0-t)*0.03,
+                eccentricity: 0.2+t*0.15,
             }),
             ..Default::default()
         });
     }
 
-    // ── Ambient floating specks (zero mass, zero velocity, just breathe) ──
-    for i in 0..30 {
-        let x = h(i+400,0) * 12.0 - 6.0;
-        let y = h(i+400,1) * 6.0 - 3.0;
+    // ── "HP Bars" (static decoration, top of screen) ──
+    // Player HP bar (left, blue)
+    for i in 0..20 {
+        let x = -7.5 + i as f32 * 0.25;
         engine.spawn_glyph(Glyph {
-            character: '.', scale: Vec2::splat(0.1),
-            position: Vec3::new(x, y, -0.5),
-            color: Vec4::new(0.35, 0.35, 0.45, 0.08), emission: 0.03, mass: 0.0,
-            layer: RenderLayer::World,
-            life_function: Some(MathFunction::Breathing {
-                rate: 0.05 + h(i+400,2)*0.05, depth: 0.3,
-            }),
-            ..Default::default()
+            character: '=', scale: Vec2::splat(0.28),
+            position: Vec3::new(x, 4.5, 0.5),
+            color: Vec4::new(0.2, 0.5, 1.0, 0.6), emission: 0.3, mass: 0.0,
+            layer: RenderLayer::UI, ..Default::default()
+        });
+    }
+    // Boss HP bar (right, red)
+    for i in 0..20 {
+        let x = 2.5 + i as f32 * 0.25;
+        engine.spawn_glyph(Glyph {
+            character: '=', scale: Vec2::splat(0.28),
+            position: Vec3::new(x, 4.5, 0.5),
+            color: Vec4::new(1.0, 0.2, 0.3, 0.6), emission: 0.3, mass: 0.0,
+            layer: RenderLayer::UI, ..Default::default()
         });
     }
 
-    // ── Runtime ──
+    // ── Runtime: spell combat ──
     let mut time = 0.0f32;
-    let mut last_spell = -3.0f32;
+    let mut last_spell = -2.0f32;
     let mut spell_n = 0u32;
-    let mut cam_x = 0.0f32;
-    let mut cam_y = 0.0f32;
 
     engine.run(move |engine, dt| {
         time += dt;
-        engine.config.render.bloom_intensity = 2.0 + (time * 0.35).sin() * 0.25;
+        engine.config.render.bloom_intensity = 2.2 + (time * 0.3).sin() * 0.3;
 
-        // ── Camera follows center of mass of interesting glyphs ──
-        let mut sum_x = 0.0f32;
-        let mut sum_y = 0.0f32;
-        let mut count = 0u32;
-        for (_id, glyph) in engine.scene.glyphs.iter() {
-            // Only track non-background glyphs (the interesting stuff)
-            if glyph.layer == RenderLayer::Background { continue; }
-            if glyph.color.w < 0.05 { continue; } // skip nearly invisible
-            sum_x += glyph.position.x;
-            sum_y += glyph.position.y;
-            count += 1;
-        }
-        if count > 0 {
-            let target_x = sum_x / count as f32;
-            let target_y = sum_y / count as f32;
-            // Smooth follow (lerp toward center of mass)
-            cam_x += (target_x - cam_x) * 2.0 * dt;
-            cam_y += (target_y - cam_y) * 2.0 * dt;
-            engine.camera.position.x.target = cam_x;
-            engine.camera.position.y.target = cam_y;
-            engine.camera.position.x.position = cam_x;
-            engine.camera.position.y.position = cam_y;
-        }
-
-        // Spell every 5 seconds
-        if time - last_spell > 5.0 {
+        // Spell every 4 seconds
+        if time - last_spell > 4.0 {
             last_spell = time;
             spell_n += 1;
-            engine.add_trauma(0.08);
+            engine.add_trauma(0.12);
 
-            let (r, g, b) = match spell_n % 3 {
-                0 => (0.3, 0.5, 1.0),  // ice
-                1 => (1.0, 0.45, 0.1), // fire
-                _ => (0.6, 0.2, 1.0),  // void
+            let player_attacks = spell_n % 2 == 1;
+            let (from_x, to_x) = if player_attacks { (-3.0, 3.0) } else { (3.0, -3.0) };
+
+            let (r, g, b, spell_char) = match spell_n % 4 {
+                0 => (0.3, 0.6, 1.0, '#'),   // ice bolt
+                1 => (1.0, 0.4, 0.1, '*'),   // fireball
+                2 => (0.7, 0.2, 1.0, 'x'),   // void blast
+                _ => (0.2, 1.0, 0.4, '+'),   // nature strike
             };
 
-            // Projectile: 20 particles, slow speed, short lifetime
-            // Travel from X=-3 to X=+3 (6 units) at speed ~1.5 = 4 seconds
-            // But lifetime is 2.5s so they fade before reaching the edge
-            for i in 0..20 {
-                let t = i as f32/20.0;
-                let spread = (h(spell_n as usize * 20 + i, 0) - 0.5) * 0.6;
+            // Spell projectile: a clear character flying across
+            for i in 0..25 {
+                let t = i as f32 / 25.0;
+                let spread = (h(spell_n as usize * 25 + i, 0) - 0.5) * 0.5;
+                let dir = if player_attacks { 1.0 } else { -1.0 };
                 engine.spawn_glyph(Glyph {
-                    character: if t < 0.3 {'#'} else if t < 0.7 {'*'} else {'.'},
-                    scale: Vec2::splat(0.15 + (1.0-t)*0.1),
-                    position: Vec3::new(-3.0 + t*0.3, spread, 0.1),
-                    velocity: Vec3::new(1.2 + t*0.5, spread*0.2, 0.0), // max speed 1.7
-                    color: Vec4::new(r, g, b, 0.8),
-                    emission: 1.8 - t, glow_color: Vec3::new(r, g, b), glow_radius: 0.8,
-                    mass: 0.0, lifetime: 2.5, // dies before reaching edge
+                    character: if t < 0.2 { spell_char } else if t < 0.6 { '*' } else { '.' },
+                    scale: Vec2::splat(0.3 - t * 0.12),
+                    position: Vec3::new(from_x, spread, 0.1),
+                    velocity: Vec3::new(dir * (1.0 + t*0.8), spread*0.15, 0.0),
+                    color: Vec4::new(r, g, b, 0.9 - t*0.3),
+                    emission: 2.5 - t*1.5,
+                    glow_color: Vec3::new(r, g, b),
+                    glow_radius: 1.2 - t*0.6,
+                    mass: 0.0, lifetime: 2.2,
+                    layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
+                    ..Default::default()
+                });
+            }
+
+            // Trail sparkles behind the projectile
+            for i in 0..15 {
+                let t = i as f32 / 15.0;
+                let delay = t * 0.3;
+                engine.spawn_glyph(Glyph {
+                    character: '.', scale: Vec2::splat(0.15),
+                    position: Vec3::new(from_x - (if player_attacks {1.0} else {-1.0}) * t * 0.5,
+                                       (h(spell_n as usize * 15 + i + 800, 0)-0.5)*0.4, 0.05),
+                    velocity: Vec3::new(if player_attacks {0.3} else {-0.3}, (h(spell_n as usize*15+i+800,1)-0.5)*0.3, 0.0),
+                    color: Vec4::new(r*0.5, g*0.5, b*0.5, 0.4),
+                    emission: 0.8, mass: 0.0, lifetime: 1.5,
                     layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
                     ..Default::default()
                 });
             }
         }
 
-        // Impact sparks 1.5s after spell
+        // Impact effect
         let since = time - last_spell;
-        if since > 1.5 && since < 1.5 + dt * 2.0 {
-            engine.add_trauma(0.2);
-            for i in 0..15 {
-                let a = (i as f32/15.0)*TAU;
-                let spd = 0.2 + h(spell_n as usize * 15 + i + 5000, 0) * 0.6;
+        let player_attacked = spell_n % 2 == 1;
+        let impact_x = if player_attacked { 3.2 } else { -3.2 };
+        if since > 1.3 && since < 1.3 + dt * 2.0 {
+            engine.add_trauma(0.3);
+
+            // Impact burst -- readable characters flying outward
+            let impact_chars = ['*', '+', 'x', '#', 'o', '='];
+            for i in 0..25 {
+                let a = (i as f32 / 25.0) * TAU;
+                let spd = 0.15 + h(spell_n as usize * 25 + i + 5000, 0) * 0.5;
+                let t = i as f32 / 25.0;
                 engine.spawn_glyph(Glyph {
-                    character: '*', scale: Vec2::splat(0.15),
-                    position: Vec3::new(3.5, 0.0, 0.1),
-                    velocity: Vec3::new(a.cos()*spd, a.sin()*spd, 0.0), // max 0.8 speed
-                    color: Vec4::new(1.0, 0.75, 0.25, 0.85), emission: 1.8,
-                    glow_color: Vec3::new(1.0, 0.5, 0.15), glow_radius: 0.6,
-                    mass: 0.0, lifetime: 1.0, // very short
+                    character: impact_chars[i % impact_chars.len()],
+                    scale: Vec2::splat(0.22),
+                    position: Vec3::new(impact_x, 0.0, 0.1),
+                    velocity: Vec3::new(a.cos()*spd, a.sin()*spd, 0.0),
+                    color: Vec4::new(1.0, 0.7+t*0.3, 0.2+t*0.3, 0.9),
+                    emission: 2.0,
+                    glow_color: Vec3::new(1.0, 0.6, 0.2),
+                    glow_radius: 0.8,
+                    mass: 0.0, lifetime: 1.2,
                     layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
+                    ..Default::default()
+                });
+            }
+
+            // Damage number flying up
+            let dmg_chars = if player_attacked { ['4','2'] } else { ['2','7'] };
+            for (di, &dc) in dmg_chars.iter().enumerate() {
+                engine.spawn_glyph(Glyph {
+                    character: dc, scale: Vec2::splat(0.5),
+                    position: Vec3::new(impact_x + di as f32 * 0.4, 0.5, 0.2),
+                    velocity: Vec3::new(0.0, 0.8, 0.0),
+                    color: Vec4::new(1.0, 0.3, 0.2, 1.0), emission: 2.0,
+                    mass: 0.0, lifetime: 1.5,
+                    layer: RenderLayer::Overlay, blend_mode: BlendMode::Additive,
                     ..Default::default()
                 });
             }
