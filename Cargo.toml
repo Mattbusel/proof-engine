@@ -87,3 +87,6 @@ name = "supernova"
 
 [[example]]
 name = "playground"
+
+[[example]]
+name = "showcase"
