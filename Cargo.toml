@@ -72,3 +72,15 @@ name = "strange_attractors"
 
 [[example]]
 name = "full_combat"
+
+[[example]]
+name = "galaxy"
+
+[[example]]
+name = "heartbeat"
+
+[[example]]
+name = "math_rain"
+
+[[example]]
+name = "supernova"
