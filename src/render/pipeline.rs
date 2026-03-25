@@ -233,6 +233,10 @@ pub struct Pipeline {
     mouse_pos_prev: Vec2,
     /// Normalized device coordinates (NDC) of the mouse cursor.
     mouse_ndc:      Vec2,
+
+    // ── Raw events for external consumers (egui) ────────────────────────────
+    /// Raw winit WindowEvents collected during poll_events, drained by consumers.
+    pub raw_window_events: Vec<winit::event::WindowEvent>,
 }
 
 impl Pipeline {
@@ -353,6 +357,7 @@ impl Pipeline {
             mouse_pos: Vec2::ZERO,
             mouse_pos_prev: Vec2::ZERO,
             mouse_ndc: Vec2::ZERO,
+            raw_window_events: Vec::new(),
         }
     }
 
@@ -373,6 +378,8 @@ impl Pipeline {
         let mut mouse_moved:     Option<(f64, f64)> = None;
         let mut mouse_buttons:   Vec<(MouseButton, bool)> = Vec::new();
         let mut scroll_delta:    f32 = 0.0;
+
+        self.raw_window_events.clear();
 
         #[allow(deprecated)]
         let status = self.event_loop.pump_events(Some(Duration::ZERO), |event, elwt| {

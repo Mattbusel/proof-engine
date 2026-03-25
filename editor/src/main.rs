@@ -52,7 +52,7 @@ fn main() {
     let mut egui_initialized = false;
     let mut egui_ctx = egui::Context::default();
     let mut egui_painter: Option<egui_glow::Painter> = None;
-    let mut egui_state: Option<egui_winit::State> = None;
+    
     let mut show_help = false;
 
     // Spawn editor grid
@@ -68,41 +68,71 @@ fn main() {
             fps_timer = 0.0;
         }
 
-        // Initialize egui on first frame (need GL context)
+        // Initialize egui painter on first frame
         if !egui_initialized {
-            // SAFETY: The glow context lives for the entire duration of the engine.
-            // We create a non-dropping Arc by leaking a clone of the Arc.
             let gl_arc: Arc<glow::Context> = unsafe {
                 let ptr = gl as *const glow::Context;
                 Arc::increment_strong_count(ptr);
                 Arc::from_raw(ptr)
             };
             let painter = egui_glow::Painter::new(
-                gl_arc,
-                "",
-                None,
-                false,
+                gl_arc, "", None, false,
             ).expect("Failed to create egui painter");
             egui_painter = Some(painter);
-
-            if let Some(window) = engine.window() {
-                let state = egui_winit::State::new(
-                    egui_ctx.clone(),
-                    egui::ViewportId::ROOT,
-                    window,
-                    None,
-                    None,
-                    None,
-                );
-                egui_state = Some(state);
-            }
-
             egui_initialized = true;
         }
 
-        // Run egui
-        if let (Some(painter), Some(state)) = (egui_painter.as_mut(), egui_state.as_mut()) {
-            let raw_input = state.take_egui_input(engine.window().unwrap());
+        // Build RawInput from engine's InputState (bypass egui-winit)
+        if let Some(painter) = egui_painter.as_mut() {
+            let (win_w, win_h) = engine.window_size();
+            let input = &engine.input;
+            let mut raw_input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(win_w as f32, win_h as f32),
+                )),
+                ..Default::default()
+            };
+
+            // Mouse position
+            raw_input.events.push(egui::Event::PointerMoved(
+                egui::pos2(input.mouse_x, input.mouse_y),
+            ));
+
+            // Mouse buttons
+            if input.mouse_left_just_pressed {
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos: egui::pos2(input.mouse_x, input.mouse_y),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+            }
+            if input.mouse_left_just_released {
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos: egui::pos2(input.mouse_x, input.mouse_y),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                });
+            }
+            if input.mouse_right_just_pressed {
+                raw_input.events.push(egui::Event::PointerButton {
+                    pos: egui::pos2(input.mouse_x, input.mouse_y),
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                });
+            }
+
+            // Scroll
+            if input.scroll_delta != 0.0 {
+                raw_input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, input.scroll_delta),
+                    modifiers: Default::default(),
+                });
+            }
             let full_output = egui_ctx.run(raw_input, |ctx| {
                 // ── Menu bar ──
                 egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -315,8 +345,7 @@ fn main() {
                 }
             });
 
-            // Handle egui output
-            state.handle_platform_output(engine.window().unwrap(), full_output.platform_output);
+            // Handle egui output (cursor changes etc — skip since we bypass egui-winit)
 
             // Paint egui
             let prims = egui_ctx.tessellate(full_output.shapes, egui_ctx.pixels_per_point());
