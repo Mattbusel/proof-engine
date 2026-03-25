@@ -122,49 +122,57 @@ pub fn simulate(
                 if civs.len() > 1 {
                     let target = rng.range_usize(0, civs.len());
                     if target != ci && civs[target].collapse_year.is_none() {
+                        let target_name = civs[target].name.clone();
+                        let target_id = civs[target].id;
+                        let ci_id = civs[ci].id;
                         civs[ci].historical_events.push(HistoricalEvent {
                             year: adjusted_year,
                             event_type: EventType::War,
-                            description: format!("War with {}", civs[target].name),
-                            participants: vec![civs[ci].id, civs[target].id],
+                            description: format!("War with {}", target_name),
+                            participants: vec![ci_id, target_id],
                         });
                     }
                 }
             } else if event_roll < 0.02 {
                 // Discovery
+                let cid = civs[ci].id;
                 civs[ci].technology_level += 0.05;
                 civs[ci].historical_events.push(HistoricalEvent {
                     year: adjusted_year,
                     event_type: EventType::Discovery,
                     description: "A great discovery was made".to_string(),
-                    participants: vec![civs[ci].id],
+                    participants: vec![cid],
                 });
             } else if event_roll < 0.025 {
                 // Plague
+                let cid = civs[ci].id;
                 civs[ci].population = (civs[ci].population as f64 * 0.7) as u64;
                 civs[ci].historical_events.push(HistoricalEvent {
                     year: adjusted_year,
                     event_type: EventType::Plague,
                     description: "A terrible plague swept the land".to_string(),
-                    participants: vec![civs[ci].id],
+                    participants: vec![cid],
                 });
             } else if event_roll < 0.03 {
                 // Golden age
+                let cid = civs[ci].id;
                 civs[ci].culture_score += 0.1;
                 civs[ci].historical_events.push(HistoricalEvent {
                     year: adjusted_year,
                     event_type: EventType::GoldenAge,
                     description: "A golden age of prosperity".to_string(),
-                    participants: vec![civs[ci].id],
+                    participants: vec![cid],
                 });
             } else if event_roll < 0.032 && civs[ci].population < 100 {
                 // Collapse
+                let cid = civs[ci].id;
+                let cname = civs[ci].name.clone();
                 civs[ci].collapse_year = Some(adjusted_year);
                 civs[ci].historical_events.push(HistoricalEvent {
                     year: adjusted_year,
                     event_type: EventType::Collapse,
-                    description: format!("The {} civilization collapsed", civs[ci].name),
-                    participants: vec![civs[ci].id],
+                    description: format!("The {} civilization collapsed", cname),
+                    participants: vec![cid],
                 });
             }
         }

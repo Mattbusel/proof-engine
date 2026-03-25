@@ -156,7 +156,8 @@ fn generate_prophecy(id: u32, civ: &Civilization, lang: Option<&Language>, rng: 
 
 fn myth_name(lang: Option<&Language>, rng: &mut Rng) -> String {
     if let Some(lang) = lang {
-        let word = lang.generate_word(rng, rng.range_usize(2, 4));
+        let syllables = rng.range_usize(2, 4);
+        let word = lang.generate_word(rng, syllables);
         capitalize(&word)
     } else {
         let syllables = ["Zar", "Keth", "Mor", "Ael", "Vor", "Thi", "Dra", "Nym"];
