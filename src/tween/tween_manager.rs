@@ -33,7 +33,6 @@ pub struct BarId(pub u32);
 // ── TweenTarget ─────────────────────────────────────────────────────────────
 
 /// What property an active tween drives.
-#[derive(Debug)]
 pub enum TweenTarget {
     // ── Glyph properties ────────────────────────────────────────────────
     GlyphPositionX(GlyphId),
@@ -292,6 +291,20 @@ impl TweenManager {
     }
 
     // ── Queries ─────────────────────────────────────────────────────────
+
+    /// Allocate a new ID and push a raw ActiveTween. Used by game_tweens presets.
+    pub fn push_raw(&mut self, target: TweenTarget, state: super::TweenState<f32>, delay: f32, tag: Option<String>, on_complete: Option<Box<dyn FnOnce(&mut TweenManager) + Send>>) -> TweenId {
+        let id = TweenId(self.next_id);
+        self.next_id += 1;
+        self.tweens.push(ActiveTween {
+            id, target, state,
+            delay_remaining: delay,
+            tag,
+            on_complete,
+            cancelled: false,
+        });
+        id
+    }
 
     /// Check if a tween is still active.
     pub fn is_active(&self, id: TweenId) -> bool {

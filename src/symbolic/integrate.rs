@@ -98,7 +98,7 @@ pub fn numerical_integrate(
     let mut sum = 0.0;
     let mut vars = std::collections::HashMap::new();
 
-    let f = |x: f64| -> f64 {
+    let mut f = |x: f64| -> f64 {
         vars.insert(var.to_string(), x);
         expr.eval(&vars)
     };

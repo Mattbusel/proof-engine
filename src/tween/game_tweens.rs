@@ -735,21 +735,16 @@ pub fn pulse_emission(
     period: f32,
 ) -> TweenId {
     // Use a yoyo tween for continuous pulsing.
-    let tween = Tween::new(min_emission, max_emission, period * 0.5, Easing::EaseInOutSine)
+    let tween = super::Tween::new(min_emission, max_emission, period * 0.5, Easing::EaseInOutSine)
         .with_repeat(-1, true);
     let state = super::TweenState::new(tween);
-    let id = TweenId(mgr.next_id);
-    mgr.next_id += 1;
-    mgr.tweens.push(super::tween_manager::ActiveTween {
-        id,
-        target: TweenTarget::GlyphEmission(glyph),
+    mgr.push_raw(
+        TweenTarget::GlyphEmission(glyph),
         state,
-        delay_remaining: 0.0,
-        tag: Some("pulse".to_string()),
-        on_complete: None,
-        cancelled: false,
-    });
-    id
+        0.0,
+        Some("pulse".to_string()),
+        None,
+    )
 }
 
 /// Text typewriter reveal: stagger alpha on each glyph.

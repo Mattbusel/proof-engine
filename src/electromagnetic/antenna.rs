@@ -1,7 +1,7 @@
 //! Antenna radiation patterns — Hertzian dipole, half-wave dipole,
 //! antenna arrays with beam steering, directivity, and gain.
 
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 use std::f32::consts::PI;
 
 /// Speed of light in normalized units.

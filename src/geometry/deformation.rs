@@ -41,7 +41,7 @@ impl Deformer {
                     let p = mesh.vertices[i];
                     let n = mesh.normals[i];
                     let scalar = func.evaluate(p.x + p.y + p.z, p.length());
-                    mesh.vertices[i] = p + n * scalar * amplitude;
+                    mesh.vertices[i] = p + n * scalar * *amplitude;
                 }
             }
             DeformField::Radial { center, amplitude, falloff } => {
@@ -49,7 +49,7 @@ impl Deformer {
                     let dir = *v - *center;
                     let dist = dir.length();
                     let weight = (-dist * falloff).exp();
-                    *v += dir.normalize_or_zero() * weight * amplitude;
+                    *v += dir.normalize_or_zero() * weight * *amplitude;
                 }
             }
             DeformField::Twist { axis, center, angle_per_unit } => {
@@ -99,7 +99,7 @@ impl Deformer {
                     let dir = *v - *center;
                     let dist = dir.length();
                     if dist > 1e-6 {
-                        let sphere_pos = *center + dir.normalize() * radius;
+                        let sphere_pos = *center + dir.normalize() * *radius;
                         *v = v.lerp(sphere_pos, *strength);
                     }
                 }
@@ -135,7 +135,7 @@ impl Deformer {
             DeformField::ForceFieldDisplace { field, scale, time } => {
                 for v in &mut mesh.vertices {
                     let force = field.force_at(*v, 1.0, 0.0, *time);
-                    *v += force * scale;
+                    *v += force * *scale;
                 }
             }
         }

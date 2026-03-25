@@ -150,11 +150,9 @@ impl HeadlessRenderer {
         let mut calls = Vec::new();
         for obj in &scene.objects {
             let vbuf = self.renderer.create_vertex_buffer(&obj.vertex_data);
-            let pipe = self.renderer.backend.create_pipeline(
-                self.renderer.backend.create_shader("headless_vert", ShaderStage::Vertex),
-                self.renderer.backend.create_shader("headless_frag", ShaderStage::Fragment),
-                &PipelineLayout::default(),
-            );
+            let vs = self.renderer.backend.create_shader("headless_vert", ShaderStage::Vertex);
+            let fs = self.renderer.backend.create_shader("headless_frag", ShaderStage::Fragment);
+            let pipe = self.renderer.backend.create_pipeline(vs, fs, &PipelineLayout::default());
             calls.push(DrawCall::new(pipe, vbuf, obj.vertex_count));
         }
 

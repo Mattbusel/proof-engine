@@ -281,7 +281,7 @@ pub fn alpha_decay_lifetime(z_daughter: u32, e_alpha_mev: f64, r_nucleus_fm: f64
     }
 
     // Gamow factor
-    let eta = z * e_sq * (2.0 * 931.5 * 4.0).sqrt() / (2.0 * 197.3); // dimensionless, approximate
+    let eta = z * e_sq * (2.0_f64 * 931.5 * 4.0).sqrt() / (2.0 * 197.3); // dimensionless, approximate
     let gamow = 2.0 * PI * eta / e.sqrt();
 
     // Simplified: T ~ exp(-G) where G is the Gamow factor
@@ -291,12 +291,12 @@ pub fn alpha_decay_lifetime(z_daughter: u32, e_alpha_mev: f64, r_nucleus_fm: f64
     let mu = 4.0 * 931.5; // reduced mass in MeV/c^2 (alpha on heavy nucleus)
     let hbar_c = 197.3; // MeV*fm
 
-    let g = (2.0 * mu).sqrt() / hbar_c
+    let g = (2.0_f64 * mu).sqrt() / hbar_c
         * 2.0 * z * e_sq
         * ((r_t / r_n).sqrt().acos() - (r_n / r_t * (1.0 - r_n / r_t)).sqrt())
         * r_t.sqrt();
 
-    let transmission = (-2.0 * g).exp();
+    let transmission = (-2.0_f64 * g).exp();
 
     // Frequency of alpha hitting barrier ~ v/R
     let v = (2.0 * e / mu).sqrt() * 3e23; // fm/s (very rough)

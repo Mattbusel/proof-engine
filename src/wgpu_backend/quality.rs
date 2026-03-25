@@ -313,11 +313,9 @@ pub fn run_benchmark(renderer: &mut MultiBackendRenderer, duration_secs: f32) ->
 
     // Create minimal resources for the benchmark.
     let vbuf = renderer.create_vertex_buffer(&[0u8; 48]);
-    let pipe = renderer.backend.create_pipeline(
-        renderer.backend.create_shader("v", ShaderStage::Vertex),
-        renderer.backend.create_shader("f", ShaderStage::Fragment),
-        &PipelineLayout::default(),
-    );
+    let vs = renderer.backend.create_shader("v", ShaderStage::Vertex);
+    let fs = renderer.backend.create_shader("f", ShaderStage::Fragment);
+    let pipe = renderer.backend.create_pipeline(vs, fs, &PipelineLayout::default());
     let pass = RenderPass::new();
     let call = DrawCall::new(pipe, vbuf, 3);
 

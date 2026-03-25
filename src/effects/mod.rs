@@ -3,19 +3,20 @@
 //!
 
 pub mod field_viz;
-//! # Architecture
-//!
-//! `EffectsController` owns all postfx parameter structs and drives them
-//! from high-level game events:
-//!   - `EffectEvent::CameraShake(trauma)` → screen shake + chromatic
-//!   - `EffectEvent::Explosion(pos, power)` → grain flash + bloom spike + distortion
-//!   - `EffectEvent::BossEnter` → full cinematic effect sequence
-//!   - `EffectEvent::PlayerDeath` → desaturation + darkening + vignette crush
-//!   - `EffectEvent::LevelUp` → hue rainbow + bloom burst
-//!   - `EffectEvent::ChaosRift(entropy)` → continuous chaos distortion
-//!
-//! The controller smoothly interpolates between effect states each frame.
-//! All parameters are exposed as public fields for direct access if needed.
+
+// # Architecture
+//
+// `EffectsController` owns all postfx parameter structs and drives them
+// from high-level game events:
+//   - `EffectEvent::CameraShake(trauma)` → screen shake + chromatic
+//   - `EffectEvent::Explosion(pos, power)` → grain flash + bloom spike + distortion
+//   - `EffectEvent::BossEnter` → full cinematic effect sequence
+//   - `EffectEvent::PlayerDeath` → desaturation + darkening + vignette crush
+//   - `EffectEvent::LevelUp` → hue rainbow + bloom burst
+//   - `EffectEvent::ChaosRift(entropy)` → continuous chaos distortion
+//
+// The controller smoothly interpolates between effect states each frame.
+// All parameters are exposed as public fields for direct access if needed.
 
 use crate::render::postfx::{
     bloom::BloomParams,

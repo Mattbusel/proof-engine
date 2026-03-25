@@ -130,7 +130,7 @@ pub fn radial_wavefunction(n: u32, l: u32, r: f64) -> f64 {
     let den = 2.0 * nf * factorial((n + l) as u64);
     let norm = ((2.0 / (nf * a0)).powi(3) * num / den).sqrt();
 
-    let laguerre = generalized_laguerre(n - l - 1, 2 * l as f64 + 1.0, rho);
+    let laguerre = generalized_laguerre(n - l - 1, 2.0 * l as f64 + 1.0, rho);
 
     norm * (-rho / 2.0).exp() * rho.powi(l as i32) * laguerre
 }

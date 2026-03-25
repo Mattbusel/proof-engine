@@ -178,7 +178,7 @@ impl MarkovChain {
 
         for _ in 0..max_iter {
             let mut new_m = vec![0.0; n];
-            let mut max_diff = 0.0;
+            let mut max_diff = 0.0_f64;
             for i in 0..n {
                 if i == to {
                     new_m[i] = 0.0;

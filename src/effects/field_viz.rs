@@ -364,13 +364,14 @@ impl FieldVisualizer {
             return;
         }
 
+        let config = self.config.clone();
         for point in &mut self.sample_points {
-            let visible = point.strength >= self.config.strength_threshold;
+            let visible = point.strength >= config.strength_threshold;
 
             if visible {
                 let arrow = direction_to_arrow(point.direction);
-                let color = self.compute_point_color(point);
-                let scale = self.compute_point_scale(point);
+                let color = compute_point_color_static(&config, point);
+                let scale = compute_point_scale_static(&config, point);
                 let emission = self.config.arrow_emission * (point.strength / 1.0).min(2.0);
 
                 if let Some(id) = point.glyph_id {
@@ -523,6 +524,38 @@ impl FieldVisualizer {
     pub fn max_strength(&self) -> f32 {
         self.sample_points.iter().map(|p| p.strength).fold(0.0f32, f32::max)
     }
+}
+
+/// Compute point color from config (free function to avoid borrow conflicts).
+fn compute_point_color_static(config: &FieldVizConfig, point: &SamplePoint) -> Vec4 {
+    let mut color = strength_to_color(point.strength);
+    if config.show_temperature && point.temperature > 0.1 {
+        let temp_color = temperature_to_color(point.temperature);
+        let t = (point.temperature * 0.5).min(0.7);
+        color = Vec4::new(
+            color.x * (1.0 - t) + temp_color.x * t,
+            color.y * (1.0 - t) + temp_color.y * t,
+            color.z * (1.0 - t) + temp_color.z * t,
+            color.w.max(temp_color.w),
+        );
+    }
+    if config.show_entropy && point.entropy > 0.1 {
+        let entropy_color = entropy_to_color(point.entropy);
+        let t = (point.entropy * 0.5).min(0.6);
+        color = Vec4::new(
+            color.x * (1.0 - t) + entropy_color.x * t,
+            color.y * (1.0 - t) + entropy_color.y * t,
+            color.z * (1.0 - t) + entropy_color.z * t,
+            color.w.max(entropy_color.w),
+        );
+    }
+    color
+}
+
+/// Compute point scale from config (free function to avoid borrow conflicts).
+fn compute_point_scale_static(config: &FieldVizConfig, point: &SamplePoint) -> f32 {
+    let base = 0.4 + point.strength.min(2.0) * 0.5;
+    base.min(config.max_arrow_scale)
 }
 
 // ── Shockwave Ring ──────────────────────────────────────────────────────────

@@ -583,17 +583,18 @@ impl GpuDevice for OpenGLDevice {
 
 /// A simple in-order queue that executes commands immediately.
 pub struct SimpleQueue {
-    pending_callbacks: Vec<Box<dyn FnOnce() + Send>>,
+    pending_callbacks: std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl SimpleQueue {
     pub fn new() -> Self {
-        Self { pending_callbacks: Vec::new() }
+        Self { pending_callbacks: std::sync::Mutex::new(Vec::new()) }
     }
 
     /// Flush all pending completion callbacks.
     pub fn flush(&mut self) {
-        for cb in self.pending_callbacks.drain(..) {
+        let mut cbs = self.pending_callbacks.lock().unwrap();
+        for cb in cbs.drain(..) {
             cb();
         }
     }
@@ -610,7 +611,7 @@ impl GpuQueue for SimpleQueue {
     }
 
     fn on_completion(&mut self, callback: Box<dyn FnOnce() + Send>) {
-        self.pending_callbacks.push(callback);
+        self.pending_callbacks.lock().unwrap().push(callback);
     }
 }
 
