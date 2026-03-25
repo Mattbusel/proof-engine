@@ -501,7 +501,7 @@ impl LyapunovFractal {
             let r = if self.sequence[i % seq_len] { b } else { a };
             x = r * x * (1.0 - x);
             let d = (r * (1.0 - 2.0 * x)).abs();
-            if d > 0.0 { lyap += d.ln(); }
+            lyap += d.max(1e-300).ln();
         }
         lyap / self.iterations as f64
     }

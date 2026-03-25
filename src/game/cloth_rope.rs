@@ -43,7 +43,7 @@ impl VerletPoint {
         let velocity = self.position - self.old_position;
         self.old_position = self.position;
         // Verlet: x_new = x + v + a * dt^2
-        self.position += velocity * 0.999 + self.acceleration * dt * dt;
+        self.position += velocity * 0.999 + self.acceleration * dt;
         self.acceleration = Vec3::ZERO;
     }
 
@@ -1659,6 +1659,9 @@ mod tests {
         cloth.apply_force(Vec3::new(0.0, -9.81, 0.0));
         cloth.step(0.016, 4);
         // Bottom points should have moved down
+        eprintln!("Point 12 y = {}", cloth.points[12].position.y);
+        eprintln!("Point 8 y = {}", cloth.points[8].position.y);
+        eprintln!("Point 4 y = {}", cloth.points[4].position.y);
         assert!(cloth.points[12].position.y < -0.5 * 3.0);
     }
 

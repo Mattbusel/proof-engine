@@ -534,7 +534,7 @@ impl PlayerInput {
     }
 
     pub fn deserialize(b: &[u8]) -> Option<Self> {
-        if b.len() < 29 { return None; }
+        if b.len() < 25 { return None; }
         let tick     = u64::from_be_bytes(b[0..8].try_into().ok()?);
         let mx       = f32::from_bits(u32::from_be_bytes(b[8..12].try_into().ok()?));
         let my       = f32::from_bits(u32::from_be_bytes(b[12..16].try_into().ok()?));

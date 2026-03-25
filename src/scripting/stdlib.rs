@@ -1714,7 +1714,9 @@ mod tests {
         let chunk  = Compiler::compile_script(&script);
         let mut vm = Vm::new();
         register_all(&mut vm);
-        vm.execute(chunk).expect("runtime error")
+        let result = vm.execute(chunk).expect("runtime error");
+        eprintln!("[DEBUG run] src={:?} => {:?}", src, result);
+        result
     }
 
     fn run_err(src: &str) -> String {

@@ -142,16 +142,16 @@ pub fn move_to(
             let delta = target - pos;
             let dist  = delta.length();
 
-            if dist <= arrival_radius {
+            if dist <= arrival_radius + 1e-4 {
                 return NodeStatus::Success;
             }
 
             let dir   = delta / dist;
-            let step  = (speed * dt).min(dist - arrival_radius);
+            let step  = (speed * dt).min(dist);
             let new_pos = pos + dir * step;
             bb.set(pos_key.as_str(), new_pos);
 
-            if (new_pos - target).length() <= arrival_radius {
+            if (new_pos - target).length() <= arrival_radius + 1e-4 {
                 NodeStatus::Success
             } else {
                 NodeStatus::Running

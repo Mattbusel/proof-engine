@@ -322,7 +322,7 @@ impl L10n {
         map.parse_from_str(data);
     }
 
-    pub fn get<'a>(&'a self, key: &str) -> &'a str {
+    pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         if let Some(map) = self.maps.get(&self.current) {
             if let Some(val) = map.get(key) {
                 return val;
@@ -333,7 +333,7 @@ impl L10n {
                 return val;
             }
         }
-        ""
+        key
     }
 
     pub fn fmt(&self, key: &str, args: &[(&str, &str)]) -> String {
@@ -846,7 +846,7 @@ impl UnicodeUtils {
                 result.push('_');
                 prev_upper = false;
             } else if ch.is_uppercase() {
-                if i > 0 && !prev_upper {
+                if i > 0 {
                     result.push('_');
                 }
                 for lower in ch.to_lowercase() {

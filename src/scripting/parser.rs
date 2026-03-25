@@ -19,11 +19,14 @@ impl fmt::Display for ParseError {
 pub struct Parser {
     tokens:  Vec<TokenWithSpan>,
     pos:     usize,
+    in_match_head: bool,
+    in_ternary: bool,
+    in_match_arm: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<TokenWithSpan>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, in_match_head: false, in_ternary: false, in_match_arm: false }
     }
 
     /// Convenience: lex + parse from source in one call.
@@ -244,20 +247,26 @@ impl Parser {
 
     fn parse_match(&mut self) -> Result<Stmt, ParseError> {
         self.advance();
+        self.in_match_head = true;
         let expr = self.parse_expr(0)?;
+        self.in_match_head = false;
         self.expect(&Token::LBrace)?;
         let mut arms = Vec::new();
         while !self.check(&Token::RBrace) && !self.check(&Token::Eof) {
             self.consume_if(&Token::Case);
             let pattern = self.parse_match_pattern()?;
-            self.expect(&Token::Arrow)?;
+            if !self.consume_if(&Token::FatArrow) { self.expect(&Token::Arrow)?; }
             let body = if self.check(&Token::LBrace) {
                 self.advance();
                 let b = self.parse_block()?;
                 self.expect(&Token::RBrace)?;
                 b
             } else {
-                vec![self.parse_stmt()?]
+                let old = self.in_match_arm;
+                self.in_match_arm = true;
+                let s = vec![self.parse_stmt()?];
+                self.in_match_arm = old;
+                s
             };
             arms.push(MatchArm { pattern, body });
             self.consume_if(&Token::Comma);
@@ -320,7 +329,7 @@ impl Parser {
 
     fn parse_expr_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut exprs = vec![self.parse_expr(0)?];
-        while self.consume_if(&Token::Comma) {
+        while !self.in_match_arm && self.consume_if(&Token::Comma) {
             exprs.push(self.parse_expr(0)?);
         }
         Ok(exprs)
@@ -365,6 +374,21 @@ impl Parser {
                 lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
             } else { break; }
         }
+        // Ternary: expr ? then_val : else_val
+        if self.check(&Token::Question) {
+            self.advance();
+            let old = self.in_ternary;
+            self.in_ternary = true;
+            let then_val = self.parse_expr(0)?;
+            self.in_ternary = old;
+            self.expect(&Token::Colon)?;
+            let else_val = self.parse_expr(0)?;
+            lhs = Expr::Ternary {
+                cond: Box::new(lhs),
+                then_val: Box::new(then_val),
+                else_val: Box::new(else_val),
+            };
+        }
         Ok(lhs)
     }
 
@@ -385,15 +409,14 @@ impl Parser {
                 Token::Dot => {
                     self.advance();
                     let name = self.expect_ident()?;
-                    // Check if method call
+                    expr = Expr::Field { table: Box::new(expr), name };
+                    // If followed by call args, it becomes a regular call (no self)
                     if self.check(&Token::LParen) {
                         let args = self.parse_args()?;
-                        expr = Expr::MethodCall { obj: Box::new(expr), method: name, args };
-                    } else {
-                        expr = Expr::Field { table: Box::new(expr), name };
+                        expr = Expr::Call { callee: Box::new(expr), args };
                     }
                 }
-                Token::Colon => {
+                Token::Colon if !self.in_ternary => {
                     self.advance();
                     let method = self.expect_ident()?;
                     let args = self.parse_args()?;
@@ -405,7 +428,11 @@ impl Parser {
                     self.expect(&Token::RBracket)?;
                     expr = Expr::Index { table: Box::new(expr), key: Box::new(key) };
                 }
-                Token::LParen | Token::LBrace | Token::Str(_) => {
+                Token::LParen | Token::Str(_) => {
+                    let args = self.parse_args()?;
+                    expr = Expr::Call { callee: Box::new(expr), args };
+                }
+                Token::LBrace if !self.in_match_head => {
                     let args = self.parse_args()?;
                     expr = Expr::Call { callee: Box::new(expr), args };
                 }

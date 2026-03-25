@@ -393,7 +393,7 @@ mod tests {
     fn camera_path_orbit() {
         let path = CameraPath::orbit(Vec3::ZERO, 5.0, 2.0, 10.0, 60.0);
         let pos = path.position();
-        let dist = pos.xz().length();
+        let dist = glam::Vec2::new(pos.x, pos.z).length();
         assert!((dist - 5.0).abs() < 0.5, "orbit radius should be ~5, got {dist}");
     }
 }

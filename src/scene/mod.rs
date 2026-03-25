@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn scene_fields() {
         let mut s = Scene::new();
-        let field = ForceField::gravity(Vec3::new(0.0, -9.81, 0.0));
+        let field = ForceField::Gravity { center: Vec3::ZERO, strength: 9.81, falloff: crate::math::Falloff::InverseSquare };
         let id = s.add_field(field);
         assert!(s.get_field(id).is_some());
         s.remove_field(id);

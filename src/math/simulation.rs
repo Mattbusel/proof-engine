@@ -808,6 +808,11 @@ pub fn from_state_vectors(r: Vec3, v: Vec3, mu: f64) -> OrbitalElements {
         let mut omega = (n.dot(e_vec) / (n_len * ecc)).clamp(-1.0, 1.0).acos();
         if e_vec.z < 0.0 { omega = 2.0 * PI - omega; }
         omega
+    } else if ecc > 1e-12 {
+        // Equatorial orbit: measure argument of periapsis from x-axis
+        let mut omega = (e_vec.x / ecc).clamp(-1.0, 1.0).acos();
+        if e_vec.y < 0.0 { omega = 2.0 * PI - omega; }
+        omega
     } else { 0.0 };
 
     let nu = if ecc > 1e-12 {

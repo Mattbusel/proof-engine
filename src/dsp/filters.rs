@@ -545,7 +545,7 @@ impl FirDesign {
         let m = (num_taps - 1) as f32 / 2.0;
         let mut coeffs: Vec<f32> = (0..num_taps).map(|n| {
             let x = n as f32 - m;
-            sinc(2.0 * high_norm * x) - sinc(2.0 * low_norm * x)
+            sinc(high_norm * x) - sinc(low_norm * x)
         }).collect();
         window.apply(&mut coeffs);
         // Normalize to peak unity at center frequency
@@ -634,7 +634,11 @@ impl Convolution {
     /// Linear convolution via FFT. O((N+M) log(N+M)).
     pub fn convolve(signal: &[f32], kernel: &[f32]) -> Vec<f32> {
         if signal.is_empty() || kernel.is_empty() { return Vec::new(); }
+        // For small inputs, direct convolution is exact and avoids FFT rounding.
         let out_len = signal.len() + kernel.len() - 1;
+        if out_len <= 64 {
+            return Self::convolve_direct(signal, kernel);
+        }
         let n = next_power_of_two(out_len);
         let mut a: Vec<Complex32> = signal.iter().map(|&x| Complex32::new(x, 0.0)).collect();
         a.resize(n, Complex32::zero());
@@ -868,7 +872,7 @@ impl AllpassDelay {
         let n = self.delay_line.len();
         let read_pos = (self.write_pos + n - self.delay_samples) % n;
         let buf = self.delay_line[read_pos];
-        let out = -x + buf;
+        let out = -self.feedback * x + buf;
         self.delay_line[self.write_pos] = x + self.feedback * buf;
         self.write_pos = (self.write_pos + 1) % n;
         out

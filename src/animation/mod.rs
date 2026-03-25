@@ -24,6 +24,7 @@
 //! ```
 
 pub mod ik;
+pub mod sprite_anim;
 
 use std::collections::HashMap;
 use crate::math::MathFunction;

@@ -783,7 +783,7 @@ impl GranularArtifacts {
         if self.stutter_counter > 0 {
             self.stutter_counter -= 1;
             out = self.last_sample;
-        } else if self.xorshift() < self.stutter_probability / SAMPLE_RATE * 100.0 {
+        } else if self.xorshift() < self.stutter_probability {
             self.stutter_length = (self.xorshift() * 2000.0) as u32 + 100;
             self.stutter_counter = self.stutter_length;
             self.last_sample = sample;

@@ -5,6 +5,9 @@
 
 pub mod batch;
 pub mod atlas;
+pub mod sdf_generator;
+pub mod sdf_atlas;
+pub mod sdf_batch;
 
 use glam::{Vec2, Vec3, Vec4};
 use crate::math::MathFunction;

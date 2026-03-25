@@ -133,7 +133,7 @@ pub trait Constraint: std::fmt::Debug {
     /// Baumgarte position bias.
     fn bias(&self, bodies: &HashMap<BodyHandle, BodyState>, dt: f32) -> f32 {
         let beta = 0.1;
-        -beta / dt * self.compute_c(bodies)
+        beta / dt * self.compute_c(bodies)
     }
     /// Prepare the constraint for the current step (pre-compute cached values).
     fn prepare(&mut self, _bodies: &HashMap<BodyHandle, BodyState>, _dt: f32) {}
@@ -285,7 +285,7 @@ impl ContactConstraint {
         // Normal
         let rel_vel = self.relative_velocity_at_contact(bodies);
         let vn = rel_vel.dot(self.normal);
-        let lambda_n = -(vn + self.bias) * self.eff_mass_n;
+        let lambda_n = -(vn - self.bias) * self.eff_mass_n;
         let prev_n = self.cached_normal;
         let new_n = (prev_n + lambda_n).max(0.0);
         let actual_n = new_n - prev_n;
@@ -525,11 +525,21 @@ impl HingeConstraint {
     }
 
     fn positional_effective_mass(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
+        let (pa, pb) = self.world_anchors(bodies);
+        let delta = pb - pa;
+        let len = delta.length().max(1e-7);
+        let dir = delta / len;
         let ba = bodies.get(&self.body_a);
         let bb = bodies.get(&self.body_b);
         let im_a = ba.map(|b| b.inv_mass).unwrap_or(0.0);
         let im_b = bb.map(|b| b.inv_mass).unwrap_or(0.0);
-        let d = im_a + im_b;
+        let ii_a = ba.map(|b| b.inv_inertia).unwrap_or(0.0);
+        let ii_b = bb.map(|b| b.inv_inertia).unwrap_or(0.0);
+        let ra = ba.map(|b| pa - b.position).unwrap_or(Vec2::ZERO);
+        let rb = bb.map(|b| pb - b.position).unwrap_or(Vec2::ZERO);
+        let rda = cross2(ra, dir);
+        let rdb = cross2(rb, dir);
+        let d = im_a + im_b + ii_a * rda * rda + ii_b * rdb * rdb;
         if d < 1e-10 { 0.0 } else { 1.0 / d }
     }
 
@@ -616,11 +626,14 @@ impl Constraint for HingeConstraint {
 
     fn compute_cdot(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
         let (pa, pb) = self.world_anchors(bodies);
+        let delta = pb - pa;
+        let len = delta.length().max(1e-7);
+        let dir = delta / len;
         let ba = bodies.get(&self.body_a);
         let bb = bodies.get(&self.body_b);
         let va = ba.map(|b| b.velocity + perp(pa - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
         let vb = bb.map(|b| b.velocity + perp(pb - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
-        (vb - va).length()
+        (vb - va).dot(dir)
     }
 
     fn compute_c(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
@@ -736,9 +749,12 @@ impl BallSocketConstraint {
 impl Constraint for BallSocketConstraint {
     fn compute_cdot(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
         let (pa, pb) = self.world_anchors(bodies);
+        let delta = pb - pa;
+        let len = delta.length().max(1e-7);
+        let dir = delta / len;
         let va = bodies.get(&self.body_a).map(|b| b.velocity + perp(pa - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
         let vb = bodies.get(&self.body_b).map(|b| b.velocity + perp(pb - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
-        (vb - va).length()
+        (vb - va).dot(dir)
     }
 
     fn compute_c(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
@@ -1004,9 +1020,12 @@ impl WeldConstraint {
 impl Constraint for WeldConstraint {
     fn compute_cdot(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
         let (pa, pb) = self.world_anchors(bodies);
+        let delta = pb - pa;
+        let len = delta.length().max(1e-7);
+        let dir = delta / len;
         let va = bodies.get(&self.body_a).map(|b| b.velocity + perp(pa - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
         let vb = bodies.get(&self.body_b).map(|b| b.velocity + perp(pb - b.position) * b.angular_velocity).unwrap_or(Vec2::ZERO);
-        (vb - va).length()
+        (vb - va).dot(dir)
     }
 
     fn compute_c(&self, bodies: &HashMap<BodyHandle, BodyState>) -> f32 {
@@ -1230,7 +1249,7 @@ impl Constraint for SpringConstraint {
     }
 
     fn bias(&self, bodies: &HashMap<BodyHandle, BodyState>, dt: f32) -> f32 {
-        -self.stiffness * self.compute_c(bodies) / dt
+        self.stiffness * self.compute_c(bodies) / dt
     }
 
     fn apply_impulse(&self, bodies: &mut HashMap<BodyHandle, BodyState>, lambda: f32) {
@@ -1299,7 +1318,7 @@ impl Constraint for PinConstraint {
         let b = match bodies.get_mut(&self.body) { Some(b) => b, None => return };
         let pa = b.position + rotate2(self.local_anchor, b.angle);
         let dir = (pa - self.world_target).normalize_or_zero();
-        b.apply_impulse(-dir * lambda, pa - b.position);
+        b.apply_impulse(dir * lambda, pa - b.position);
     }
 
     fn accumulated_impulse(&self) -> f32 { self.accumulated }
@@ -1339,7 +1358,7 @@ impl Constraint for MotorConstraint {
 
     fn apply_impulse(&self, bodies: &mut HashMap<BodyHandle, BodyState>, lambda: f32) {
         if let Some(b) = bodies.get_mut(&self.body) {
-            b.angular_velocity -= lambda * b.inv_inertia;
+            b.angular_velocity += lambda * b.inv_inertia;
         }
     }
 
@@ -1386,8 +1405,8 @@ impl Constraint for GearConstraint {
     }
 
     fn apply_impulse(&self, bodies: &mut HashMap<BodyHandle, BodyState>, lambda: f32) {
-        if let Some(b) = bodies.get_mut(&self.body_a) { b.apply_angular_impulse(-lambda); }
-        if let Some(b) = bodies.get_mut(&self.body_b) { b.apply_angular_impulse(-lambda * self.ratio); }
+        if let Some(b) = bodies.get_mut(&self.body_a) { b.apply_angular_impulse(lambda); }
+        if let Some(b) = bodies.get_mut(&self.body_b) { b.apply_angular_impulse(lambda * self.ratio); }
     }
 
     fn accumulated_impulse(&self) -> f32 { self.accumulated }
@@ -1730,6 +1749,9 @@ impl ConstraintWorld {
             self.solver.solve_xpbd(&mut self.bodies, &mut self.constraints, dt);
         } else {
             // SI path
+            self.solver.solve(&mut self.bodies, &mut self.constraints, dt);
+            self.solver.solve_positions(&mut self.bodies, &mut self.constraints, dt);
+
             // Integrate velocities to positions
             for body in self.bodies.values_mut() {
                 if !body.is_static() {
@@ -1737,9 +1759,6 @@ impl ConstraintWorld {
                     body.angle    += body.angular_velocity * dt;
                 }
             }
-
-            self.solver.solve(&mut self.bodies, &mut self.constraints, dt);
-            self.solver.solve_positions(&mut self.bodies, &mut self.constraints, dt);
         }
     }
 

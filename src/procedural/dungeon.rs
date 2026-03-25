@@ -835,6 +835,8 @@ impl MazeGenerator {
         let opp = [1usize, 0, 3, 2];
         cells[a].walls[dir]      = false;
         cells[b].walls[opp[dir]] = false;
+        cells[a].visited = true;
+        cells[b].visited = true;
     }
 
     fn nbrs(&self, x: usize, y: usize) -> Vec<(usize, usize, usize)> {

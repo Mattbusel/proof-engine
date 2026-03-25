@@ -400,8 +400,10 @@ impl Cooldown {
 impl BtNode for Cooldown {
     fn name(&self) -> &str { "Cooldown" }
     fn tick(&mut self, bb: &mut Blackboard, dt: f32) -> BtStatus {
-        self.timer = (self.timer - dt).max(0.0);
-        if self.timer > 0.0 { return BtStatus::Failure; }
+        if self.timer > 0.0 {
+            self.timer = (self.timer - dt).max(0.0);
+            return BtStatus::Failure;
+        }
         let status = self.child.tick(bb, dt);
         if status == BtStatus::Success {
             self.timer = self.cooldown;
@@ -706,10 +708,7 @@ impl UtilityAI {
         // Execute current action
         if let Some(idx) = self.current_action {
             let bb = &mut self.bb;
-            let done = self.actions[idx].execute(bb, dt);
-            if done {
-                self.current_action = None;
-            }
+            self.actions[idx].execute(bb, dt);
         }
     }
 

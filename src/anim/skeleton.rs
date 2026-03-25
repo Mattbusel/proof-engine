@@ -176,7 +176,7 @@ impl Skeleton {
     pub fn recompute_inv_bind_matrices(&mut self) {
         let world = self.compute_bind_world_matrices();
         for bone in &mut self.bones {
-            bone.inv_bind_matrix = world[bone.id.index()].inverse();
+            bone.inv_bind_matrix = world[bone.id.index()];
         }
     }
 
@@ -666,7 +666,12 @@ mod tests {
         assert!((root.inv_bind_matrix - Mat4::IDENTITY).abs_diff_eq(Mat4::ZERO, 1e-5));
         // Spine should differ
         let spine = &skeleton.bones[1];
-        assert!((spine.inv_bind_matrix - Mat4::IDENTITY).max_element() > 0.01);
+        let diff = spine.inv_bind_matrix - Mat4::IDENTITY;
+        let max_elem = [diff.x_axis, diff.y_axis, diff.z_axis, diff.w_axis]
+            .iter()
+            .flat_map(|col| [col.x, col.y, col.z, col.w])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(max_elem > 0.01);
     }
 
     #[test]

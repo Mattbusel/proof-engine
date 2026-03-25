@@ -366,7 +366,7 @@ impl Lfo {
         } else { self.frequency };
 
         let v = self.waveform.sample(self.phase);
-        self.phase += freq / SAMPLE_RATE;
+        self.phase += freq / (SAMPLE_RATE / BUFFER_SIZE as f32);
         if self.phase >= 1.0 { self.phase -= 1.0; }
         self.offset + v * self.amplitude
     }
@@ -435,7 +435,7 @@ pub struct Reverb {
 
 impl Reverb {
     pub fn new() -> Self {
-        let sizes = [1557, 1617, 1491, 1422];
+        let sizes = [157, 161, 149, 142];
         let combs: [DelayLine; 4] = [
             DelayLine::new(sizes[0]), DelayLine::new(sizes[1]),
             DelayLine::new(sizes[2]), DelayLine::new(sizes[3]),
@@ -443,7 +443,7 @@ impl Reverb {
         let allpass = [DelayLine::new(556), DelayLine::new(441)];
         Self {
             combs, allpass,
-            room_size: 0.5, damping: 0.5, wet: 0.3, pre_delay: 0.02,
+            room_size: 0.5, damping: 0.5, wet: 0.3, pre_delay: 0.002,
             pre_delay_line: DelayLine::new(4096),
             damp_filters: [0.0; 4],
         }

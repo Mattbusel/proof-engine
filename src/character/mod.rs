@@ -148,7 +148,7 @@ impl CharacterRelationship {
             i32::MIN..=-500 => CharacterRelationship::Hostile,
             -499..=-100 => CharacterRelationship::Feared,
             -99..=99 => CharacterRelationship::Neutral,
-            100..=499 => CharacterRelationship::Neutral,
+            100..=499 => CharacterRelationship::Allied,
             500..=999 => CharacterRelationship::Allied,
             _ => CharacterRelationship::Worshipped,
         }
@@ -931,6 +931,10 @@ impl CharacterRegistry {
         let id = if bundle.id.0 == 0 {
             self.next_id()
         } else {
+            // Ensure next_id stays ahead of manually-assigned ids.
+            if bundle.id.0 >= self.next_id {
+                self.next_id = bundle.id.0 + 1;
+            }
             bundle.id
         };
         let character = bundle.build(id);

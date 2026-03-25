@@ -1388,8 +1388,19 @@ pub struct FontAsset {
 
 impl FontAsset {
     /// Look up a glyph, falling back to the replacement character `'?'`.
-    pub fn glyph(&self, ch: char) -> Option<&GlyphData> {
-        self.glyphs.get(&ch).or_else(|| self.glyphs.get(&'?'))
+    /// On the first miss the fallback glyph is lazily inserted into the map
+    /// so that subsequent lookups for the same character succeed directly.
+    pub fn glyph(&mut self, ch: char) -> Option<&GlyphData> {
+        if self.glyphs.contains_key(&ch) {
+            return self.glyphs.get(&ch);
+        }
+        // First miss — copy the fallback glyph into the map for next time,
+        // but return None for this call so callers can detect the miss.
+        if let Some(fallback) = self.glyphs.get(&'?').cloned() {
+            self.glyphs.insert(ch, fallback);
+            return None;
+        }
+        None
     }
 
     /// Number of glyphs loaded.

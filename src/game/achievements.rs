@@ -196,7 +196,6 @@ impl AchievementCondition {
             AchievementCondition::ReachLevel(n) => stats.max_level_reached >= *n,
             AchievementCondition::CollectItems(n) => stats.items_collected >= *n,
             AchievementCondition::BossKills(n) => stats.boss_kills >= *n,
-            AchievementCondition::WinWithoutDamage => stats.damage_taken == 0.0,
             _ => false, // Conditions requiring external context return false here
         }
     }
@@ -424,7 +423,7 @@ impl AchievementNotification {
             }
             NotificationState::Holding => {
                 self.timer += dt;
-                if self.timer >= 3.0 {
+                if self.timer >= 4.0 {
                     self.state = NotificationState::SlidingOut;
                     self.timer = 0.0;
                 }
@@ -746,7 +745,6 @@ impl ProgressionState {
     pub fn can_unlock(&self, tree: &ProgressionTree, node_id: &str) -> bool {
         if self.unlocked.contains(node_id) { return false; }
         if let Some(node) = tree.node_by_id(node_id) {
-            if self.currency < node.cost { return false; }
             for req in &node.requires {
                 if !self.unlocked.contains(req) { return false; }
             }

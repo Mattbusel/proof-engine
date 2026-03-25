@@ -15,6 +15,7 @@ pub mod dungeon;
 pub mod music;
 pub mod animation;
 pub mod bosses;
+pub mod transitions;
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};

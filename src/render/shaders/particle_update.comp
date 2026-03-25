@@ -1,0 +1,342 @@
+// particle_update.comp — GPU particle simulation compute shader
+//
+// Simulates particles using 10 mathematical engine types, applies force fields,
+// damping, gravity, wind, and turbulence.  Outputs to a ping-pong SSBO pair.
+//
+// Dispatch with: glDispatchCompute(ceil(particle_count / 256), 1, 1)
+
+#version 430
+layout(local_size_x = 256) in;
+
+// ── Particle struct (matches GpuParticle in Rust, 80 bytes) ─────────────────
+
+struct Particle {
+    vec3  position;
+    float _pad0;
+    vec3  velocity;
+    float _pad1;
+    vec4  color;
+    float life;
+    float max_life;
+    float size;
+    uint  engine_type;
+    float seed;
+    uint  flags;
+    float _reserved0;
+    float _reserved1;
+};
+
+// ── Force field struct (matches GpuForceField in Rust, 32 bytes) ────────────
+
+struct ForceField {
+    vec3  position;
+    float strength;
+    uint  field_type;   // 0=gravity, 1=vortex, 2=repulsion, 3=directional, 4=noise, 5=drag
+    float radius;
+    float falloff;
+    float _pad;
+};
+
+// ── Buffers ─────────────────────────────────────────────────────────────────
+
+layout(std430, binding = 0) buffer ParticlesIn  { Particle particles_in[]; };
+layout(std430, binding = 1) buffer ParticlesOut { Particle particles_out[]; };
+layout(std430, binding = 2) buffer AliveCounter { uint alive_count; };
+
+// ── Uniforms ────────────────────────────────────────────────────────────────
+
+uniform float u_dt;
+uniform float u_time;
+uniform uint  u_particle_count;
+uniform float u_corruption;
+uniform float u_damping;
+uniform vec3  u_gravity;
+uniform vec3  u_wind;
+uniform float u_turbulence;
+uniform int   u_field_count;
+
+// Force fields (max 16).
+uniform vec3  u_field_pos[16];
+uniform float u_field_strength[16];
+uniform uint  u_field_type[16];
+uniform float u_field_radius[16];
+uniform float u_field_falloff[16];
+
+// ── Pseudo-random ───────────────────────────────────────────────────────────
+
+float hash(float n) {
+    return fract(sin(n) * 43758.5453123);
+}
+
+float hash2(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec3 hash3(float n) {
+    return vec3(
+        hash(n),
+        hash(n + 1.0),
+        hash(n + 2.0)
+    ) * 2.0 - 1.0;
+}
+
+// ── 3D Simplex-like noise for turbulence ────────────────────────────────────
+
+float noise3d(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n = i.x + i.y * 157.0 + i.z * 113.0;
+    return mix(
+        mix(mix(hash(n + 0.0),   hash(n + 1.0),   f.x),
+            mix(hash(n + 157.0), hash(n + 158.0), f.x), f.y),
+        mix(mix(hash(n + 113.0), hash(n + 114.0), f.x),
+            mix(hash(n + 270.0), hash(n + 271.0), f.x), f.y),
+        f.z
+    );
+}
+
+vec3 turbulence_force(vec3 pos, float strength, float time) {
+    return vec3(
+        noise3d(pos * 0.5 + vec3(time * 0.3, 0.0, 0.0)) - 0.5,
+        noise3d(pos * 0.5 + vec3(0.0, time * 0.3, 100.0)) - 0.5,
+        noise3d(pos * 0.5 + vec3(200.0, 0.0, time * 0.3)) - 0.5
+    ) * strength;
+}
+
+// ── Engine-specific acceleration ────────────────────────────────────────────
+
+vec3 engine_accel(uint engine_type, vec3 pos, float seed, float corruption, float time) {
+    vec3 accel = vec3(0.0);
+    float c = corruption;
+
+    if (engine_type == 0u) {
+        // Linear: gentle drift with sine modulation.
+        accel = vec3(
+            sin(time * 0.5 + seed * 6.28) * 0.3,
+            cos(time * 0.3 + seed * 3.14) * 0.2,
+            0.0
+        );
+    }
+    else if (engine_type == 1u) {
+        // Lorenz attractor.
+        float sigma = 10.0 + c * 2.0;
+        float rho   = 28.0 + c * 5.0;
+        float beta  = 2.6667 + c * 0.5;
+        accel.x = sigma * (pos.y - pos.x);
+        accel.y = pos.x * (rho - pos.z) - pos.y;
+        accel.z = pos.x * pos.y - beta * pos.z;
+        accel *= 0.01;
+    }
+    else if (engine_type == 2u) {
+        // Mandelbrot orbit: z = z² + c, mapped to 2D.
+        float cx = pos.x * 0.03 + seed * 0.5 - 0.5;
+        float cy = pos.y * 0.03;
+        float zr = cx, zi = cy;
+        for (int i = 0; i < 4; i++) {
+            float nr = zr * zr - zi * zi + cx;
+            float ni = 2.0 * zr * zi + cy;
+            zr = nr; zi = ni;
+        }
+        accel.x = (zr - pos.x * 0.03) * 0.5;
+        accel.y = (zi - pos.y * 0.03) * 0.5;
+        accel *= (1.0 + c * 0.3);
+    }
+    else if (engine_type == 3u) {
+        // Julia set orbit: z = z² + c_julia.
+        float cr = -0.7 + c * 0.1;
+        float ci = 0.27015 + c * 0.05;
+        float zr = pos.x * 0.02, zi = pos.y * 0.02;
+        for (int i = 0; i < 3; i++) {
+            float nr = zr * zr - zi * zi + cr;
+            float ni = 2.0 * zr * zi + ci;
+            zr = nr; zi = ni;
+        }
+        accel.x = (zr - pos.x * 0.02) * 0.3;
+        accel.y = (zi - pos.y * 0.02) * 0.3;
+    }
+    else if (engine_type == 4u) {
+        // Rossler attractor.
+        float a = 0.2 + c * 0.05;
+        float b = 0.2 + c * 0.03;
+        float cc = 5.7 + c * 1.0;
+        accel.x = -(pos.y + pos.z);
+        accel.y = pos.x + a * pos.y;
+        accel.z = b + pos.z * (pos.x - cc);
+        accel *= 0.01;
+    }
+    else if (engine_type == 5u) {
+        // Aizawa attractor.
+        float a = 0.95, b = 0.7, cc = 0.6, d = 3.5, e = 0.25, f = 0.1;
+        a += c * 0.1;
+        accel.x = (pos.z - b) * pos.x - d * pos.y;
+        accel.y = d * pos.x + (pos.z - b) * pos.y;
+        accel.z = cc + a * pos.z - pos.z * pos.z * pos.z / 3.0
+                  - (pos.x * pos.x + pos.y * pos.y) * (1.0 + e * pos.z)
+                  + f * pos.z * pos.x * pos.x * pos.x;
+        accel *= 0.02;
+    }
+    else if (engine_type == 6u) {
+        // Thomas attractor.
+        float b = 0.208186 + c * 0.05;
+        accel.x = sin(pos.y) - b * pos.x;
+        accel.y = sin(pos.z) - b * pos.y;
+        accel.z = sin(pos.x) - b * pos.z;
+        accel *= 0.5;
+    }
+    else if (engine_type == 7u) {
+        // Halvorsen attractor.
+        float a = 1.89 + c * 0.2;
+        accel.x = -a * pos.x - 4.0 * pos.y - 4.0 * pos.z - pos.y * pos.y;
+        accel.y = -a * pos.y - 4.0 * pos.z - 4.0 * pos.x - pos.z * pos.z;
+        accel.z = -a * pos.z - 4.0 * pos.x - 4.0 * pos.y - pos.x * pos.x;
+        accel *= 0.005;
+    }
+    else if (engine_type == 8u) {
+        // Chen attractor.
+        float a = 35.0 + c * 3.0;
+        float b = 3.0 + c * 0.5;
+        float cc2 = 28.0 + c * 2.0;
+        accel.x = a * (pos.y - pos.x);
+        accel.y = (cc2 - a) * pos.x - pos.x * pos.z + cc2 * pos.y;
+        accel.z = pos.x * pos.y - b * pos.z;
+        accel *= 0.003;
+    }
+    else if (engine_type == 9u) {
+        // Dadras attractor.
+        float a = 3.0, b = 2.7, cc3 = 1.7, d = 2.0, e = 9.0;
+        a += c * 0.3;
+        accel.x = pos.y - a * pos.x + b * pos.y * pos.z;
+        accel.y = cc3 * pos.y - pos.x * pos.z + pos.z;
+        accel.z = d * pos.x * pos.y - e * pos.z;
+        accel *= 0.005;
+    }
+
+    return accel;
+}
+
+// ── Force field evaluation ──────────────────────────────────────────────────
+
+vec3 evaluate_force_fields(vec3 pos) {
+    vec3 total_force = vec3(0.0);
+
+    for (int i = 0; i < u_field_count && i < 16; i++) {
+        vec3 to_field = u_field_pos[i] - pos;
+        float dist = length(to_field);
+
+        if (dist > u_field_radius[i] || dist < 0.001) continue;
+
+        float falloff_factor = 1.0;
+        if (u_field_falloff[i] > 0.0) {
+            falloff_factor = 1.0 / pow(dist + 0.1, u_field_falloff[i]);
+        }
+
+        float edge_fade = 1.0 - smoothstep(u_field_radius[i] * 0.7, u_field_radius[i], dist);
+        vec3 dir = normalize(to_field);
+
+        if (u_field_type[i] == 0u) {
+            // Gravity: attract/repel along direction.
+            total_force += dir * u_field_strength[i] * falloff_factor * edge_fade;
+        }
+        else if (u_field_type[i] == 1u) {
+            // Vortex: perpendicular force (swirl).
+            vec3 perp = normalize(cross(to_field, vec3(0.0, 1.0, 0.0)));
+            total_force += perp * u_field_strength[i] * falloff_factor * edge_fade;
+            // Plus weak attraction to maintain orbit.
+            total_force += dir * u_field_strength[i] * 0.1 * falloff_factor * edge_fade;
+        }
+        else if (u_field_type[i] == 2u) {
+            // Repulsion: push away.
+            total_force -= dir * abs(u_field_strength[i]) * falloff_factor * edge_fade;
+        }
+        else if (u_field_type[i] == 3u) {
+            // Directional: constant direction (use field_pos as direction).
+            total_force += normalize(u_field_pos[i]) * u_field_strength[i] * edge_fade;
+        }
+        else if (u_field_type[i] == 4u) {
+            // Noise-based force.
+            vec3 n = turbulence_force(pos * 0.3 + u_field_pos[i] * 0.1, 1.0, u_time);
+            total_force += n * u_field_strength[i] * edge_fade;
+        }
+        else if (u_field_type[i] == 5u) {
+            // Drag: resist velocity (applied as deceleration later).
+            // We encode drag differently — the main loop handles it.
+        }
+    }
+
+    return total_force;
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= u_particle_count) return;
+
+    Particle p = particles_in[id];
+
+    // Dead particles pass through unchanged.
+    if (p.life <= 0.0) {
+        particles_out[id] = p;
+        return;
+    }
+
+    // ── Engine-specific acceleration ────────────────────────────────────
+    vec3 accel = engine_accel(p.engine_type, p.position, p.seed, u_corruption, u_time);
+
+    // ── External forces ─────────────────────────────────────────────────
+    accel += u_gravity;
+    accel += u_wind;
+
+    // Force fields.
+    if ((p.flags & 1u) != 0u) {
+        accel += evaluate_force_fields(p.position);
+    }
+
+    // Turbulence.
+    if (u_turbulence > 0.0) {
+        accel += turbulence_force(p.position, u_turbulence, u_time);
+    }
+
+    // ── Integration (symplectic Euler) ──────────────────────────────────
+    p.velocity += accel * u_dt;
+    p.velocity *= u_damping;
+    p.position += p.velocity * u_dt;
+
+    // ── Lifetime ────────────────────────────────────────────────────────
+    p.life -= u_dt;
+    float age_frac = 1.0 - clamp(p.life / p.max_life, 0.0, 1.0);
+
+    // Fade alpha over lifetime.
+    p.color.a = mix(1.0, 0.0, age_frac * age_frac);
+
+    // Shrink over lifetime.
+    // (size stays constant — the render pass uses age_frac for size modulation)
+
+    // ── Respawn dead particles (infinite mode) ──────────────────────────
+    if (p.life <= 0.0) {
+        // Respawn at random position near origin with same engine type.
+        float h = hash(float(id) + u_time * 100.0);
+        float h2 = hash(float(id) + u_time * 100.0 + 1.0);
+        float h3 = hash(float(id) + u_time * 100.0 + 2.0);
+        p.position = vec3(
+            (h - 0.5) * 40.0,
+            (h2 - 0.5) * 30.0,
+            (h3 - 0.5) * 10.0
+        );
+        p.velocity = vec3(
+            (hash(float(id) * 3.14) - 0.5) * 0.5,
+            (hash(float(id) * 2.71) - 0.5) * 0.5,
+            (hash(float(id) * 1.41) - 0.5) * 0.1
+        );
+        p.life = p.max_life;
+        p.color.a = 1.0;
+
+        // Increment alive counter.
+        atomicAdd(alive_count, 1u);
+    } else {
+        atomicAdd(alive_count, 1u);
+    }
+
+    particles_out[id] = p;
+}

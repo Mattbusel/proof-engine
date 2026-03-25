@@ -10,5 +10,8 @@ pub mod lighting;
 #[path = "compute/mod.rs"] pub mod compute;
 pub mod render_graph;
 pub mod pbr;
+pub mod ui_layer;
+pub mod ui_layer_renderer;
+pub mod ui_primitives;
 
 pub use pipeline::Pipeline;

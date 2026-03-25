@@ -57,14 +57,19 @@ impl Pcg32 {
 
 impl Rng for Pcg32 {
     fn next_u64(&mut self) -> u64 {
+        let lo = self.next_u32() as u64;
+        let hi = self.next_u32() as u64;
+        lo | (hi << 32)
+    }
+
+    fn next_u32(&mut self) -> u32 {
         let old_state = self.state;
         self.state = old_state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(self.inc);
-        let xorshifted = ((old_state >> 18) ^ old_state) >> 27;
+        let xorshifted = (((old_state >> 18) ^ old_state) >> 27) as u32;
         let rot = (old_state >> 59) as u32;
-        let result32 = xorshifted.rotate_right(rot) as u32;
-        (result32 as u64) | ((result32 as u64) << 32)
+        xorshifted.rotate_right(rot)
     }
 }
 

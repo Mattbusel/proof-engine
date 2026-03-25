@@ -25,11 +25,11 @@ const TWO_PI: f32 = 2.0 * PI;
 #[inline]
 pub fn cubic_kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
-    let sigma = 8.0 / (PI * h * h * h);
-    if q <= 0.5 {
-        sigma * (6.0 * q * q * q - 6.0 * q * q + 1.0)
-    } else if q <= 1.0 {
-        sigma * 2.0 * (1.0 - q).powi(3)
+    let sigma = 1.0 / (PI * h * h * h);
+    if q <= 1.0 {
+        sigma * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
+    } else if q <= 2.0 {
+        sigma * 0.25 * (2.0 - q).powi(3)
     } else {
         0.0
     }
@@ -39,11 +39,11 @@ pub fn cubic_kernel(r: f32, h: f32) -> f32 {
 #[inline]
 pub fn cubic_kernel_grad(r: f32, h: f32) -> f32 {
     let q = r / h;
-    let sigma = 8.0 / (PI * h * h * h * h);  // extra /h for derivative
-    if q <= 0.5 {
-        sigma * (18.0 * q * q - 12.0 * q)
-    } else if q <= 1.0 {
-        sigma * -6.0 * (1.0 - q).powi(2)
+    let sigma = 1.0 / (PI * h * h * h * h);  // extra /h for derivative
+    if q <= 1.0 {
+        sigma * (-3.0 * q + 2.25 * q * q)
+    } else if q <= 2.0 {
+        sigma * -0.75 * (2.0 - q).powi(2)
     } else {
         0.0
     }

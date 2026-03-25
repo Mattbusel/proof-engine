@@ -258,16 +258,16 @@ impl Envelope {
     pub fn note_on(&mut self, velocity: f32, sample_rate: f32) {
         self.velocity = velocity * self.velocity_scale + (1.0 - self.velocity_scale);
         self.stage = EnvStage::Attack;
-        self.attack_rate = 1.0 / (self.attack_ms * 0.001 * sample_rate).max(1.0);
-        self.decay_rate = (1.0 - self.sustain_level) / (self.decay_ms * 0.001 * sample_rate).max(1.0);
-        self.hold_samples = (self.hold_ms * 0.001 * sample_rate) as usize;
+        self.attack_rate = 1.0 / self.attack_ms.max(1.0);
+        self.decay_rate = (1.0 - self.sustain_level) / self.decay_ms.max(1.0);
+        self.hold_samples = self.hold_ms as usize;
         self.hold_counter = 0;
-        self.release_rate = self.level / (self.release_ms * 0.001 * sample_rate).max(1.0);
+        self.release_rate = self.level / self.release_ms.max(1.0);
     }
 
-    pub fn note_off(&mut self, sample_rate: f32) {
+    pub fn note_off(&mut self, _sample_rate: f32) {
         self.stage = EnvStage::Release;
-        self.release_rate = self.level / (self.release_ms * 0.001 * sample_rate).max(1.0);
+        self.release_rate = self.level / self.release_ms.max(1.0);
     }
 
     pub fn next_sample(&mut self) -> f32 {

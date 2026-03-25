@@ -946,6 +946,11 @@ impl FibonacciHydraState {
         self.heads.push(HydraHead::new(id_a, child_hp, depth + 1, Some(dead_head_id)));
         self.heads.push(HydraHead::new(id_b, child_hp, depth + 1, Some(dead_head_id)));
 
+        // Mark parent as already split so it cannot split again
+        if let Some(head) = self.heads.iter_mut().find(|h| h.id == dead_head_id) {
+            head.depth = self.max_depth;
+        }
+
         Some((id_a, id_b))
     }
 

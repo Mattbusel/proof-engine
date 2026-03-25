@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn test_instance_data() {
-        let mat = MaterialPresets::gold();
+        let mat = MaterialPreset::Gold.material();
         let transform = Mat4::IDENTITY;
         let instance = InstanceData::new(&transform, &mat);
 

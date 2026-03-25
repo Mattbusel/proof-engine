@@ -24,8 +24,8 @@ pub enum Token {
     Amp, Pipe, Tilde, ShiftLeft, ShiftRight, SlashSlash,
     EqEq, NotEq, Lt, LtEq, Gt, GtEq,
     Eq, PlusEq, MinusEq, StarEq, SlashEq,
-    DotDot, DotDotDot, Arrow,
-    Bang,
+    DotDot, DotDotDot, Arrow, FatArrow,
+    Bang, Question,
 
     // Delimiters
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
@@ -135,6 +135,16 @@ impl Lexer {
     fn read_number(&mut self, first: char) -> Token {
         let mut num = first.to_string();
         let mut is_float = false;
+        // Hex literal: 0x or 0X
+        if first == '0' && (self.peek() == Some('x') || self.peek() == Some('X')) {
+            self.advance(); // consume 'x'
+            let mut hex = String::new();
+            while let Some(c) = self.peek() {
+                if c.is_ascii_hexdigit() { hex.push(c); self.advance(); }
+                else { break; }
+            }
+            return Token::Int(i64::from_str_radix(&hex, 16).unwrap_or(0));
+        }
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() { num.push(c); self.advance(); }
             else if c == '.' && !is_float && self.peek2().map(|n| n.is_ascii_digit()).unwrap_or(false) {
@@ -219,7 +229,7 @@ impl Lexer {
                 '~' => { if self.peek() == Some('=') { self.advance(); Token::NotEq } else { Token::Tilde } }
                 '<' => { if self.peek() == Some('=') { self.advance(); Token::LtEq } else if self.peek() == Some('<') { self.advance(); Token::ShiftLeft } else { Token::Lt } }
                 '>' => { if self.peek() == Some('=') { self.advance(); Token::GtEq } else if self.peek() == Some('>') { self.advance(); Token::ShiftRight } else { Token::Gt } }
-                '=' => { if self.peek() == Some('=') { self.advance(); Token::EqEq } else { Token::Eq } }
+                '=' => { if self.peek() == Some('=') { self.advance(); Token::EqEq } else if self.peek() == Some('>') { self.advance(); Token::FatArrow } else { Token::Eq } }
                 '!' => { if self.peek() == Some('=') { self.advance(); Token::NotEq } else { Token::Bang } }
                 '.' => {
                     if self.peek() == Some('.') {
@@ -237,6 +247,7 @@ impl Lexer {
                 ']' => Token::RBracket,
                 ',' => Token::Comma,
                 ';' => Token::Semicolon,
+                '?' => Token::Question,
                 '\'' | '"' => Token::Str(self.read_string(ch)),
                 '`' => Token::Str(self.read_string('`')),
                 c if c.is_ascii_digit() => self.read_number(c),

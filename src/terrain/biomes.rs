@@ -1005,8 +1005,7 @@ mod tests {
     use crate::terrain::heightmap::DiamondSquare;
 
     fn make_test_heightmap() -> HeightMap {
-        let ds = DiamondSquare::new(42, 0.5);
-        ds.generate(33)
+        DiamondSquare::generate(32, 0.5, 42)
     }
 
     #[test]

@@ -957,8 +957,7 @@ mod tests {
 
     #[test]
     fn test_collision_hull_height() {
-        let ds = crate::terrain::heightmap::DiamondSquare::new(7, 0.5);
-        let hm = ds.generate(9);
+        let hm = crate::terrain::heightmap::DiamondSquare::generate(8, 0.5, 7);
         let hull = CollisionHull::generate(&hm, 64.0, 50.0, 8);
         let h = hull.height_at_local(32.0, 32.0);
         assert!(h >= 0.0 && h <= 50.0, "height out of range: {h}");
@@ -1020,8 +1019,7 @@ mod tests {
 
     #[test]
     fn test_serializer_roundtrip() {
-        let ds = crate::terrain::heightmap::DiamondSquare::new(42, 0.5);
-        let hm = ds.generate(17);
+        let hm = crate::terrain::heightmap::DiamondSquare::generate(16, 0.5, 42);
         let bytes = ChunkSerializer::serialize_heights(&hm);
         let hm2 = ChunkSerializer::deserialize_heights(&bytes).expect("deserialize failed");
         assert_eq!(hm.width,  hm2.width);
@@ -1055,8 +1053,7 @@ mod tests {
 
     #[test]
     fn test_collision_hull_triangles() {
-        let ds = crate::terrain::heightmap::DiamondSquare::new(5, 0.4);
-        let hm = ds.generate(9);
+        let hm = crate::terrain::heightmap::DiamondSquare::generate(8, 0.4, 5);
         let hull = CollisionHull::generate(&hm, 64.0, 50.0, 4);
         let tris = hull.triangles();
         // 4x4 grid → 3x3 quads → 9*2 = 18 triangles

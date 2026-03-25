@@ -121,6 +121,7 @@ struct AnyVec {
     len: usize,
     data: Vec<u8>,
     element_size: usize,
+    element_align: usize,
     drop_fn: unsafe fn(*mut u8),
     clone_fn: unsafe fn(*const u8, *mut u8),
 }
@@ -129,11 +130,16 @@ unsafe impl Sync for AnyVec {}
 
 impl AnyVec {
     fn new<T: Component>() -> Self {
+        let align = std::mem::align_of::<T>();
+        let size = std::mem::size_of::<T>();
+        // Round element_size up to alignment so every slot is aligned
+        let padded = if align > 0 && size > 0 { (size + align - 1) & !(align - 1) } else { size };
         Self {
             type_id: TypeId::of::<T>(),
             len: 0,
             data: Vec::new(),
-            element_size: std::mem::size_of::<T>(),
+            element_size: padded,
+            element_align: align,
             drop_fn: |p| unsafe { std::ptr::drop_in_place(p as *mut T) },
             clone_fn: |s, d| unsafe { std::ptr::write(d as *mut T, (*(s as *const T)).clone()) },
         }
@@ -142,38 +148,54 @@ impl AnyVec {
     fn reserve_one(&mut self) {
         let sz = self.element_size;
         if sz == 0 { return; }
-        let need = (self.len + 1) * sz;
+        let need = (self.len + 1) * sz + self.element_align; // extra for alignment padding
         if self.data.len() < need {
-            self.data.resize(need.max(self.data.len() * 2).max(sz * 4), 0);
+            self.data.resize(need.max(self.data.len() * 2).max(sz * 4 + self.element_align), 0);
         }
+    }
+
+    /// Return the base pointer, aligned to element_align.
+    fn aligned_base(&self) -> *const u8 {
+        let ptr = self.data.as_ptr() as usize;
+        let align = self.element_align.max(1);
+        let aligned = (ptr + align - 1) & !(align - 1);
+        aligned as *const u8
+    }
+
+    fn aligned_base_mut(&mut self) -> *mut u8 {
+        let ptr = self.data.as_mut_ptr() as usize;
+        let align = self.element_align.max(1);
+        let aligned = (ptr + align - 1) & !(align - 1);
+        aligned as *mut u8
     }
 
     fn push<T: Component>(&mut self, v: T) {
         self.reserve_one();
-        unsafe { std::ptr::write(self.data.as_mut_ptr().add(self.len * self.element_size) as *mut T, v); }
+        unsafe { std::ptr::write(self.aligned_base_mut().add(self.len * self.element_size) as *mut T, v); }
         self.len += 1;
     }
 
     fn get<T: Component>(&self, row: usize) -> &T {
-        unsafe { &*(self.data.as_ptr().add(row * self.element_size) as *const T) }
+        unsafe { &*(self.aligned_base().add(row * self.element_size) as *const T) }
     }
 
     fn get_mut<T: Component>(&mut self, row: usize) -> &mut T {
-        unsafe { &mut *(self.data.as_mut_ptr().add(row * self.element_size) as *mut T) }
+        unsafe { &mut *(self.aligned_base_mut().add(row * self.element_size) as *mut T) }
     }
 
     fn get_ptr(&self, row: usize) -> *const u8 {
-        unsafe { self.data.as_ptr().add(row * self.element_size) }
+        unsafe { self.aligned_base().add(row * self.element_size) }
     }
 
     fn swap_remove_raw(&mut self, row: usize) {
         let last = self.len - 1;
         let sz = self.element_size;
         unsafe {
-            let dst = self.data.as_mut_ptr().add(row * sz);
+            let base = self.aligned_base_mut();
+            let dst = base.add(row * sz);
             (self.drop_fn)(dst);
             if row != last {
-                let src = self.data.as_ptr().add(last * sz);
+                let src = base.add(last * sz) as *const u8;
                 std::ptr::copy_nonoverlapping(src, dst, sz);
             }
         }
@@ -184,7 +206,7 @@ impl AnyVec {
 impl Drop for AnyVec {
     fn drop(&mut self) {
         for i in 0..self.len {
-            unsafe { (self.drop_fn)(self.data.as_mut_ptr().add(i * self.element_size)); }
+            unsafe { (self.drop_fn)(self.aligned_base_mut().add(i * self.element_size)); }
         }
     }
 }
@@ -226,8 +248,8 @@ impl ComponentStorage {
             dst.column.data.resize(need.max(dst.column.data.len() * 2).max(sz * 4), 0);
         }
         unsafe {
-            let s = self.column.data.as_ptr().add(row * sz);
-            let d = dst.column.data.as_mut_ptr().add(dst.column.len * sz);
+            let s = self.column.aligned_base().add(row * sz);
+            let d = dst.column.aligned_base_mut().add(dst.column.len * sz);
             (self.column.clone_fn)(s, d);
         }
         dst.column.len += 1;
@@ -872,6 +894,7 @@ impl World {
                 column: AnyVec {
                     type_id: s.column.type_id, len: 0, data: Vec::new(),
                     element_size: s.column.element_size,
+                    element_align: s.column.element_align,
                     drop_fn: s.column.drop_fn, clone_fn: s.column.clone_fn,
                 },
                 added_ticks: Vec::new(), changed_ticks: Vec::new(),
@@ -907,7 +930,7 @@ impl World {
         let new_ai = self.get_or_create_archetype(new_types.clone());
         let tick = self.tick;
         let old_types: Vec<TypeId> = self.archetypes[old_ai].component_types.clone();
-        self.ensure_cols(old_ai, new_ai, &old_types);
+        self.ensure_cols(old_ai, new_ai, &new_types);
         let new_row = self.archetypes[new_ai].entities.len();
         for &t in &old_types {
             if t == tid { continue; }
@@ -1416,7 +1439,8 @@ mod tests {
     #[test] fn test_event_writer_reader() {
         let mut ev: Events<Dmg> = Events::new();
         EventWriter::new(&mut ev).send(Dmg { amount: 42.0 });
-        let r: Vec<_> = EventReader::new_current(&ev).read().collect();
+        let mut reader = EventReader::new_current(&ev);
+        let r: Vec<_> = reader.read().collect();
         assert_eq!(r.len(), 1); assert_eq!(r[0].amount, 42.0);
     }
     #[test] fn test_world_events() {

@@ -656,7 +656,7 @@ impl FluidPool {
             depth: MIN_POOL_DEPTH,
             age: 0.0,
             max_lifetime,
-            absorbed_count: 0,
+            absorbed_count: 1,
         }
     }
 

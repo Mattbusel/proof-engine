@@ -553,9 +553,6 @@ impl Flock {
         }
         if count == 0 { return Vec2::ZERO; }
         avg_vel /= count as f32;
-        if avg_vel.length_squared() > 0.0 {
-            avg_vel = avg_vel.normalize() * boid.max_speed;
-        }
         let force = avg_vel - boid.velocity;
         boid.limit_force(force)
     }

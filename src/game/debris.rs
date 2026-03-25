@@ -1998,8 +1998,8 @@ mod tests {
 
         // Render.
         let mut renderer = DebrisRenderer::new();
-        let instances = renderer.build_instances(&pool);
-        assert!(!instances.is_empty(), "should still have visible debris after 1 second");
+        let initial_count = renderer.build_instances(&pool).len();
+        assert!(initial_count > 0, "should still have visible debris after 1 second");
 
         // Continue simulating until all debris settles and fades.
         for _ in 0..300 {
@@ -2007,8 +2007,8 @@ mod tests {
         }
 
         // After ~5 seconds total, most debris should have expired.
-        let instances_late = renderer.build_instances(&pool);
-        assert!(instances_late.len() < instances.len(),
+        let late_count = renderer.build_instances(&pool).len();
+        assert!(late_count < initial_count,
             "debris count should decrease over time");
     }
 }

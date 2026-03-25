@@ -6,6 +6,8 @@
 
 pub mod emitters;
 pub mod flock;
+pub mod gpu_particles;
+pub mod particle_render;
 
 use crate::glyph::{Glyph, RenderLayer};
 use crate::math::{MathFunction, ForceField, Falloff, AttractorType};
@@ -1538,7 +1540,7 @@ mod tests {
         for _ in 0..100 {
             let p = shape.sample(&mut rng);
             assert!(p.y.abs() < 0.001);
-            assert!(p.xz().length() <= 3.001);
+            assert!(glam::Vec2::new(p.x, p.z).length() <= 3.001);
         }
     }
 

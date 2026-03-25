@@ -822,7 +822,11 @@ impl CoupledOscillators {
     /// Create a ring of `n` oscillators with the same frequency.
     pub fn ring(n: usize, frequency: f32, coupling: f32) -> Self {
         let phases: Vec<f32> = (0..n).map(|i| {
-            i as f32 / n as f32 * std::f32::consts::TAU
+            // Small asymmetric perturbation breaks the unstable equilibrium
+            // of evenly-spaced phases on a ring, allowing synchronization.
+            // Small asymmetric perturbation to break unstable equilibrium
+            let base = i as f32 / n as f32 * std::f32::consts::TAU;
+            base + 0.1 * ((i as f32 + 1.0) * 1.618).sin()
         }).collect();
         let frequencies = vec![frequency; n];
         let edges: Vec<(usize, usize)> = (0..n).map(|i| (i, (i + 1) % n)).collect();

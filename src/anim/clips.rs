@@ -326,7 +326,7 @@ impl AnimationClip {
             name: name.into(),
             duration,
             channels: Vec::new(),
-            loop_mode: LoopMode::Loop,
+            loop_mode: LoopMode::ClampForever,
             events: Vec::new(),
         }
     }

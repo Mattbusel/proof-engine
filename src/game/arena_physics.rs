@@ -373,12 +373,13 @@ fn collide_circle_aabb(
     aabb_pos: Vec2,
     half_ext: Vec2,
 ) -> Option<Contact> {
-    let local = circle_pos - aabb_pos;
+    let center = aabb_pos + half_ext;
+    let local = circle_pos - center;
     let clamped = Vec2::new(
         clampf(local.x, -half_ext.x, half_ext.x),
         clampf(local.y, -half_ext.y, half_ext.y),
     );
-    let closest = aabb_pos + clamped;
+    let closest = center + clamped;
     let delta = circle_pos - closest;
     let dist_sq = delta.length_squared();
     if dist_sq >= radius * radius {
@@ -2082,7 +2083,7 @@ impl ChaosRiftRoom {
 
             let mass = 0.5 + pseudo_random(self.seed * 8.9) * 3.0;
             let mut obj = PhysicsObject::new(
-                Vec3::new(self.rift_center.x, self.rift_center.y, 0.0),
+                Vec3::new(self.rift_center.x + dir.x * self.rift_radius, self.rift_center.y + dir.y * self.rift_radius, 0.0),
                 mass,
                 shape,
             );

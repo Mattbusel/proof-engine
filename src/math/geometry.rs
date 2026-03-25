@@ -867,7 +867,10 @@ fn circumcircle_contains(a: &Point2, b: &Point2, c: &Point2, p: &Point2) -> bool
     let det = ax * (by * (cx * cx + cy * cy) - cy * (bx * bx + by * by))
             - ay * (bx * (cx * cx + cy * cy) - cx * (bx * bx + by * by))
             + (ax * ax + ay * ay) * (bx * cy - by * cx);
-    det > 0.0
+    // The sign of det depends on the orientation of the triangle (CCW vs CW).
+    // Check orientation and flip sign if clockwise.
+    let orient = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if orient > 0.0 { det > 0.0 } else { det < 0.0 }
 }
 
 /// Compute approximate Voronoi diagram from Delaunay triangulation dual.

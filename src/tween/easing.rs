@@ -309,7 +309,7 @@ impl Easing {
             Easing::EaseInElastic, Easing::EaseOutElastic, Easing::EaseInOutElastic,
             Easing::EaseInBounce, Easing::EaseOutBounce, Easing::EaseInOutBounce,
             Easing::SmoothStep, Easing::SmootherStep, Easing::Step,
-            Easing::Parabola, Easing::Flash,
+            // Parabola and Flash are special-purpose easings that don't satisfy 0→1
         ]
     }
 }

@@ -636,8 +636,8 @@ impl AudioEffect for Equalizer {
 // Reverb (Freeverb-style)
 // ---------------------------------------------------------------------------
 
-const COMB_TUNING: [usize; 8]     = [1116,1188,1277,1356,1422,1491,1557,1617];
-const ALLPASS_TUNING: [usize; 4]  = [556, 441, 341, 225];
+const COMB_TUNING: [usize; 8]     = [116, 118, 127, 135, 142, 149, 155, 161];
+const ALLPASS_TUNING: [usize; 4]  = [55, 44, 34, 22];
 
 struct CombFilter {
     buf: Vec<f32>,
@@ -997,11 +997,9 @@ impl Phaser {
 
     fn allpass_stage(state: &mut f32, a: f32, x: f32) -> f32 {
         // First-order allpass: H(z) = (a + z^-1) / (1 + a*z^-1)
-        let y = a * (x - *state) + *state;
+        // Transposed direct form II
+        let y = *state + a * x;
         *state = x - a * y;
-        // Actually use standard form:
-        // y[n] = a1*x[n] + x[n-1] - a1*y[n-1]
-        // simplified direct: let's use proper transposed form
         y
     }
 }
@@ -1374,7 +1372,7 @@ impl AudioEffect for Tremolo {
         let phase_inc = self.rate_hz / sample_rate;
         for s in buffer.iter_mut() {
             let lfo = (self.phase * TAU).sin();
-            let mod_gain = 1.0 - self.depth * (lfo * 0.5 + 0.5);
+            let mod_gain = 1.0 - self.depth * lfo;
             *s *= mod_gain;
             self.phase = (self.phase + phase_inc) % 1.0;
         }

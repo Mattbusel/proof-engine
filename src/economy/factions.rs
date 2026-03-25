@@ -486,7 +486,7 @@ impl WealthRanking {
         let total: f64 = sorted.iter().sum();
         if total < 1e-9 { return 0.0; }
         let sum_of_ranks: f64 = sorted.iter().enumerate()
-            .map(|(i, w)| (2 * (i + 1) - n - 1) as f64 * w)
+            .map(|(i, w)| (2 * (i as i64 + 1) - n as i64 - 1) as f64 * w)
             .sum();
         sum_of_ranks / (n as f64 * total)
     }

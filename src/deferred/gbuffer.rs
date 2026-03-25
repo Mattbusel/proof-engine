@@ -1764,7 +1764,7 @@ mod tests {
             [0.577, 0.577, 0.577],
         ];
         for n in &normals {
-            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] as f32).sqrt();
             let normalized = [n[0] / len, n[1] / len, n[2] / len];
             let encoded = octahedral_encode(normalized);
             let decoded = octahedral_decode(encoded);

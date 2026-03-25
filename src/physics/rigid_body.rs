@@ -487,7 +487,7 @@ impl Sat {
         let local_center = poly_rot.transpose() * (circle_pos - poly_pos);
         let n = poly_verts.len();
 
-        let mut min_overlap = f32::INFINITY;
+        let mut min_overlap = f32::NEG_INFINITY;
         let mut best_normal = Vec2::X;
         let mut closest_on_edge = Vec2::ZERO;
 
@@ -498,7 +498,7 @@ impl Sat {
             let normal = Vec2::new(edge.y, -edge.x).normalize_or_zero();
             let dist = (local_center - a).dot(normal);
             if dist > radius { return None; } // Separated on this axis
-            if dist < min_overlap {
+            if dist > min_overlap {
                 min_overlap = dist;
                 best_normal = normal;
                 // Closest point on edge

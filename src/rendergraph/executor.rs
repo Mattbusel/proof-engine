@@ -1093,7 +1093,8 @@ mod tests {
 
     #[test]
     fn test_hot_reload() {
-        use crate::rendergraph::graph::{GraphConfig, PassConfig, ResourceConfig, SizePolicy};
+        use crate::rendergraph::graph::{GraphConfig, PassConfig, ResourceConfig};
+        use crate::rendergraph::resources::SizePolicy;
         let config = GraphConfig {
             label: "hot_reload".to_string(),
             resources: vec![ResourceConfig {

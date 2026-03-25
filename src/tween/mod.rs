@@ -17,6 +17,8 @@
 pub mod easing;
 pub mod sequence;
 pub mod keyframe;
+pub mod tween_manager;
+pub mod game_tweens;
 
 pub use easing::Easing;
 pub use sequence::{TweenSequence, SequenceBuilder};

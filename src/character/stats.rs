@@ -474,8 +474,21 @@ impl ResourcePool {
 
     /// Tick regeneration by dt seconds.
     pub fn tick(&mut self, dt: f32) {
+        // Clamp active timer to current regen_delay so that lowering
+        // regen_delay at runtime takes effect immediately.
+        self.regen_timer = self.regen_timer.min(self.regen_delay);
+
         if self.regen_timer > 0.0 {
             self.regen_timer -= dt;
+            if self.regen_timer >= 0.0 {
+                return;
+            }
+            // Timer expired mid-tick — regen for the leftover time
+            let leftover = -self.regen_timer;
+            self.regen_timer = 0.0;
+            if !self.full() {
+                self.current = (self.current + self.regen_rate * leftover).min(self.max);
+            }
             return;
         }
         if !self.full() {

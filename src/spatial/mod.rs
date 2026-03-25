@@ -493,8 +493,8 @@ impl<T: Clone> KdTree<T> {
         });
 
         let mid = points.len() / 2;
-        let mut right_points = points.split_off(mid + 1);
-        let left_points = points.split_off(mid);
+        let right_points = points.split_off(mid + 1);
+        let left_points: Vec<(Vec3, T)> = points.drain(..mid).collect();
         let (pos, item) = points.remove(0);
 
         let idx = self.nodes.len();
@@ -743,7 +743,7 @@ mod tests {
 
         let near = grid.query_radius(Vec3::ZERO, 2.0);
         assert_eq!(near.len(), 1, "should find 1 item near origin");
-        assert_eq!(*near[0].0, 1u32);
+        assert_eq!(near[0].0, 1u32);
     }
 
     #[test]
@@ -755,7 +755,7 @@ mod tests {
         let nn = grid.k_nearest(Vec3::new(4.5, 0.0, 0.0), 2);
         assert_eq!(nn.len(), 2);
         // Nearest two should be 4 and 5
-        let mut ids: Vec<usize> = nn.iter().map(|(id, _, _)| **id).collect();
+        let mut ids: Vec<usize> = nn.iter().map(|(id, _, _)| *id).collect();
         ids.sort();
         assert_eq!(ids, vec![4, 5]);
     }
@@ -798,7 +798,7 @@ mod tests {
         let tree = KdTree::build(points);
         let nn = tree.k_nearest(Vec3::new(3.1, 0.0, 0.0), 1);
         assert_eq!(nn.len(), 1);
-        assert_eq!(*nn[0].0, 3usize);
+        assert_eq!(nn[0].0, 3usize);
     }
 
     #[test]
@@ -832,6 +832,6 @@ mod tests {
         grid.insert(Vec2::new(5.0, 5.0), 20);
         let near = grid.query_radius(Vec2::ZERO, 1.5);
         assert_eq!(near.len(), 1);
-        assert_eq!(*near[0].0, 10u32);
+        assert_eq!(near[0].0, 10u32);
     }
 }

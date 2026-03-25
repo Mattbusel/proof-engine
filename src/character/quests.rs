@@ -499,12 +499,10 @@ impl QuestChain {
     }
 
     pub fn advance(&mut self) -> Option<QuestId> {
-        if self.current_index + 1 < self.quests.len() {
+        if self.current_index < self.quests.len() {
             self.current_index += 1;
-            self.current_quest()
-        } else {
-            None
         }
+        self.current_quest()
     }
 
     pub fn is_complete(&self) -> bool {

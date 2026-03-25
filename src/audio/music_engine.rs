@@ -80,7 +80,8 @@ impl Scale {
 
     /// Frequency of scale degree.
     pub fn freq(&self, degree: i32, octave: i32) -> f32 {
-        Self::midi_to_hz(self.degree(degree, octave))
+        let base_octave = (self.root as i32 / 12) - 1;
+        Self::midi_to_hz(self.degree(degree, octave - base_octave))
     }
 
     /// All frequencies in one octave.
@@ -236,14 +237,20 @@ impl RhythmPattern {
     pub fn tick(&mut self, beat_delta: f32) -> u32 {
         if self.hits.is_empty() { return 0; }
         self.cursor += beat_delta;
+        let mut count = 0;
+        // Count hits before potential wrap
+        while self.next < self.hits.len() && self.hits[self.next] < self.cursor {
+            count    += 1;
+            self.next += 1;
+        }
         if self.cursor >= self.length {
             self.cursor -= self.length;
             self.next = 0;
-        }
-        let mut count = 0;
-        while self.next < self.hits.len() && self.cursor >= self.hits[self.next] {
-            count    += 1;
-            self.next += 1;
+            // Count hits in the wrapped portion
+            while self.next < self.hits.len() && self.hits[self.next] < self.cursor {
+                count    += 1;
+                self.next += 1;
+            }
         }
         count
     }

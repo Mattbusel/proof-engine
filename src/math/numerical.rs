@@ -1398,7 +1398,7 @@ mod tests {
     #[test]
     fn test_cubic_spline() {
         let xs = vec![0.0, 1.0, 2.0, 3.0];
-        let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
+        let ys: Vec<f64> = xs.iter().map(|x: &f64| x.sin()).collect();
         let spline = natural_cubic_spline(&xs, &ys);
         // At knots the spline should be exact
         for (x, y) in xs.iter().zip(ys.iter()) {

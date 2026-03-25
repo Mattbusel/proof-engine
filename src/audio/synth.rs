@@ -42,7 +42,8 @@ impl Adsr {
         if let Some(off) = note_off {
             let rel = (age - off).max(0.0);
             let sustain_level = self.level(off, None);
-            return (sustain_level * (1.0 - rel / self.release.max(0.0001))).max(0.0);
+            let t = (1.0 - rel / self.release.max(0.0001)).max(0.0);
+            return sustain_level * t * t;
         }
         if age < self.attack {
             return age / self.attack.max(0.0001);
