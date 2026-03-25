@@ -90,3 +90,6 @@ name = "playground"
 
 [[example]]
 name = "showcase"
+
+[[example]]
+name = "particle_entity"
