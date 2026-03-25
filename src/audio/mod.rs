@@ -11,6 +11,7 @@ pub mod music_engine;
 pub mod graph;
 pub mod effects;
 pub mod synthesis;
+pub mod spatial;
 
 use glam::Vec3;
 
