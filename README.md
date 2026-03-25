@@ -5,7 +5,7 @@ A mathematical rendering engine for Rust. **262,000+ lines of fully implemented 
 [![Crates.io](https://img.shields.io/crates/v/proof-engine)](https://crates.io/crates/proof-engine)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Compiles clean on `cargo check` with zero errors.
+> Compiles clean on `cargo check`.
 
 Every visual is the output of a mathematical function. Every animation is a continuous function over time. Every particle follows a real equation. Characters are rendered as textured quads in 3D space with bloom, distortion, motion blur, and force field physics.
 
