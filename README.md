@@ -5,10 +5,6 @@
 
 ![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
 
-## Live Demo
-
-![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
-
 **What you're looking at:** Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. Each particle is its own light source with emission, color, temperature, and physical mass. The engine does not distinguish between geometry and lighting. The matter IS the light.
 
 When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, cloth, fluid, fog, and soft-body behavior all emerge from the same particle system with zero additional engineering — just different spring constants on the same substrate. There is no polygon budget. There is no pre-fractured mesh. Destruction resolution is infinite because particles don't have polygon limits.
