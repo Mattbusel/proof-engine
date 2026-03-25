@@ -625,7 +625,7 @@ impl Pipeline {
 
             // Apply distance fog: glyphs further from camera fade toward fog color
             let dist = (glyph.position - pos).length();
-            let fog_density = 0.015;
+            let fog_density = 0.003; // very subtle
             let fog_factor = (-dist * fog_density).exp(); // 1.0 = no fog, 0.0 = fully fogged
             let fog_color = [0.03f32, 0.04, 0.06]; // dark blue-ish fog
             let mut color = glyph.color.to_array();
@@ -656,7 +656,7 @@ impl Pipeline {
             let uv = self.atlas.uv_for(g.character);
             // Apply fog to particles too
             let dist = (g.position - pos).length();
-            let fog_factor = (-dist * 0.015).exp();
+            let fog_factor = (-dist * 0.003).exp();
             let fog_color = [0.03f32, 0.04, 0.06];
             let mut color = g.color.to_array();
             color[0] = color[0] * fog_factor + fog_color[0] * (1.0 - fog_factor);

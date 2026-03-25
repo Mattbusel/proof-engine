@@ -397,47 +397,56 @@ fn render_layered_humanoid(
 
     let vis = proof_engine::entity::layered_entity::LayerVisibility::from_hp(hp);
 
-    // Layer 4: Particle density cloud (20000 particles, bright, tightly packed)
+    // Layer 4: Particle density cloud (fixed count, no flickering)
+    // Y is INVERTED because the vertex shader flips Y
     if vis.density_opacity > 0.01 {
-        let count = (20000.0 * vis.density_opacity) as usize;
-        // Body bones: (start_y, end_y, center_x, width, density_weight)
+        let count = 50000usize; // fixed count, never changes = no flicker
+        // Bones: (start_y, end_y, center_x, width, weight)
+        // Y INVERTED: head at NEGATIVE Y, feet at POSITIVE Y
         let bones: &[(f32, f32, f32, f32, f32)] = &[
-            (0.6, 1.1, 0.0, 0.18, 2.5),    // head
-            (0.1, 0.6, 0.0, 0.25, 2.0),    // torso
-            (-0.4, 0.1, 0.0, 0.18, 1.2),   // waist
-            (-0.9, -0.4, -0.12, 0.08, 1.0), // left leg
-            (-0.9, -0.4, 0.12, 0.08, 1.0),  // right leg
-            (0.3, 0.6, -0.4, 0.06, 0.7),    // left arm upper
-            (0.0, 0.3, -0.55, 0.05, 0.5),   // left arm lower
-            (0.3, 0.6, 0.4, 0.06, 0.7),     // right arm upper
-            (0.0, 0.3, 0.55, 0.05, 0.5),    // right arm lower
+            (-1.1, -0.7, 0.0, 0.20, 3.0),   // head (round, dense)
+            (-0.7, -0.6, 0.0, 0.12, 1.0),    // neck
+            (-0.6, -0.1, 0.0, 0.28, 2.5),    // torso (widest)
+            (-0.1, 0.1, 0.0, 0.22, 1.5),     // waist
+            (-0.6, -0.3, -0.45, 0.08, 0.8),   // left upper arm
+            (-0.3, 0.0, -0.6, 0.06, 0.6),     // left forearm
+            (-0.6, -0.3, 0.45, 0.08, 0.8),    // right upper arm
+            (-0.3, 0.0, 0.6, 0.06, 0.6),      // right forearm
+            (0.1, 0.5, -0.15, 0.10, 1.0),     // left thigh
+            (0.5, 0.9, -0.15, 0.08, 0.8),     // left shin
+            (0.1, 0.5, 0.15, 0.10, 1.0),      // right thigh
+            (0.5, 0.9, 0.15, 0.08, 0.8),      // right shin
+            (-0.5, -0.2, 0.0, 0.18, 1.0),     // chest fill
         ];
-        let total_weight: f32 = bones.iter().map(|b| b.4 * (b.1 - b.0)).sum();
+        let total_weight: f32 = bones.iter().map(|b| b.4 * (b.1 - b.0).abs()).sum();
 
         for i in 0..count {
             let mut w = hf(i + 100, 0) * total_weight;
             let mut bone = bones[0];
-            for b in bones { w -= b.4 * (b.1 - b.0); if w <= 0.0 { bone = *b; break; } }
+            for b in bones { w -= b.4 * (b.1 - b.0).abs(); if w <= 0.0 { bone = *b; break; } }
 
             let along = bone.0 + hf(i + 100, 1) * (bone.1 - bone.0);
             let spread_x = (hf(i + 100, 2) + hf(i + 100, 3) - 1.0) * bone.3;
 
-            let jitter = (1.0 - hp).max(0.0) * 0.06;
+            let jitter = (1.0 - hp).max(0.0) * 0.04;
             let jx = (hf(i + 100, 4) - 0.5) * jitter;
             let jy = (hf(i + 100, 5) - 0.5) * jitter;
 
             let px = bone.2 + spread_x;
             let py = along;
             let dist = spread_x.abs() / bone.3.max(0.01);
-            let core = (1.0 - dist).max(0.0);
+            let core = (1.0 - dist * 0.8).max(0.0); // softer falloff
+
+            let alpha = vis.density_opacity * (0.4 + core * 0.5) * hp.max(0.1);
+            if alpha < 0.01 { continue; }
 
             engine.spawn_glyph(Glyph {
-                character: '.', scale: Vec2::splat(0.03 + core * 0.02),
+                character: '.', scale: Vec2::splat(0.025 + core * 0.015),
                 position: Vec3::new(pos.x + px * breath + jx, pos.y + py * breath + jy, pos.z - 0.1),
-                color: Vec4::new(base_color.x, base_color.y, base_color.z, vis.density_opacity * (0.3 + core * 0.5)),
-                emission: vis.density_opacity * (0.8 + core * 1.5),
+                color: Vec4::new(base_color.x, base_color.y, base_color.z, alpha),
+                emission: vis.density_opacity * (1.0 + core * 2.0) * hp.max(0.1),
                 glow_color: Vec3::new(base_color.x, base_color.y, base_color.z),
-                glow_radius: core * 0.3 * vis.density_opacity,
+                glow_radius: core * 0.2,
                 mass: 0.0, lifetime: dt * 1.5,
                 layer: RenderLayer::Particle, blend_mode: BlendMode::Additive, ..Default::default()
             });
@@ -454,7 +463,7 @@ fn render_layered_humanoid(
                 engine.spawn_glyph(Glyph {
                     character: if curve.thickness > 0.03 { '*' } else { '.' },
                     scale: Vec2::splat(curve.thickness * 3.0),
-                    position: Vec3::new(pos.x + pt.x, pos.y + pt.y, pos.z + 0.05),
+                    position: Vec3::new(pos.x + pt.x, pos.y - pt.y, pos.z + 0.05), // invert Y
                     color: Vec4::new(curve.color.x, curve.color.y, curve.color.z, alpha),
                     emission: curve.emission * vis.curve_opacity * 0.5,
                     mass: 0.0, lifetime: dt * 1.5,
@@ -466,7 +475,8 @@ fn render_layered_humanoid(
 
     // Layer 1: Identity glyphs (visible when badly damaged)
     if vis.glyph_opacity > 0.01 {
-        let glyph_defs = [('@', 0.0, 0.8), ('#', 0.0, 0.3), ('<', -0.5, 0.4), ('>', 0.5, 0.4), ('*', 0.0, 1.2)];
+        // Glyph Y inverted (head at -Y in screen space)
+        let glyph_defs = [('@', 0.0, -0.8), ('#', 0.0, -0.3), ('<', -0.5, -0.4), ('>', 0.5, -0.4), ('*', 0.0, -1.2)];
         for &(ch, gx, gy) in &glyph_defs {
             let wobble = (1.0 - hp) * 0.05;
             let wx = (time * 2.0 + gx * 5.0).sin() * wobble;
