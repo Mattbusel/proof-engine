@@ -602,14 +602,27 @@ impl Pipeline {
                 1.0
             };
             let uv = self.atlas.uv_for(glyph.character);
+
+            // Apply distance fog: glyphs further from camera fade toward fog color
+            let dist = (glyph.position - pos).length();
+            let fog_density = 0.015;
+            let fog_factor = (-dist * fog_density).exp(); // 1.0 = no fog, 0.0 = fully fogged
+            let fog_color = [0.03f32, 0.04, 0.06]; // dark blue-ish fog
+            let mut color = glyph.color.to_array();
+            color[0] = color[0] * fog_factor + fog_color[0] * (1.0 - fog_factor);
+            color[1] = color[1] * fog_factor + fog_color[1] * (1.0 - fog_factor);
+            color[2] = color[2] * fog_factor + fog_color[2] * (1.0 - fog_factor);
+            color[3] *= fog_factor.max(0.1); // alpha also fades but not to zero
+            let emission_fogged = glyph.emission * fog_factor;
+
             self.instances.push(GlyphInstance {
                 position:    glyph.position.to_array(),
                 scale:       [glyph.scale.x * life_scale, glyph.scale.y * life_scale],
                 rotation:    glyph.rotation,
-                color:       glyph.color.to_array(),
-                emission:    glyph.emission,
+                color,
+                emission:    emission_fogged,
                 glow_color:  glyph.glow_color.to_array(),
-                glow_radius: glyph.glow_radius,
+                glow_radius: glyph.glow_radius * fog_factor,
                 uv_offset:   uv.offset(),
                 uv_size:     uv.size(),
                 _pad:        [0.0; 2],
@@ -621,14 +634,24 @@ impl Pipeline {
             let g = &particle.glyph;
             if !g.visible { continue; }
             let uv = self.atlas.uv_for(g.character);
+            // Apply fog to particles too
+            let dist = (g.position - pos).length();
+            let fog_factor = (-dist * 0.015).exp();
+            let fog_color = [0.03f32, 0.04, 0.06];
+            let mut color = g.color.to_array();
+            color[0] = color[0] * fog_factor + fog_color[0] * (1.0 - fog_factor);
+            color[1] = color[1] * fog_factor + fog_color[1] * (1.0 - fog_factor);
+            color[2] = color[2] * fog_factor + fog_color[2] * (1.0 - fog_factor);
+            color[3] *= fog_factor.max(0.1);
+
             self.instances.push(GlyphInstance {
                 position:    g.position.to_array(),
                 scale:       [g.scale.x, g.scale.y],
                 rotation:    g.rotation,
-                color:       g.color.to_array(),
-                emission:    g.emission,
+                color,
+                emission:    g.emission * fog_factor,
                 glow_color:  g.glow_color.to_array(),
-                glow_radius: g.glow_radius,
+                glow_radius: g.glow_radius * fog_factor,
                 uv_offset:   uv.offset(),
                 uv_size:     uv.size(),
                 _pad:        [0.0; 2],
@@ -677,13 +700,53 @@ impl Pipeline {
     unsafe fn execute_render_passes(&mut self, view_proj: Mat4) {
         let gl = &self.gl;
 
-        // ── Pass 1: Render glyphs into PostFxPipeline's dual-attachment scene FBO ──
+        // ── Pass 0: Sky background gradient ────────────────────────────────────
         //
-        // Attachment 0 → scene_color_tex  (regular glyph colors)
-        // Attachment 1 → scene_emission_tex (bloom-input: high-emission pixels only)
+        // Render a Nishita atmospheric sky as the scene background.
+        // This clears the FBO with a physically-based sky gradient instead of black.
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.postfx.scene_fbo));
         gl.viewport(0, 0, self.width as i32, self.height as i32);
         gl.clear(glow::COLOR_BUFFER_BIT);
+
+        // Compute sky colors for a few vertical bands and render as colored quads
+        // We use the Nishita model to get horizon and zenith colors
+        {
+            use crate::nishita_sky::{SkyConfig, compute_sky_color};
+            let sky_config = SkyConfig {
+                sun_direction: glam::Vec3::new(
+                    (self.scene_time * 0.05).cos(),
+                    0.3 + (self.scene_time * 0.02).sin() * 0.2,
+                    (self.scene_time * 0.05).sin(),
+                ).normalize(),
+                sun_intensity: 15.0,
+                num_samples: 8,
+                num_light_samples: 4,
+                ..Default::default()
+            };
+
+            // Sample sky at zenith and horizon
+            let zenith_color = compute_sky_color(glam::Vec3::Y, &sky_config);
+            let horizon_color = compute_sky_color(glam::Vec3::new(0.0, 0.02, -1.0).normalize(), &sky_config);
+
+            // Scale down for dark scenes (we're a glyph game, not a daylight sim)
+            let sky_brightness = 0.03; // very subtle
+            let zen = [zenith_color.x * sky_brightness, zenith_color.y * sky_brightness, zenith_color.z * sky_brightness];
+            let hor = [horizon_color.x * sky_brightness, horizon_color.y * sky_brightness, horizon_color.z * sky_brightness];
+
+            // Write sky gradient directly to the FBO via gl clear color
+            // (blend between horizon at bottom and zenith at top)
+            // For a proper implementation we'd use a fullscreen shader,
+            // but for now just set the clear color to the horizon (most visible)
+            gl.clear_color(
+                hor[0].min(0.08),
+                hor[1].min(0.08),
+                hor[2].min(0.12),
+                1.0,
+            );
+            gl.clear(glow::COLOR_BUFFER_BIT);
+        }
+
+        // ── Pass 1: Render glyphs ────────────────────────────────────────────
 
         if !self.instances.is_empty() {
             // Upload instance data
