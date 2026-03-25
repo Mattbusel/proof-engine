@@ -121,13 +121,34 @@ fn main() {
                 }
             }
             // Drag
-            if dragging&&!ewp&&input.mouse_left_just_released{let mx=(input.mouse_x/ww as f32-0.5)*18.0+state.cam_x;let my=-((input.mouse_y/wh as f32-0.5)*11.0)+state.cam_y;let d=Vec3::new(mx,my,0.0)-drag_start;if d.length()>0.05{state.push_undo("Move");let s=state.document.selection.clone();for i in s{state.document.translate_node(i,d);}state.needs_rebuild=true;}dragging=false;}
+            if dragging&&!ewp&&input.mouse_left_just_released{let dp=screen_to_world(input.mouse_x,input.mouse_y,ww,wh,state.cam_x,state.cam_y);let d=dp-drag_start;if d.length()>0.05{state.push_undo("Move");let s=state.document.selection.clone();for i in s{state.document.translate_node(i,d);}state.needs_rebuild=true;}dragging=false;}
             // Box select
-            if box_sel&&!ewp&&input.mouse_left_just_released{let(sx,sy)=box_start;let(ex,ey)=(input.mouse_x,input.mouse_y);let x0=(sx.min(ex)/ww as f32-0.5)*18.0+state.cam_x;let y0=-((sy.max(ey)/wh as f32-0.5)*11.0)+state.cam_y;let x1=(sx.max(ex)/ww as f32-0.5)*18.0+state.cam_x;let y1=-((sy.min(ey)/wh as f32-0.5)*11.0)+state.cam_y;let mut s=if input.shift(){state.document.selection.clone()}else{Vec::new()};for n in state.document.nodes(){let p=n.position;if p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1&&!s.contains(&n.id){s.push(n.id);}}state.document.selection=s;box_sel=false;}
+            if box_sel&&!ewp&&input.mouse_left_just_released{let(sx,sy)=box_start;let(ex,ey)=(input.mouse_x,input.mouse_y);let c0=screen_to_world(sx.min(ex),sy.min(ey),ww,wh,state.cam_x,state.cam_y);let c1=screen_to_world(sx.max(ex),sy.max(ey),ww,wh,state.cam_x,state.cam_y);let x0=c0.x.min(c1.x);let y0=c0.y.min(c1.y);let x1=c0.x.max(c1.x);let y1=c0.y.max(c1.y);let mut s=if input.shift(){state.document.selection.clone()}else{Vec::new()};for n in state.document.nodes(){let p=n.position;if p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1&&!s.contains(&n.id){s.push(n.id);}}state.document.selection=s;box_sel=false;}
             // Gizmos
             for &id in &state.document.selection{if let Some(n)=state.document.get_node(id){let p=n.position;for i in 0..8{let a=(i as f32/8.0)*TAU;engine.spawn_glyph(Glyph{character:'.',position:Vec3::new(p.x+a.cos()*1.2,p.y+a.sin()*1.2,0.1),color:Vec4::new(1.0,0.9,0.2,0.5),emission:0.3,layer:RenderLayer::Overlay,lifetime:0.02,..Default::default()});}engine.spawn_glyph(Glyph{character:'+',position:Vec3::new(p.x,p.y,0.1),color:Vec4::new(1.0,1.0,0.3,0.6),emission:0.4,layer:RenderLayer::Overlay,lifetime:0.02,..Default::default()});if state.tool==ToolKind::Move{engine.spawn_glyph(Glyph{character:'>',position:Vec3::new(p.x+1.5,p.y,0.1),color:Vec4::new(1.0,0.2,0.2,0.8),emission:0.5,layer:RenderLayer::Overlay,lifetime:0.02,..Default::default()});engine.spawn_glyph(Glyph{character:'^',position:Vec3::new(p.x,p.y+1.5,0.1),color:Vec4::new(0.2,1.0,0.2,0.8),emission:0.5,layer:RenderLayer::Overlay,lifetime:0.02,..Default::default()});}}}
         }
     });
+}
+
+/// Convert screen pixel coordinates to world-space position on the Z=0 plane.
+/// Camera: position (cam_x, cam_y, 10), FOV 60°, looking at -Z.
+fn screen_to_world(mouse_x: f32, mouse_y: f32, win_w: u32, win_h: u32, cam_x: f32, cam_y: f32) -> Vec3 {
+    let fov_rad = 60.0_f32.to_radians();
+    let cam_z = 10.0_f32;
+    let aspect = win_w as f32 / win_h.max(1) as f32;
+
+    // NDC: mouse (0,0)=top-left, (w,h)=bottom-right → NDC (-1,1)=top-left, (1,-1)=bottom-right
+    let ndc_x = (mouse_x / win_w as f32) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (mouse_y / win_h as f32) * 2.0; // flip Y: screen Y down → world Y up
+
+    // Half-extents of the visible area at Z=0 (distance = cam_z)
+    let half_h = (fov_rad * 0.5).tan() * cam_z;
+    let half_w = half_h * aspect;
+
+    let world_x = cam_x + ndc_x * half_w;
+    let world_y = cam_y + ndc_y * half_h;
+
+    Vec3::new(world_x, world_y, 0.0)
 }
 
 fn spawn_glyph_from_doc(engine: &mut ProofEngine, doc: &SceneDocument, nid: u32) {
