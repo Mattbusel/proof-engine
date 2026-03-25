@@ -93,6 +93,7 @@ pub mod narrative;
 pub mod electromagnetic;
 pub mod relativistic;
 pub mod quantum;
+pub mod svogi;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
