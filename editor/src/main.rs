@@ -57,6 +57,14 @@ fn main() {
     let mut status_timer = 0.0f32;
     let mut needs_rebuild = false;
 
+    // Viewport interaction state
+    let mut dragging = false;
+    let mut drag_start_world = Vec3::ZERO;
+    let mut drag_start_mouse = (0.0f32, 0.0f32);
+    let mut box_selecting = false;
+    let mut box_start = (0.0f32, 0.0f32);
+    let mut clipboard: Vec<scene::SceneNode> = Vec::new();
+
     spawn_grid(&mut engine);
 
     engine.run_with_overlay(move |engine, dt, gl| {
@@ -80,7 +88,33 @@ fn main() {
         let input = engine.input.clone();
         if input.just_pressed(Key::F1) { show_help = !show_help; }
         if input.just_pressed(Key::Space) { engine.add_trauma(0.3); }
-        if input.just_pressed(Key::V) { tool = ToolKind::Select; }
+        if input.just_pressed(Key::Escape) { document.selection.clear(); dragging = false; box_selecting = false; }
+
+        // Copy/paste
+        if input.ctrl() && input.just_pressed(Key::C) {
+            clipboard.clear();
+            for &id in &document.selection {
+                if let Some(node) = document.get_node(id) { clipboard.push(node.clone()); }
+            }
+            if !clipboard.is_empty() { set_status(&mut status_msg, &mut status_timer, &format!("Copied {}", clipboard.len())); }
+        }
+        if input.ctrl() && input.just_pressed(Key::V) && !clipboard.is_empty() {
+            let mut new_ids = Vec::new();
+            for node in &clipboard {
+                let mut n = node.clone();
+                n.position += Vec3::new(1.0, -1.0, 0.0); // offset paste
+                let nid = document.next_id; document.next_id += 1;
+                n.id = nid;
+                n.name = format!("{}_copy", n.name);
+                document.nodes.push(n);
+                new_ids.push(nid);
+            }
+            document.selection = new_ids;
+            needs_rebuild = true;
+            set_status(&mut status_msg, &mut status_timer, &format!("Pasted {}", clipboard.len()));
+        }
+
+        if input.just_pressed(Key::V) && !input.ctrl() { tool = ToolKind::Select; }
         if input.just_pressed(Key::G) { tool = ToolKind::Move; }
         if input.just_pressed(Key::P) { tool = ToolKind::Place; }
         if input.just_pressed(Key::F) && !input.ctrl() { tool = ToolKind::Field; }
@@ -372,13 +406,161 @@ fn main() {
                     }
                     ToolKind::Select => {
                         if let Some(id) = document.pick_at(world_pos, 1.5) {
-                            document.selection = vec![id];
-                            set_status(&mut status_msg, &mut status_timer, "Selected");
+                            if input.shift() {
+                                // Shift+click: toggle selection (multi-select)
+                                document.toggle_selection(id);
+                            } else {
+                                document.selection = vec![id];
+                            }
+                            set_status(&mut status_msg, &mut status_timer, &format!("Selected ({})", document.selection.len()));
                         } else {
-                            document.selection.clear();
+                            // Start box select
+                            box_selecting = true;
+                            box_start = (input.mouse_x, input.mouse_y);
+                            if !input.shift() { document.selection.clear(); }
+                        }
+                    }
+                    ToolKind::Move => {
+                        // Click to select, then drag to move
+                        if let Some(id) = document.pick_at(world_pos, 1.5) {
+                            if !document.selection.contains(&id) {
+                                if input.shift() { document.toggle_selection(id); }
+                                else { document.selection = vec![id]; }
+                            }
+                            dragging = true;
+                            drag_start_world = world_pos;
+                            drag_start_mouse = (input.mouse_x, input.mouse_y);
+                            set_status(&mut status_msg, &mut status_timer, "Dragging...");
                         }
                     }
                     _ => {}
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // DRAG TO MOVE — update while mouse held
+            // ═══════════════════════════════════════════════════════════════
+            if dragging && !egui_wants_pointer {
+                if input.is_pressed(proof_engine::input::Key::Escape) {
+                    dragging = false; // cancel drag
+                } else if input.mouse_left_just_released {
+                    // Finish drag — apply delta to all selected nodes
+                    let mx = (input.mouse_x / win_w as f32 - 0.5) * 18.0 + cam_x;
+                    let my = -((input.mouse_y / win_h as f32 - 0.5) * 11.0) + cam_y;
+                    let delta = Vec3::new(mx, my, 0.0) - drag_start_world;
+                    if delta.length() > 0.05 {
+                        let sel = document.selection.clone();
+                        for id in sel { document.translate_node(id, delta); }
+                        needs_rebuild = true;
+                        set_status(&mut status_msg, &mut status_timer, &format!("Moved by ({:.1}, {:.1})", delta.x, delta.y));
+                    }
+                    dragging = false;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // BOX SELECT — drag rectangle to select multiple
+            // ═══════════════════════════════════════════════════════════════
+            if box_selecting && !egui_wants_pointer {
+                if input.mouse_left_just_released {
+                    let (sx, sy) = box_start;
+                    let (ex, ey) = (input.mouse_x, input.mouse_y);
+                    // Convert both corners to world space
+                    let wx0 = (sx.min(ex) / win_w as f32 - 0.5) * 18.0 + cam_x;
+                    let wy0 = -((sy.max(ey) / win_h as f32 - 0.5) * 11.0) + cam_y;
+                    let wx1 = (sx.max(ex) / win_w as f32 - 0.5) * 18.0 + cam_x;
+                    let wy1 = -((sy.min(ey) / win_h as f32 - 0.5) * 11.0) + cam_y;
+
+                    // Select all nodes within the box
+                    let mut selected = if input.shift() { document.selection.clone() } else { Vec::new() };
+                    for node in document.nodes() {
+                        let p = node.position;
+                        if p.x >= wx0 && p.x <= wx1 && p.y >= wy0 && p.y <= wy1 {
+                            if !selected.contains(&node.id) { selected.push(node.id); }
+                        }
+                    }
+                    document.selection = selected;
+                    let count = document.selection.len();
+                    if count > 0 { set_status(&mut status_msg, &mut status_timer, &format!("Box selected {}", count)); }
+                    box_selecting = false;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // GIZMO VISUALS — render selection indicators as glyphs
+            // ═══════════════════════════════════════════════════════════════
+            for &id in &document.selection {
+                if let Some(node) = document.get_node(id) {
+                    // Selection ring around selected nodes
+                    let p = node.position;
+                    for i in 0..8 {
+                        let angle = (i as f32 / 8.0) * TAU;
+                        let r = 1.2;
+                        engine.spawn_glyph(Glyph {
+                            character: '.',
+                            position: Vec3::new(p.x + angle.cos() * r, p.y + angle.sin() * r, 0.1),
+                            color: Vec4::new(1.0, 0.9, 0.2, 0.5),
+                            emission: 0.3,
+                            layer: RenderLayer::Overlay,
+                            lifetime: 0.02,
+                            ..Default::default()
+                        });
+                    }
+                    // Center crosshair
+                    for &ch in &['+'] {
+                        engine.spawn_glyph(Glyph {
+                            character: ch,
+                            position: Vec3::new(p.x, p.y, 0.1),
+                            color: Vec4::new(1.0, 1.0, 0.3, 0.6),
+                            emission: 0.4,
+                            layer: RenderLayer::Overlay,
+                            lifetime: 0.02,
+                            ..Default::default()
+                        });
+                    }
+                    // Axis handles (if Move tool)
+                    if tool == ToolKind::Move {
+                        // X axis arrow
+                        engine.spawn_glyph(Glyph {
+                            character: '>',
+                            position: Vec3::new(p.x + 1.5, p.y, 0.1),
+                            color: Vec4::new(1.0, 0.2, 0.2, 0.8),
+                            emission: 0.5,
+                            layer: RenderLayer::Overlay,
+                            lifetime: 0.02,
+                            ..Default::default()
+                        });
+                        // Y axis arrow
+                        engine.spawn_glyph(Glyph {
+                            character: '^',
+                            position: Vec3::new(p.x, p.y + 1.5, 0.1),
+                            color: Vec4::new(0.2, 1.0, 0.2, 0.8),
+                            emission: 0.5,
+                            layer: RenderLayer::Overlay,
+                            lifetime: 0.02,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+
+            // Box select visual (rectangle outline while dragging)
+            if box_selecting {
+                let (sx, sy) = box_start;
+                let (ex, ey) = (input.mouse_x, input.mouse_y);
+                // Draw corners as glyphs
+                for &(mx, my) in &[(sx, sy), (ex, sy), (sx, ey), (ex, ey)] {
+                    let wx = (mx / win_w as f32 - 0.5) * 18.0 + cam_x;
+                    let wy = -((my / win_h as f32 - 0.5) * 11.0) + cam_y;
+                    engine.spawn_glyph(Glyph {
+                        character: '+',
+                        position: Vec3::new(wx, wy, 0.2),
+                        color: Vec4::new(0.3, 0.7, 1.0, 0.6),
+                        emission: 0.5,
+                        layer: RenderLayer::Overlay,
+                        lifetime: 0.02,
+                        ..Default::default()
+                    });
                 }
             }
         }
