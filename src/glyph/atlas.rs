@@ -86,14 +86,60 @@ pub const ATLAS_CHARS: &str = concat!(
 );
 
 /// Complete font atlas ready to upload to the GPU.
+/// Uses Signed Distance Field (SDF) encoding for resolution-independent rendering.
+/// Each pixel stores the distance to the nearest edge:
+///   128 = on the edge
+///   >128 = inside the glyph
+///   <128 = outside the glyph
 pub struct FontAtlas {
     pub width:  u32,
     pub height: u32,
-    /// R8 pixel data (one byte per pixel, 0-255 coverage).
+    /// R8 pixel data -- SDF encoded (128 = edge, >128 = inside, <128 = outside).
     pub pixels: Vec<u8>,
     pub uvs:    HashMap<char, GlyphUv>,
     pub cell_w: u32,
     pub cell_h: u32,
+    /// Whether this atlas uses SDF encoding (vs raw coverage).
+    pub is_sdf: bool,
+}
+
+/// Convert a coverage bitmap to a signed distance field.
+/// `spread` is the maximum distance in pixels that the SDF encodes.
+fn bitmap_to_sdf(bitmap: &[u8], w: u32, h: u32, spread: f32) -> Vec<u8> {
+    let mut sdf = vec![0u8; (w * h) as usize];
+    let threshold = 128u8; // coverage > this = inside
+
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let idx = (y as u32 * w + x as u32) as usize;
+            let is_inside = bitmap[idx] > threshold;
+
+            // Find minimum distance to an edge (brute force within spread radius)
+            let search = spread.ceil() as i32 + 1;
+            let mut min_dist_sq = (spread * spread) as f32 + 1.0;
+
+            'search: for dy in -search..=search {
+                for dx in -search..=search {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { continue; }
+                    let ni = (ny as u32 * w + nx as u32) as usize;
+                    let neighbor_inside = bitmap[ni] > threshold;
+                    if neighbor_inside != is_inside {
+                        let d = (dx * dx + dy * dy) as f32;
+                        if d < min_dist_sq { min_dist_sq = d; }
+                    }
+                }
+            }
+
+            let dist = min_dist_sq.sqrt();
+            let signed_dist = if is_inside { dist } else { -dist };
+            // Map to 0-255: 128 = edge, 255 = deep inside, 0 = far outside
+            let normalized = (signed_dist / spread * 127.0 + 128.0).clamp(0.0, 255.0);
+            sdf[idx] = normalized as u8;
+        }
+    }
+    sdf
 }
 
 fn load_system_font() -> Option<FontVec> {
@@ -177,7 +223,13 @@ impl FontAtlas {
                 v1: (cy + cell_h as i32) as f32 / h as f32,
             });
         }
-        Self { width: w, height: h, pixels, uvs, cell_w, cell_h }
+        // Convert to SDF for resolution-independent rendering
+        let sdf_spread = 6.0; // pixels of distance field spread
+        log::info!("FontAtlas: computing SDF ({}x{}, spread={})...", w, h, sdf_spread);
+        let sdf_pixels = bitmap_to_sdf(&pixels, w, h, sdf_spread);
+        log::info!("FontAtlas: SDF complete");
+
+        Self { width: w, height: h, pixels: sdf_pixels, uvs, cell_w, cell_h, is_sdf: true }
     }
 
     fn fallback(chars: &[char], px: u32) -> Self {
@@ -207,7 +259,7 @@ impl FontAtlas {
                 v1: (cy + ch as i32) as f32 / h as f32,
             });
         }
-        Self { width: w, height: h, pixels, uvs, cell_w: cw, cell_h: ch }
+        Self { width: w, height: h, pixels, uvs, cell_w: cw, cell_h: ch, is_sdf: false }
     }
 
     pub fn uv_for(&self, ch: char) -> GlyphUv {

@@ -90,10 +90,13 @@ void main() {
 }
 "#;
 
-/// Glyph fragment shader with dual output: color + emission.
+/// Glyph fragment shader -- SDF rendering with outline, glow halo, and drop shadow.
 ///
-/// `o_color`    → COLOR_ATTACHMENT0 — blended scene color
-/// `o_emission` → COLOR_ATTACHMENT1 — bloom input (high-intensity glowing pixels)
+/// The atlas stores Signed Distance Field values:
+///   128/255 = edge, >128 = inside, <128 = outside.
+///
+/// `o_color`    -> COLOR_ATTACHMENT0 -- blended scene color
+/// `o_emission` -> COLOR_ATTACHMENT1 -- bloom input
 const FRAG_SRC: &str = r#"
 #version 330 core
 
@@ -109,20 +112,62 @@ layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_emission;
 
 void main() {
-    float alpha = texture(u_atlas, f_uv).r;
-    if (alpha < 0.05) discard;
+    float dist = texture(u_atlas, f_uv).r;
 
-    // Base color with emission tint
-    float em  = clamp(f_emission * 0.5, 0.0, 1.0);
-    vec3  col = mix(f_color.rgb, f_glow_color, em);
-    o_color   = vec4(col, alpha * f_color.a);
+    // SDF thresholds (in normalized distance, 0.5 = edge)
+    float edge     = 0.5;
+    float softness = 0.08; // edge softness (antialiasing)
 
-    // Emission output: only bright, glowing pixels go to the bloom input.
-    // The bloom amount is proportional to (emission - 0.3), clamped.
+    // Core glyph alpha (sharp edge with antialiasing)
+    float alpha = smoothstep(edge - softness, edge + softness, dist);
+
+    // Outline: a band just outside the edge
+    float outline_width = 0.06;
+    float outline_alpha = smoothstep(edge - outline_width - softness, edge - outline_width, dist)
+                        * (1.0 - smoothstep(edge - softness * 0.5, edge + softness * 0.5, dist));
+    vec3 outline_color = f_glow_color * 0.6;
+
+    // Glow halo: soft falloff outside the glyph
+    float glow_size  = 0.15 + f_glow_radius * 0.05;
+    float glow_alpha = smoothstep(edge - glow_size - 0.1, edge - 0.02, dist) * (1.0 - alpha);
+    glow_alpha *= clamp(f_glow_radius * 0.3, 0.0, 0.5);
+
+    // Drop shadow (offset sample)
+    vec2 shadow_offset = vec2(0.003, -0.004);
+    float shadow_dist = texture(u_atlas, f_uv + shadow_offset).r;
+    float shadow_alpha = smoothstep(edge - softness, edge + softness, shadow_dist) * 0.2;
+
+    // Discard if nothing visible
+    float total_alpha = max(max(alpha, outline_alpha), max(glow_alpha, shadow_alpha));
+    if (total_alpha < 0.01) discard;
+
+    // Composite layers
+    float em = clamp(f_emission * 0.5, 0.0, 1.0);
+    vec3 base_col = mix(f_color.rgb, f_glow_color, em);
+
+    // Shadow (darkest layer)
+    vec3 col = vec3(0.0);
+    float a = shadow_alpha * f_color.a * 0.3;
+
+    // Glow halo (behind outline)
+    col = mix(col, f_glow_color * 0.5, glow_alpha);
+    a = max(a, glow_alpha * f_color.a * 0.4);
+
+    // Outline
+    col = mix(col, outline_color, outline_alpha);
+    a = max(a, outline_alpha * f_color.a * 0.7);
+
+    // Core fill (on top)
+    col = mix(col, base_col, alpha);
+    a = max(a, alpha * f_color.a);
+
+    o_color = vec4(col, a);
+
+    // Emission for bloom
     float bloom_strength = clamp(f_emission - 0.3, 0.0, 1.0);
-    // Add glow radius influence — higher glow_radius means more bloom spread
-    float glow_boost     = clamp(f_glow_radius * 0.15, 0.0, 0.8);
-    o_emission = vec4(f_glow_color * (bloom_strength + glow_boost), alpha * f_color.a);
+    float glow_boost = clamp(f_glow_radius * 0.15, 0.0, 0.8);
+    float em_alpha = max(alpha, glow_alpha * 0.5) * f_color.a;
+    o_emission = vec4(f_glow_color * (bloom_strength + glow_boost), em_alpha);
 }
 "#;
 
