@@ -40,7 +40,7 @@ fn main() {
 
     // ── Player: Mage ──
     let mut player = AmorphousEntity::new("Mage", Vec3::new(-4.0, 0.0, 0.0));
-    player.entity_mass = 4.0; player.cohesion = 0.9;
+    player.entity_mass = 0.5; player.cohesion = 5.0;
     player.pulse_rate = 0.5; player.pulse_depth = 0.1;
     player.hp = 100.0; player.max_hp = 100.0;
     #[rustfmt::skip]
@@ -75,7 +75,7 @@ fn main() {
 
     // ── Boss: Chaos Lord ──
     let mut boss = AmorphousEntity::new("Chaos Lord", Vec3::new(4.0, 0.0, 0.0));
-    boss.entity_mass = 7.0; boss.cohesion = 0.7;
+    boss.entity_mass = 0.5; boss.cohesion = 5.0;
     boss.pulse_rate = 0.25; boss.pulse_depth = 0.2;
     boss.hp = 100.0; boss.max_hp = 100.0;
     #[rustfmt::skip]
@@ -283,7 +283,7 @@ fn main() {
             // PHYSICS SHOCKWAVE -- pushes all particles with mass!
             engine.add_field(ForceField::Shockwave {
                 center: Vec3::new(impact_x, 0.0, 0.0),
-                speed: 5.0, strength: 2.0, thickness: 1.5, born_at: time,
+                speed: 4.0, strength: 0.5, thickness: 1.0, born_at: time,
             });
 
             engine.add_trauma(0.35);
