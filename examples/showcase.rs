@@ -277,18 +277,12 @@ fn main() {
             }
         }
 
-        // ── IMPACT: shockwave that WARPS the background and energy runes ──
+        // ── IMPACT: visual only, no force fields ──
         let impact_x = if player_attacked { 3.2 } else { -3.2 };
         if since > 1.2 && since < 1.2 + dt*2.0 && spell_n % 6 != 5 {
-            // PHYSICS SHOCKWAVE -- pushes all particles with mass!
-            engine.add_field(ForceField::Shockwave {
-                center: Vec3::new(impact_x, 0.0, 0.0),
-                speed: 4.0, strength: 0.5, thickness: 1.0, born_at: time,
-            });
-
             engine.add_trauma(0.35);
-            engine.config.render.bloom_intensity = 3.5; // flash
-            engine.config.render.chromatic_aberration = 0.008; // distortion flash
+            engine.config.render.bloom_intensity = 3.5;
+            engine.config.render.chromatic_aberration = 0.008;
 
             // Impact sparks
             let impact_chars = ['*','+','x','#','o','='];
