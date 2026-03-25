@@ -34,7 +34,8 @@ fn main() {
         ..Default::default()
     });
 
-    let symbols: Vec<char> = "∂∇∫∑∏√∞≈≠≤≥±∓∈∉⊂⊃∪∩∧∨¬∀∃αβγδεζηθλμπσφψω0123456789+-×÷=<>()[]{}".chars().collect();
+    // ASCII + block elements that Consolas definitely renders
+    let symbols: Vec<char> = "0123456789ABCDEFabcdef+-*/=<>()[]{}|&^~%#@!?.,:;xXoO░▒▓█".chars().collect();
 
     // Each column is a stream of falling characters
     for col in 0..COLUMNS {

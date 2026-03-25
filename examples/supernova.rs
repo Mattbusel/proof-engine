@@ -42,7 +42,7 @@ fn main() {
         let y = r * angle.sin() + (i as f32 * 0.31).cos() * 0.3;
 
         let temp = 1.0 - (r / 3.0); // hotter at center
-        let ch = if temp > 0.7 { '✦' } else if temp > 0.4 { '★' } else { '·' };
+        let ch = if temp > 0.7 { '#' } else if temp > 0.4 { '*' } else { '.' };
 
         engine.spawn_glyph(Glyph {
             character: ch,
@@ -141,7 +141,7 @@ fn main() {
                             (0.6, 0.2, 0.8) // purple outer
                         };
 
-                        let chars = ['✦', '✧', '⊛', '✶', '✴', '✳', '•', '·'];
+                        let chars = ['#', '*', '@', '+', 'x', 'X', 'o', '.'];
 
                         engine.spawn_glyph(Glyph {
                             character: chars[i % chars.len()],

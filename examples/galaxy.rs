@@ -49,9 +49,10 @@ fn main() {
     });
 
     // Star characters by type
-    let hot_stars = ['✦', '✧', '⁂', '✶', '✴'];
-    let cool_stars = ['·', '∙', '•', '°', '⋅'];
-    let bright_stars = ['★', '☆', '✪', '✯', '⊛'];
+    // Use only characters Consolas definitely has
+    let hot_stars = ['*', '+', 'x', 'o', '.'];
+    let cool_stars = ['.', ',', '\'', '`', '-'];
+    let bright_stars = ['@', '#', 'O', 'X', '*'];
 
     // Spawn spiral arm stars
     for i in 0..NUM_STARS {
@@ -118,7 +119,7 @@ fn main() {
         Vec4::new(0.1, 0.4, 0.3, 0.08),  // teal
         Vec4::new(0.4, 0.3, 0.1, 0.10),  // gold
     ];
-    let nebula_chars = ['░', '▒', '▓', '█', '◌', '◍', '◎'];
+    let nebula_chars = ['░', '▒', '▓', '█', '.', 'o', 'O'];
 
     for i in 0..NUM_NEBULA {
         let t = i as f32 / NUM_NEBULA as f32;
@@ -156,7 +157,7 @@ fn main() {
         let angle = (i as f32 / 30.0) * TAU;
         let r = 1.5;
         engine.spawn_glyph(Glyph {
-            character: '█',
+            character: '#',
             position: Vec3::new(r * angle.cos(), r * angle.sin(), 0.1),
             color: Vec4::new(1.0, 0.8, 0.4, 0.6),
             emission: 4.0,

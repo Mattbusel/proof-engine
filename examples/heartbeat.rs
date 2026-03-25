@@ -119,7 +119,7 @@ fn main() {
         let r = 4.0 + (i as f32 * 0.37).sin() * 1.5;
         let hue = (i as f32 / 60.0) * 0.3 + 0.7; // purple-blue range
         engine.spawn_glyph(Glyph {
-            character: '✧',
+            character: '*',
             position: Vec3::new(r * angle.cos(), r * angle.sin(), -0.2),
             color: Vec4::new(hue, 0.3, 1.0 - hue * 0.3, 0.4),
             emission: 0.8,
