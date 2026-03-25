@@ -268,6 +268,9 @@ pub struct Pipeline {
     // ── SVOGI Global Illumination ───────────────────────────────────────────
     pub svogi: crate::svogi::integration::CascadedSvogi,
 
+    // ── Volumetric fog ──────────────────────────────────────────────────────
+    pub fog: crate::volumetric_fog::VolumetricFogPipeline,
+
     // ── CPU-side glyph batch ──────────────────────────────────────────────────
     instances: Vec<GlyphInstance>,
 
@@ -407,6 +410,9 @@ impl Pipeline {
             mouse_ndc: Vec2::ZERO,
             raw_window_events: Vec::new(),
             svogi: crate::svogi::integration::CascadedSvogi::new(3, 64, 50.0),
+            fog: crate::volumetric_fog::VolumetricFogPipeline::new(
+                crate::volumetric_fog::FogPresets::combat()
+            ),
         }
     }
 
@@ -586,6 +592,20 @@ impl Pipeline {
                 }
             }
             self.svogi.update(dt, &[], &all_lights, &[]);
+        }
+
+        // ── Update volumetric fog ─────────────────────────────────────────────
+        {
+            use crate::volumetric_fog::FogLight;
+            let inv_vp = view_proj.inverse();
+            let fog_lights = vec![
+                FogLight::Directional {
+                    direction: Vec3::new(-0.3, -0.8, -0.5).normalize(),
+                    color: Vec3::new(0.6, 0.55, 0.5),
+                    intensity: 0.5,
+                },
+            ];
+            self.fog.update(dt, &inv_vp, pos, &fog_lights, &[]);
         }
 
         // ── Build glyph batch ──────────────────────────────────────────────────
