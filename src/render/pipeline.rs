@@ -708,43 +708,9 @@ impl Pipeline {
         gl.viewport(0, 0, self.width as i32, self.height as i32);
         gl.clear(glow::COLOR_BUFFER_BIT);
 
-        // Compute sky colors for a few vertical bands and render as colored quads
-        // We use the Nishita model to get horizon and zenith colors
-        {
-            use crate::nishita_sky::{SkyConfig, compute_sky_color};
-            let sky_config = SkyConfig {
-                sun_direction: glam::Vec3::new(
-                    (self.scene_time * 0.05).cos(),
-                    0.3 + (self.scene_time * 0.02).sin() * 0.2,
-                    (self.scene_time * 0.05).sin(),
-                ).normalize(),
-                sun_intensity: 15.0,
-                num_samples: 8,
-                num_light_samples: 4,
-                ..Default::default()
-            };
-
-            // Sample sky at zenith and horizon
-            let zenith_color = compute_sky_color(glam::Vec3::Y, &sky_config);
-            let horizon_color = compute_sky_color(glam::Vec3::new(0.0, 0.02, -1.0).normalize(), &sky_config);
-
-            // Scale down for dark scenes (we're a glyph game, not a daylight sim)
-            let sky_brightness = 0.03; // very subtle
-            let zen = [zenith_color.x * sky_brightness, zenith_color.y * sky_brightness, zenith_color.z * sky_brightness];
-            let hor = [horizon_color.x * sky_brightness, horizon_color.y * sky_brightness, horizon_color.z * sky_brightness];
-
-            // Write sky gradient directly to the FBO via gl clear color
-            // (blend between horizon at bottom and zenith at top)
-            // For a proper implementation we'd use a fullscreen shader,
-            // but for now just set the clear color to the horizon (most visible)
-            gl.clear_color(
-                hor[0].min(0.08),
-                hor[1].min(0.08),
-                hor[2].min(0.12),
-                1.0,
-            );
-            gl.clear(glow::COLOR_BUFFER_BIT);
-        }
+        // Fixed sky background color (dark blue-black, no per-frame computation)
+        gl.clear_color(0.02, 0.025, 0.04, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
 
         // ── Pass 1: Render glyphs ────────────────────────────────────────────
 
