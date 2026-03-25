@@ -14,4 +14,6 @@ pub mod ui_layer;
 pub mod ui_layer_renderer;
 pub mod ui_primitives;
 
+pub mod hdr;
+
 pub use pipeline::Pipeline;

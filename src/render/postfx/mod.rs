@@ -8,6 +8,9 @@ pub mod chromatic;
 pub mod grain;
 pub mod scanlines;
 pub mod pipeline;
+pub mod bloom_pipeline;
+pub mod lut_grade;
+pub mod fxaa;
 
 pub use pipeline::PostFxPipeline;
 
