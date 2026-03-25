@@ -318,40 +318,55 @@ fn main() {
                 if pt < 4.0 { engine.add_trauma(0.01*dt*(pt+1.0)); }
                 // Explosion at 4s
                 if pt > 4.0 && pt < 4.0+dt*2.0 {
-                    engine.add_field(ForceField::Shockwave { center: Vec3::ZERO, speed: 10.0, strength: 8.0, thickness: 4.0, born_at: time });
+                    // Clear scene to remove the 6x gravity before spawning explosion
+                    engine.scene = SceneGraph::new();
+                    spawn_stars(engine);
+                    // Gentle outward push instead of massive gravity
+                    engine.add_field(ForceField::Shockwave { center: Vec3::ZERO, speed: 8.0, strength: 5.0, thickness: 3.0, born_at: time });
                     engine.add_trauma(1.0);
                     engine.config.render.bloom_intensity = 5.0;
+                    // Persistent center glow so screen is never black
+                    engine.spawn_glyph(Glyph {
+                        character: '*', scale: lg, position: Vec3::ZERO,
+                        color: Vec4::new(1.0, 0.8, 0.4, 0.8), emission: 3.0,
+                        glow_color: Vec3::new(1.0, 0.6, 0.2), glow_radius: 5.0,
+                        layer: RenderLayer::Entity, blend_mode: BlendMode::Additive,
+                        life_function: Some(MathFunction::Breathing { rate: 0.8, depth: 0.3 }),
+                        ..Default::default()
+                    });
                     for i in 0..800 {
-                        let a = (i as f32/800.0)*TAU*4.0; let spd = 0.5+hf(i+9000,0)*8.0; let t = i as f32/800.0;
+                        let a = (i as f32/800.0)*TAU*4.0; let spd = 0.3+hf(i+9000,0)*5.0; let t = i as f32/800.0;
                         let (r,g,b) = if t<0.15{(1.0,1.0,0.9)}else if t<0.3{(1.0,0.9,0.3)}else if t<0.5{(1.0,0.4,0.1)}else if t<0.7{(0.9,0.15,0.5)}else if t<0.85{(0.5,0.1,0.8)}else{(0.15,0.1,0.5)};
                         engine.spawn_glyph(Glyph {
                             character: ['#','*','@','+','x','o','X','.'][i%8], scale: sm,
                             position: Vec3::new(hf(i+9000,1)*0.2-0.1, hf(i+9000,2)*0.2-0.1, 0.0),
-                            velocity: Vec3::new(a.cos()*spd, a.sin()*spd, (hf(i+9000,3)-0.5)*1.5),
+                            velocity: Vec3::new(a.cos()*spd, a.sin()*spd, (hf(i+9000,3)-0.5)*1.0),
                             color: Vec4::new(r,g,b,0.95), emission: 3.0-t*1.5,
                             glow_color: Vec3::new(r,g,b), glow_radius: 2.0-t,
-                            mass: 0.02, lifetime: 2.0+hf(i+9000,4)*5.0,
+                            mass: 0.0, // zero mass = not affected by force fields
+                            lifetime: 4.0+hf(i+9000,4)*6.0, // longer lifetime (4-10s)
                             layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
                             ..Default::default()
                         });
                     }
                 }
-                // Nebula at 7s
-                if pt > 7.0 && pt < 7.0+dt*2.0 {
-                    engine.add_field(ForceField::StrangeAttractor { attractor_type: AttractorType::Rossler, scale: 0.15, strength: 0.2, center: Vec3::ZERO });
+                // Nebula at 5.5s (earlier, overlapping with explosion particles)
+                if pt > 5.5 && pt < 5.5+dt*2.0 {
+                    engine.add_field(ForceField::StrangeAttractor { attractor_type: AttractorType::Rossler, scale: 0.15, strength: 0.15, center: Vec3::ZERO });
                     for i in 0..300 {
                         let t = i as f32/300.0;
                         let c = if t<0.25{Vec4::new(0.5,0.1,0.8,0.4)}else if t<0.5{Vec4::new(0.1,0.3,0.9,0.35)}else if t<0.75{Vec4::new(0.8,0.15,0.3,0.3)}else{Vec4::new(0.2,0.7,0.4,0.25)};
                         engine.spawn_glyph(Glyph {
                             character: '.', scale: sm,
-                            position: Vec3::new(hf(i+11000,0)*5.0-2.5, hf(i+11000,1)*5.0-2.5, 0.0),
-                            color: c, emission: 0.5, glow_radius: 1.5, mass: 0.015,
+                            position: Vec3::new(hf(i+11000,0)*4.0-2.0, hf(i+11000,1)*4.0-2.0, 0.0),
+                            color: c, emission: 0.6, glow_radius: 1.5,
+                            mass: 0.01, // low mass, gentle attractor pull
                             layer: RenderLayer::World, blend_mode: BlendMode::Additive,
                             ..Default::default()
                         });
                     }
                 }
-                if pt > 5.0 { engine.config.render.bloom_intensity = (5.0-(pt-5.0)*0.6).max(1.5); }
+                if pt > 5.0 { engine.config.render.bloom_intensity = (5.0-(pt-5.0)*0.5).max(1.8); }
             }
             6 => { engine.config.render.bloom_intensity = 2.0+(pt*0.4).sin()*0.25; }
             _ => {}
