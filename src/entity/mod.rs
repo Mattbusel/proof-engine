@@ -7,6 +7,7 @@
 pub mod formation;
 pub mod cohesion;
 pub mod ai;
+pub mod layered_entity;
 
 use crate::glyph::GlyphId;
 use crate::math::ForceField;
