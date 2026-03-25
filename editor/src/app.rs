@@ -291,98 +291,112 @@ impl EditorApp {
 
     fn render_all(&self, engine: &mut ProofEngine) {
         let (cx, cy) = (self.viewport.cam_x, self.viewport.cam_y);
-        // Menu bar
-        let y = cy + 11.5; let x = cx - 17.0;
-        for (i, label) in ["File","Edit","View","Tools","Scene"].iter().enumerate() {
-            WidgetDraw::text(engine, x + i as f32 * 4.0, y, label, self.theme.fg, 0.15, RenderLayer::UI);
+        // Visible area at camera Z=10, FOV=60: roughly ±9 X, ±5.5 Y
+        let left = cx - 8.5;
+        let right = cx + 5.5;
+        let top = cy + 5.0;
+        let bottom = cy - 5.0;
+
+        // Menu bar (top)
+        let mut mx = left;
+        for label in &["File","Edit","View","Tools","Scene"] {
+            WidgetDraw::text(engine, mx, top, label, self.theme.fg, 0.15, RenderLayer::UI);
+            mx += label.len() as f32 * 0.42 + 0.5;
         }
         let mode_s = self.editor_state.mode.to_string();
-        WidgetDraw::text(engine, cx + 12.0, y, &mode_s,
+        WidgetDraw::text(engine, right, top, &mode_s,
             if self.editor_state.mode == EditorMode::Play { Vec4::new(0.2,1.0,0.4,1.0) } else { Vec4::new(0.3,0.6,1.0,1.0) },
             0.5, RenderLayer::UI);
 
-        // Hierarchy
+        // Hierarchy (left side)
         if self.show_hierarchy {
-            let mut y = cy + 10.0;
-            WidgetDraw::text(engine, x, y, "HIERARCHY", self.theme.accent, 0.3, RenderLayer::UI); y -= 0.7;
-            for n in self.document.nodes().take(25) {
+            let mut y = top - 0.8;
+            WidgetDraw::text(engine, left, y, "HIERARCHY", self.theme.accent, 0.3, RenderLayer::UI); y -= 0.6;
+            for n in self.document.nodes().take(12) {
                 let sel = self.document.selection.contains(&n.id);
                 let icon = match n.kind { crate::scene::NodeKind::Glyph=>"@", crate::scene::NodeKind::Field=>"~", crate::scene::NodeKind::Entity=>"#", _=>">" };
-                WidgetDraw::text(engine, x, y, &format!("{} {}", icon, n.name),
-                    if sel { self.theme.warning } else { self.theme.fg }, if sel { 0.3 } else { 0.08 }, RenderLayer::UI);
-                y -= 0.5;
+                WidgetDraw::text(engine, left, y, &format!("{} {}", icon, n.name),
+                    if sel { self.theme.warning } else { self.theme.fg }, if sel { 0.3 } else { 0.1 }, RenderLayer::UI);
+                y -= 0.45;
             }
         }
 
-        // Inspector
+        // Inspector (right side)
         if self.show_inspector {
-            let ix = cx + 10.0; let mut iy = cy + 10.0;
-            WidgetDraw::text(engine, ix, iy, "INSPECTOR", self.theme.accent, 0.3, RenderLayer::UI); iy -= 0.7;
+            let ix = right - 3.0;
+            let mut iy = top - 0.8;
+            WidgetDraw::text(engine, ix, iy, "INSPECTOR", self.theme.accent, 0.3, RenderLayer::UI); iy -= 0.6;
             if let Some(&id) = self.document.selection.first() {
                 if let Some(n) = self.document.get_node(id) {
                     for line in &[
-                        format!("Name: {}", n.name), format!("Type: {:?}", n.kind),
-                        format!("Pos: ({:.1},{:.1})", n.position.x, n.position.y),
-                        format!("Emit: {:.2}  Glow: {:.2}", n.emission, n.glow_radius),
+                        format!("{}", n.name),
+                        format!("{:?}", n.kind),
+                        format!("({:.1},{:.1})", n.position.x, n.position.y),
+                        format!("E:{:.1} G:{:.1}", n.emission, n.glow_radius),
                     ] {
-                        WidgetDraw::text(engine, ix, iy, line, self.theme.fg, 0.1, RenderLayer::UI); iy -= 0.5;
+                        WidgetDraw::text(engine, ix, iy, line, self.theme.fg, 0.1, RenderLayer::UI); iy -= 0.45;
                     }
                     WidgetDraw::color_swatch(engine, ix, iy, n.color);
                 }
             } else {
-                WidgetDraw::text(engine, ix, iy, "No selection", self.theme.fg_dim, 0.05, RenderLayer::UI);
+                WidgetDraw::text(engine, ix, iy, "No sel", self.theme.fg_dim, 0.05, RenderLayer::UI);
             }
         }
 
-        // Toolbar
-        let ty = cy - 10.5; let mut tx = cx - 17.0;
-        for (k, name, kind) in &[("V","Select",ToolKind::Select),("G","Move",ToolKind::Move),("P","Place",ToolKind::Place),
-            ("F","Field",ToolKind::Field),("E","Entity",ToolKind::Entity),("X","Burst",ToolKind::Particle)] {
+        // Toolbar (bottom)
+        let ty = bottom + 0.8;
+        let mut tx = left;
+        for (k, name, kind) in &[("V","Sel",ToolKind::Select),("G","Mov",ToolKind::Move),("P","Plc",ToolKind::Place),
+            ("F","Fld",ToolKind::Field),("E","Ent",ToolKind::Entity),("X","Bst",ToolKind::Particle)] {
             let a = self.tools.current() == *kind;
             WidgetDraw::text(engine, tx, ty, &format!("[{}]{}", k, name),
-                if a { self.theme.warning } else { self.theme.fg_dim }, if a { 0.35 } else { 0.06 }, RenderLayer::UI);
-            tx += (name.len()+3) as f32 * 0.4 + 0.3;
+                if a { self.theme.warning } else { self.theme.fg_dim }, if a { 0.35 } else { 0.08 }, RenderLayer::UI);
+            tx += (name.len()+3) as f32 * 0.35 + 0.2;
         }
-        WidgetDraw::text(engine, cx-17.0, ty-0.6, &self.tools.settings_text(), self.theme.fg_dim, 0.04, RenderLayer::UI);
 
-        // Status
+        // Status bar (very bottom)
         if self.show_stats {
-            WidgetDraw::text(engine, cx-17.0, cy-11.5,
-                &format!("FPS:{:.0} N:{} G:{} F:{} S:{}", self.fps, self.document.node_count(),
-                    self.document.glyph_count(), self.document.field_count(), self.document.selection.len()),
-                self.theme.fg_dim, 0.04, RenderLayer::UI);
+            WidgetDraw::text(engine, left, bottom + 0.2,
+                &format!("FPS:{:.0}  N:{}  G:{}  F:{}  S:{}",
+                    self.fps, self.document.node_count(),
+                    self.document.glyph_count(), self.document.field_count(),
+                    self.document.selection.len()),
+                self.theme.fg_dim, 0.06, RenderLayer::UI);
         }
 
-        // Notifications
-        let mut ny = cy + 8.0;
-        for n in self.notifications.iter().rev().take(5) {
+        // Notifications (center-ish)
+        let mut ny = cy + 3.0;
+        for n in self.notifications.iter().rev().take(3) {
             let mut c = n.color; c.w *= (n.remaining / 2.0).min(1.0);
-            WidgetDraw::text(engine, cx-5.0, ny, &n.text, c, 0.3 * c.w, RenderLayer::UI);
-            ny -= 0.6;
+            WidgetDraw::text(engine, cx - 3.0, ny, &n.text, c, 0.3 * c.w, RenderLayer::UI);
+            ny -= 0.55;
         }
 
         // Console
         if self.show_console {
-            let (bx, by) = (cx-14.0, cy-5.0);
-            WidgetDraw::fill_rect(engine, Rect::new(bx, by+8.0, 28.0, 8.0), Vec4::new(0.05,0.05,0.08,0.92));
-            WidgetDraw::text(engine, bx+0.3, by+7.8, "CONSOLE", self.theme.accent, 0.2, RenderLayer::Overlay);
-            let mut ly = by + 7.0;
-            for line in self.console.lines().collect::<Vec<_>>().into_iter().rev().take(12) {
+            let (bx, by) = (left + 1.0, bottom + 1.5);
+            WidgetDraw::fill_rect(engine, Rect::new(bx, by + 6.0, 15.0, 6.0), Vec4::new(0.05,0.05,0.08,0.92));
+            WidgetDraw::text(engine, bx+0.2, by+5.7, "CONSOLE", self.theme.accent, 0.2, RenderLayer::Overlay);
+            let mut ly = by + 5.0;
+            for line in self.console.lines().collect::<Vec<_>>().into_iter().rev().take(8) {
                 let c = match line.level { LogLevel::Error|LogLevel::Fatal => self.theme.error, LogLevel::Warn => self.theme.warning, _ => self.theme.fg_dim };
-                WidgetDraw::text(engine, bx+0.3, ly, &format!("{} {}", line.level.prefix_char(), line.text), c, 0.06, RenderLayer::Overlay);
-                ly -= 0.5;
+                WidgetDraw::text(engine, bx+0.2, ly, &format!("{} {}", line.level.prefix_char(), line.text), c, 0.06, RenderLayer::Overlay);
+                ly -= 0.45;
             }
-            WidgetDraw::text(engine, bx+0.3, by+0.3, &format!("> {}", self.console.input_buffer.clone()), self.theme.fg_bright, 0.15, RenderLayer::Overlay);
+            WidgetDraw::text(engine, bx+0.2, by+0.2, &format!("> {}", self.console.input_buffer.clone()), self.theme.fg_bright, 0.15, RenderLayer::Overlay);
         }
 
-        // Help
+        // Help overlay
         if self.show_help {
-            let hx = cx - 10.0; let mut hy = cy + 6.0;
-            WidgetDraw::fill_rect(engine, Rect::new(hx-0.3, hy+0.3, 18.0, 11.0), Vec4::new(0.05,0.05,0.08,0.92));
-            for line in &["PROOF EDITOR HELP","","Click=Place  WASD=Pan","V/G/P/F/E/X=Tools","Q/W=Chars 1/2=Colors","3/4=Fields 5-8=Emit/Glow",
-                "","Ctrl+S/O/N=Save/Load/New","Ctrl+Z/Y=Undo/Redo","Ctrl+D=Dup Del=Remove","","F1=Help F2=Stats F3=Grid","F5=Play `=Console Esc=Close"] {
-                WidgetDraw::text(engine, hx, hy, line, if hy > cy + 5.5 { self.theme.warning } else { self.theme.fg }, 0.08, RenderLayer::Overlay);
-                hy -= 0.55;
+            let hx = cx - 5.0;
+            let mut hy = cy + 3.5;
+            WidgetDraw::fill_rect(engine, Rect::new(hx-0.2, hy+0.2, 10.0, 7.5), Vec4::new(0.05,0.05,0.08,0.92));
+            for line in &["PROOF EDITOR","","Click=Place WASD=Pan","V/G/P/F/E/X=Tools","Q/W=Chars 1/2=Colors",
+                "","Ctrl+S/O/N Save/Load/New","Ctrl+Z/Y Undo/Redo","F1=Help F5=Play","` = Console"] {
+                WidgetDraw::text(engine, hx, hy, line,
+                    if hy > cy + 3.0 { self.theme.warning } else { self.theme.fg },
+                    0.1, RenderLayer::Overlay);
+                hy -= 0.5;
             }
         }
     }
