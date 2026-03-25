@@ -5,9 +5,9 @@
 
 ![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
 
-Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics — the same way real matter holds its shape through intermolecular forces. When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, and fluid behavior all emerge from the same system with zero additional engineering — just different spring constants.
+Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, and fluid behavior all emerge from the same system with zero additional engineering, just different spring constants.
 
-This demo is running with **no lighting pipeline, no shaders, no post-processing, and no material system.** What you're seeing is raw particle simulation only. The engine's full rendering stack — voxel cone traced global illumination, spherical harmonics, Nishita atmospheric scattering, deferred caustics, PBR materials, and volumetric fog — has not been turned on yet. Every particle is a potential light emitter. The visual ceiling scales with particle count, which has no architectural limit.
+This demo is running with **no lighting pipeline, no shaders, no post-processing, and no material system.** What you're seeing is raw particle simulation only. The engine's full rendering stack, voxel cone traced global illumination, spherical harmonics, Nishita atmospheric scattering, deferred caustics, PBR materials, and volumetric fog, has not been turned on yet. Every particle is a potential light emitter. The visual ceiling scales with particle count, which has no architectural limit.
 
 This is not a particle effect system bolted onto a polygon engine. Particles are the rendering primitive. Everything in the scene is made of them.
 
