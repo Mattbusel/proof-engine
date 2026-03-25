@@ -90,6 +90,9 @@ pub mod fractal;
 pub mod worldgen;
 pub mod ecology;
 pub mod narrative;
+pub mod electromagnetic;
+pub mod relativistic;
+pub mod quantum;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
