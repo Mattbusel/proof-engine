@@ -118,14 +118,17 @@ fn main() {
             if !new_ids.is_empty() { document.selection = new_ids; needs_rebuild = true; set_status(&mut status_msg, &mut status_timer, "Duplicated"); }
         }
 
-        // Camera pan
-        let cam_speed = 8.0 * dt;
-        if input.is_pressed(Key::W) || input.is_pressed(Key::Up) { cam_y += cam_speed; }
-        if input.is_pressed(Key::S) && !input.ctrl() || input.is_pressed(Key::Down) { cam_y -= cam_speed; }
-        if input.is_pressed(Key::A) && !input.ctrl() || input.is_pressed(Key::Left) { cam_x -= cam_speed; }
-        if input.is_pressed(Key::D) || input.is_pressed(Key::Right) { cam_x += cam_speed; }
+        // Camera pan (arrows always work, WASD only without ctrl)
+        let cam_speed = 12.0 * dt;
+        if input.is_pressed(Key::Up) || (input.is_pressed(Key::W) && !input.ctrl()) { cam_y += cam_speed; }
+        if input.is_pressed(Key::Down) || (input.is_pressed(Key::S) && !input.ctrl()) { cam_y -= cam_speed; }
+        if input.is_pressed(Key::Left) || (input.is_pressed(Key::A) && !input.ctrl()) { cam_x -= cam_speed; }
+        if input.is_pressed(Key::Right) || (input.is_pressed(Key::D) && !input.ctrl()) { cam_x += cam_speed; }
         engine.camera.position.x.target = cam_x;
         engine.camera.position.y.target = cam_y;
+        // Also directly set position for instant response (bypass spring lag)
+        engine.camera.position.x.position = cam_x;
+        engine.camera.position.y.position = cam_y;
 
         // Rebuild scene if needed
         if needs_rebuild {
