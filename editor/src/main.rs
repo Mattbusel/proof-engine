@@ -21,6 +21,8 @@
 #[allow(unused)] mod asset_browser;
 #[allow(unused)] mod profiler_panel;
 #[allow(unused)] mod project;
+#[allow(unused)] mod property_editor;
+#[allow(unused)] mod math_viz;
 
 use proof_engine::prelude::*;
 use app::EditorApp;
