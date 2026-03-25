@@ -83,6 +83,13 @@ pub mod topology;
 pub mod stochastic;
 pub mod ml;
 pub mod wgpu_backend;
+pub mod geometry;
+pub mod symbolic;
+pub mod solver;
+pub mod fractal;
+pub mod worldgen;
+pub mod ecology;
+pub mod narrative;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
