@@ -632,7 +632,7 @@ Requires Rust stable. OpenGL 3.3 Core context. Tested on Windows 11 with MSVC to
 
 ## Stats
 
-- Compiles clean with no errors
+- Compiles clean
 - 15+ major system tiers: rendering, math, physics, audio, AI, scripting, networking, animation, combat, terrain, ECS, DSP, PBR, editor, character/game systems
 
 ## License
