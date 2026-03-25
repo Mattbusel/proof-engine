@@ -77,6 +77,12 @@ pub mod surfaces;
 pub mod rendergraph;
 pub mod compute;
 pub mod lighting;
+pub mod number_theory;
+pub mod graph;
+pub mod topology;
+pub mod stochastic;
+pub mod ml;
+pub mod wgpu_backend;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
