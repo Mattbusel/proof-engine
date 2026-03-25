@@ -1,6 +1,8 @@
 //! Screen effects coordinator — combines all post-processing passes into
 //! a single, driven, event-triggered system.
 //!
+
+pub mod field_viz;
 //! # Architecture
 //!
 //! `EffectsController` owns all postfx parameter structs and drives them
