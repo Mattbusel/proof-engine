@@ -2,6 +2,7 @@
 
 use glam::Vec4;
 use proof_engine::prelude::*;
+use proof_engine::prelude::RenderLayer;
 use super::{Rect, WidgetTheme, WidgetDraw};
 
 pub struct ScrollArea {
@@ -56,14 +57,14 @@ impl ScrollArea {
         let rows = (bar_h / 0.55) as usize;
         for i in 0..rows {
             WidgetDraw::text(engine, bar_x, self.rect.y - i as f32 * 0.55, "│",
-                theme.bg, 0.0);
+                theme.bg, 0.0, RenderLayer::UI);
         }
 
         // Thumb
         let thumb_rows = (thumb_h / 0.55) as usize;
         for i in 0..thumb_rows.max(1) {
             WidgetDraw::text(engine, bar_x, self.rect.y - thumb_offset - i as f32 * 0.55, "█",
-                theme.fg_dim, 0.1);
+                theme.fg_dim, 0.1, RenderLayer::UI);
         }
     }
 }

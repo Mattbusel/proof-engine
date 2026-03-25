@@ -62,8 +62,8 @@ impl ColorPicker {
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
         // Label + swatch
         let arrow = if self.expanded { "v" } else { ">" };
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, arrow, theme.fg_dim, 0.1);
-        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, arrow, theme.fg_dim, 0.1, RenderLayer::UI);
+        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
         WidgetDraw::color_swatch(engine, self.rect.right() - 1.5, self.rect.y, self.color);
 
         if self.expanded {
@@ -78,7 +78,7 @@ impl ColorPicker {
                 (self.color.y * 255.0) as u8,
                 (self.color.z * 255.0) as u8,
             );
-            WidgetDraw::text(engine, self.rect.x + 1.5, self.rect.y - 3.0, &hex, theme.fg_dim, 0.1);
+            WidgetDraw::text(engine, self.rect.x + 1.5, self.rect.y - 3.0, &hex, theme.fg_dim, 0.1, RenderLayer::UI);
 
             // Preset swatches
             let presets = [

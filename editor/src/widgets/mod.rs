@@ -169,8 +169,8 @@ impl WidgetTheme {
 pub struct WidgetDraw;
 
 impl WidgetDraw {
-    /// Draw text at a position, returning the width in world units.
-    pub fn text(engine: &mut ProofEngine, x: f32, y: f32, text: &str, color: Vec4, emission: f32) -> f32 {
+    /// Draw text at a position on a specific layer, returning the width in world units.
+    pub fn text(engine: &mut ProofEngine, x: f32, y: f32, text: &str, color: Vec4, emission: f32, layer: RenderLayer) -> f32 {
         let char_w = 0.42;
         for (i, ch) in text.chars().enumerate() {
             if ch == ' ' { continue; }
@@ -179,7 +179,7 @@ impl WidgetDraw {
                 position: Vec3::new(x + i as f32 * char_w, y, 1.5),
                 color,
                 emission,
-                layer: RenderLayer::UI,
+                layer,
                 lifetime: 0.02,
                 ..Default::default()
             });

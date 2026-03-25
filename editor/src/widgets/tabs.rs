@@ -43,7 +43,7 @@ impl TabBar {
             let em = if active { 0.25 } else { 0.05 };
 
             WidgetDraw::fill_rect(engine, Rect::new(self.x + offset, self.y, w, 0.55), bg);
-            WidgetDraw::text(engine, self.x + offset + 0.5, self.y, tab, fg, em);
+            WidgetDraw::text(engine, self.x + offset + 0.5, self.y, tab, fg, em, RenderLayer::UI);
 
             if active {
                 // Underline

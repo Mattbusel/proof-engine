@@ -109,7 +109,7 @@ impl TextInput {
 
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
         let label_w = self.label.len() as f32 * 0.42;
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
 
         let field_x = self.rect.x + label_w + 0.5;
         let field_w = self.rect.w - label_w - 0.5;
@@ -127,12 +127,12 @@ impl TextInput {
             &self.text
         };
         let text_color = if self.text.is_empty() && !self.focused { theme.fg_dim } else { theme.fg };
-        WidgetDraw::text(engine, field_x + 0.2, self.rect.y, display_text, text_color, 0.1);
+        WidgetDraw::text(engine, field_x + 0.2, self.rect.y, display_text, text_color, 0.1, RenderLayer::UI);
 
         // Cursor
         if self.focused && ((self.blink_timer * 2.0) as u32 % 2 == 0) {
             let cursor_x = field_x + 0.2 + self.cursor as f32 * 0.42;
-            WidgetDraw::text(engine, cursor_x, self.rect.y, "|", theme.text_cursor, 0.4);
+            WidgetDraw::text(engine, cursor_x, self.rect.y, "|", theme.text_cursor, 0.4, RenderLayer::UI);
         }
     }
 }

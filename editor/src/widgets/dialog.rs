@@ -76,13 +76,13 @@ impl ModalDialog {
         WidgetDraw::border_rect(engine, self.rect, theme.accent);
 
         // Title
-        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y - 0.3, &self.title, theme.accent, 0.3);
+        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y - 0.3, &self.title, theme.accent, 0.3, RenderLayer::UI);
 
         // Separator
         WidgetDraw::separator(engine, self.rect.x + 0.3, self.rect.y - 1.0, self.rect.w - 0.6, theme.separator);
 
         // Message
-        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y - 1.5, &self.message, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x + 0.5, self.rect.y - 1.5, &self.message, theme.fg, 0.1, RenderLayer::UI);
 
         // Buttons
         let btn_y = self.rect.y - self.rect.h + 1.0;
@@ -91,7 +91,7 @@ impl ModalDialog {
             let btn_w = btn.len() as f32 * 0.42 + 1.0;
             WidgetDraw::fill_rect(engine, Rect::new(btn_x, btn_y, btn_w, 0.55), theme.bg_hover);
             WidgetDraw::border_rect(engine, Rect::new(btn_x, btn_y, btn_w, 0.55), theme.border);
-            WidgetDraw::text(engine, btn_x + 0.5, btn_y, btn, theme.fg_bright, 0.15);
+            WidgetDraw::text(engine, btn_x + 0.5, btn_y, btn, theme.fg_bright, 0.15, RenderLayer::UI);
             btn_x += btn_w + 0.5;
         }
     }

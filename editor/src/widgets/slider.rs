@@ -57,7 +57,7 @@ impl Slider {
 
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
         // Label
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
 
         // Track
         let track_x = self.rect.x + self.label.len() as f32 * 0.42 + 0.5;
@@ -67,12 +67,12 @@ impl Slider {
 
         // Handle (bright char at current position)
         let handle_x = track_x + track_w * fill;
-        WidgetDraw::text(engine, handle_x - 0.1, self.rect.y, "|", theme.fg_bright, 0.4);
+        WidgetDraw::text(engine, handle_x - 0.1, self.rect.y, "|", theme.fg_bright, 0.4, RenderLayer::UI);
 
         // Value display
         let val_text = format!("{:.*}", self.precision, self.value);
         let val_x = track_x + track_w + 0.3;
-        WidgetDraw::text(engine, val_x, self.rect.y, &val_text, theme.fg, 0.1);
+        WidgetDraw::text(engine, val_x, self.rect.y, &val_text, theme.fg, 0.1, RenderLayer::UI);
     }
 
     pub fn set_value(&mut self, v: f32) {
@@ -121,12 +121,12 @@ impl NumberInput {
     }
 
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
         let val_x = self.rect.x + self.label.len() as f32 * 0.42 + 0.5;
-        WidgetDraw::text(engine, val_x, self.rect.y, "-", theme.accent, 0.2);
+        WidgetDraw::text(engine, val_x, self.rect.y, "-", theme.accent, 0.2, RenderLayer::UI);
         let val_text = format!("{:.*}", self.precision, self.value);
-        WidgetDraw::text(engine, val_x + 0.7, self.rect.y, &val_text, theme.fg_bright, 0.15);
-        WidgetDraw::text(engine, val_x + 3.5, self.rect.y, "+", theme.accent, 0.2);
+        WidgetDraw::text(engine, val_x + 0.7, self.rect.y, &val_text, theme.fg_bright, 0.15, RenderLayer::UI);
+        WidgetDraw::text(engine, val_x + 3.5, self.rect.y, "+", theme.accent, 0.2, RenderLayer::UI);
     }
 }
 
@@ -159,7 +159,7 @@ impl Vec3Input {
     }
 
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
-        WidgetDraw::text(engine, self.x_slider.rect.x - 2.0, self.x_slider.rect.y, &self.label, theme.fg, 0.15);
+        WidgetDraw::text(engine, self.x_slider.rect.x - 2.0, self.x_slider.rect.y, &self.label, theme.fg, 0.15, RenderLayer::UI);
         self.x_slider.render(engine, theme);
         self.y_slider.render(engine, theme);
         self.z_slider.render(engine, theme);

@@ -79,15 +79,15 @@ impl Button {
         // Icon + label
         let mut text_x = self.rect.x + 0.2;
         if let Some(icon) = self.icon {
-            WidgetDraw::text(engine, text_x, self.rect.y, &icon.to_string(), fg, 0.15);
+            WidgetDraw::text(engine, text_x, self.rect.y, &icon.to_string(), fg, 0.15, RenderLayer::UI);
             text_x += 0.6;
         }
-        WidgetDraw::text(engine, text_x, self.rect.y, &self.label, fg, if self.selected { 0.3 } else { 0.1 });
+        WidgetDraw::text(engine, text_x, self.rect.y, &self.label, fg, if self.selected { 0.3 } else { 0.1 }, RenderLayer::UI);
 
         // Shortcut hint (right-aligned)
         if let Some(ref sc) = self.shortcut {
             let sc_x = self.rect.right() - sc.len() as f32 * 0.42 - 0.2;
-            WidgetDraw::text(engine, sc_x, self.rect.y, sc, theme.fg_dim, 0.05);
+            WidgetDraw::text(engine, sc_x, self.rect.y, sc, theme.fg_dim, 0.05, RenderLayer::UI);
         }
 
         // Border on hover/selected
@@ -164,6 +164,6 @@ impl IconButton {
         let bg = if self.active { theme.accent_dim } else if self.state == ButtonState::Hovered { theme.bg_hover } else { theme.bg };
         let fg = if self.active { theme.accent } else { theme.fg };
         WidgetDraw::fill_rect(engine, self.rect, bg);
-        WidgetDraw::text(engine, self.rect.x + 0.08, self.rect.y, &self.icon.to_string(), fg, if self.active { 0.3 } else { 0.1 });
+        WidgetDraw::text(engine, self.rect.x + 0.08, self.rect.y, &self.icon.to_string(), fg, if self.active { 0.3 } else { 0.1 }, RenderLayer::UI);
     }
 }

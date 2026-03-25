@@ -32,8 +32,8 @@ impl Toggle {
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
         let check = if self.value { "[X]" } else { "[ ]" };
         let check_color = if self.value { theme.accent } else { theme.fg_dim };
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, check, check_color, if self.value { 0.3 } else { 0.1 });
-        WidgetDraw::text(engine, self.rect.x + 1.5, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, check, check_color, if self.value { 0.3 } else { 0.1 }, RenderLayer::UI);
+        WidgetDraw::text(engine, self.rect.x + 1.5, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
     }
 }
 
@@ -59,7 +59,7 @@ impl Label {
     }
 
     pub fn render(&self, engine: &mut ProofEngine, x: f32, y: f32) {
-        WidgetDraw::text(engine, x, y, &self.text, self.color, self.emission);
+        WidgetDraw::text(engine, x, y, &self.text, self.color, self.emission, RenderLayer::UI);
     }
 }
 
@@ -100,7 +100,7 @@ impl Tooltip {
         let w = self.text.len() as f32 * 0.42 + 0.6;
         WidgetDraw::fill_rect(engine, Rect::new(self.x, self.y, w, 0.6), theme.bg);
         WidgetDraw::border_rect(engine, Rect::new(self.x, self.y, w, 0.6), theme.border);
-        WidgetDraw::text(engine, self.x + 0.3, self.y, &self.text, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.x + 0.3, self.y, &self.text, theme.fg, 0.1, RenderLayer::UI);
     }
 }
 
@@ -118,11 +118,11 @@ impl ProgressBar {
     }
 
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
         let bar_x = self.rect.x + self.label.len() as f32 * 0.42 + 0.5;
         let bar_w = self.rect.w - self.label.len() as f32 * 0.42 - 2.0;
         WidgetDraw::bar(engine, bar_x, self.rect.y, bar_w, self.value, theme.accent, theme.bg);
         let pct = format!("{}%", (self.value * 100.0) as u32);
-        WidgetDraw::text(engine, bar_x + bar_w + 0.3, self.rect.y, &pct, theme.fg_dim, 0.1);
+        WidgetDraw::text(engine, bar_x + bar_w + 0.3, self.rect.y, &pct, theme.fg_dim, 0.1, RenderLayer::UI);
     }
 }

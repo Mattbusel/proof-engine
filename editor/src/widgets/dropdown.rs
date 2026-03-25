@@ -49,15 +49,15 @@ impl Dropdown {
     pub fn render(&self, engine: &mut ProofEngine, theme: &WidgetTheme) {
         // Label
         let label_w = self.label.len() as f32 * 0.42;
-        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1);
+        WidgetDraw::text(engine, self.rect.x, self.rect.y, &self.label, theme.fg, 0.1, RenderLayer::UI);
 
         // Current selection
         let sel_x = self.rect.x + label_w + 0.5;
         let sel_text = self.options.get(self.selected).map(|s| s.as_str()).unwrap_or("---");
         let arrow = if self.expanded { "v" } else { ">" };
         WidgetDraw::fill_rect(engine, Rect::new(sel_x, self.rect.y, self.rect.w - label_w - 0.5, 0.55), theme.bg);
-        WidgetDraw::text(engine, sel_x + 0.2, self.rect.y, sel_text, theme.fg_bright, 0.15);
-        WidgetDraw::text(engine, self.rect.right() - 0.6, self.rect.y, arrow, theme.fg_dim, 0.1);
+        WidgetDraw::text(engine, sel_x + 0.2, self.rect.y, sel_text, theme.fg_bright, 0.15, RenderLayer::UI);
+        WidgetDraw::text(engine, self.rect.right() - 0.6, self.rect.y, arrow, theme.fg_dim, 0.1, RenderLayer::UI);
 
         // Dropdown list
         if self.expanded {
@@ -66,7 +66,7 @@ impl Dropdown {
                 let bg = if i == self.selected { theme.selection } else { theme.bg };
                 WidgetDraw::fill_rect(engine, Rect::new(sel_x, opt_y, self.rect.w - label_w - 0.5, 0.55), bg);
                 let fg = if i == self.selected { theme.accent } else { theme.fg };
-                WidgetDraw::text(engine, sel_x + 0.2, opt_y, opt, fg, 0.1);
+                WidgetDraw::text(engine, sel_x + 0.2, opt_y, opt, fg, 0.1, RenderLayer::UI);
             }
         }
     }

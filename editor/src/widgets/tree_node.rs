@@ -37,12 +37,12 @@ impl TreeNode {
         // Expand arrow
         if self.has_children {
             let arrow = if self.expanded { "v" } else { ">" };
-            WidgetDraw::text(engine, ix, y, arrow, theme.fg_dim, 0.1);
+            WidgetDraw::text(engine, ix, y, arrow, theme.fg_dim, 0.1, RenderLayer::UI);
         }
 
         // Icon
         let icon_color = if self.selected { theme.accent } else { theme.fg };
-        WidgetDraw::text(engine, ix + 0.5, y, &self.icon.to_string(), icon_color, if self.selected { 0.3 } else { 0.15 });
+        WidgetDraw::text(engine, ix + 0.5, y, &self.icon.to_string(), icon_color, if self.selected { 0.3 } else { 0.15 }, RenderLayer::UI);
 
         // Label
         let label_color = if !self.visible {
@@ -52,14 +52,14 @@ impl TreeNode {
         } else {
             theme.fg
         };
-        WidgetDraw::text(engine, ix + 1.1, y, &self.label, label_color, if self.selected { 0.2 } else { 0.1 });
+        WidgetDraw::text(engine, ix + 1.1, y, &self.label, label_color, if self.selected { 0.2 } else { 0.1 }, RenderLayer::UI);
 
         // Visibility toggle (right side)
         if !self.visible {
-            WidgetDraw::text(engine, x + width - 1.5, y, "H", theme.fg_dim, 0.05);
+            WidgetDraw::text(engine, x + width - 1.5, y, "H", theme.fg_dim, 0.05, RenderLayer::UI);
         }
         if self.locked {
-            WidgetDraw::text(engine, x + width - 0.8, y, "L", theme.warning, 0.1);
+            WidgetDraw::text(engine, x + width - 0.8, y, "L", theme.warning, 0.1, RenderLayer::UI);
         }
     }
 
