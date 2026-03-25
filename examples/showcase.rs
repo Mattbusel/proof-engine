@@ -121,21 +121,21 @@ fn main() {
         });
     }
 
-    // ── Lorenz energy field between them (TINY scale, WEAK strength) ──
-    // Particles have zero mass so the attractor is purely visual on them
+    // ── Lorenz energy field between them ──
+    // Camera follows center of mass so it can drift freely
     engine.add_field(ForceField::StrangeAttractor {
         attractor_type: AttractorType::Lorenz,
-        scale: 0.04, // very small so it stays compact
-        strength: 0.08, // very weak
+        scale: 0.08,
+        strength: 0.2,
         center: Vec3::ZERO,
     });
-    for i in 0..150 {
-        let t = i as f32/150.0;
+    for i in 0..200 {
+        let t = i as f32/200.0;
         engine.spawn_glyph(Glyph {
-            character: '.', scale: Vec2::splat(0.14),
+            character: '.', scale: Vec2::splat(0.16),
             position: Vec3::new(h(i+300,0)*2.0-1.0, h(i+300,1)*1.5-0.75, 0.0),
-            color: Vec4::new(0.4+t*0.4, 0.25, 0.7-t*0.2, 0.3),
-            emission: 0.3, mass: 0.02, // small mass, weak attractor = stays contained
+            color: Vec4::new(0.4+t*0.4, 0.25, 0.7-t*0.2, 0.35),
+            emission: 0.4, mass: 0.04, // real mass, attractor pulls them
             layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
             ..Default::default()
         });
@@ -157,14 +157,38 @@ fn main() {
         });
     }
 
-    // ── Runtime: spell effects ──
+    // ── Runtime ──
     let mut time = 0.0f32;
-    let mut last_spell = -3.0f32; // start with a spell soon
+    let mut last_spell = -3.0f32;
     let mut spell_n = 0u32;
+    let mut cam_x = 0.0f32;
+    let mut cam_y = 0.0f32;
 
     engine.run(move |engine, dt| {
         time += dt;
         engine.config.render.bloom_intensity = 2.0 + (time * 0.35).sin() * 0.25;
+
+        // ── Camera follows center of mass of interesting glyphs ──
+        let mut sum_x = 0.0f32;
+        let mut sum_y = 0.0f32;
+        let mut count = 0u32;
+        for (_id, glyph) in engine.scene.glyphs.iter() {
+            // Only track non-background glyphs (the interesting stuff)
+            if glyph.layer == RenderLayer::Background { continue; }
+            if glyph.color.w < 0.05 { continue; } // skip nearly invisible
+            sum_x += glyph.position.x;
+            sum_y += glyph.position.y;
+            count += 1;
+        }
+        if count > 0 {
+            let target_x = sum_x / count as f32;
+            let target_y = sum_y / count as f32;
+            // Smooth follow (lerp toward center of mass)
+            cam_x += (target_x - cam_x) * 1.5 * dt;
+            cam_y += (target_y - cam_y) * 1.5 * dt;
+            engine.camera.position.x.target = cam_x;
+            engine.camera.position.y.target = cam_y;
+        }
 
         // Spell every 5 seconds
         if time - last_spell > 5.0 {
