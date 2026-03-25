@@ -94,6 +94,7 @@ pub mod electromagnetic;
 pub mod relativistic;
 pub mod quantum;
 pub mod svogi;
+pub mod curves;
 pub mod nishita_sky;
 pub mod volumetric_fog;
 pub mod tiled_lighting;
