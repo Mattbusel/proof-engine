@@ -93,3 +93,6 @@ name = "showcase"
 
 [[example]]
 name = "particle_entity"
+
+[[example]]
+name = "convergence"
