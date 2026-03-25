@@ -121,22 +121,23 @@ fn main() {
         });
     }
 
-    // ── Lorenz energy field between them ──
-    // Camera follows center of mass so it can drift freely
-    engine.add_field(ForceField::StrangeAttractor {
-        attractor_type: AttractorType::Lorenz,
-        scale: 0.08,
-        strength: 0.2,
-        center: Vec3::ZERO,
-    });
+    // ── Energy between them: orbiting particles (no force field, pure math) ──
     for i in 0..200 {
         let t = i as f32/200.0;
+        let a = t * TAU * 3.0;
+        let r = 0.5 + t * 2.5;
         engine.spawn_glyph(Glyph {
             character: '.', scale: Vec2::splat(0.16),
-            position: Vec3::new(h(i+300,0)*2.0-1.0, h(i+300,1)*1.5-0.75, 0.0),
+            position: Vec3::new(r * a.cos(), r * a.sin() * 0.6, 0.0),
             color: Vec4::new(0.4+t*0.4, 0.25, 0.7-t*0.2, 0.35),
-            emission: 0.4, mass: 0.04, // real mass, attractor pulls them
+            emission: 0.4, mass: 0.0,
             layer: RenderLayer::Particle, blend_mode: BlendMode::Additive,
+            life_function: Some(MathFunction::Orbit {
+                center: Vec3::ZERO,
+                radius: r,
+                speed: 0.02 + (1.0 - t) * 0.04, // inner faster
+                eccentricity: 0.3 + t * 0.2,
+            }),
             ..Default::default()
         });
     }
