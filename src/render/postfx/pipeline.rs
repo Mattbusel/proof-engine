@@ -182,7 +182,7 @@ unsafe fn make_rgba_tex(gl: &glow::Context, w: u32, h: u32) -> glow::Texture {
     gl.tex_image_2d(
         glow::TEXTURE_2D, 0, glow::RGBA as i32,
         w as i32, h as i32, 0,
-        glow::RGBA, glow::UNSIGNED_BYTE, None,
+        glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(None),
     );
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);

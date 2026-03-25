@@ -147,6 +147,18 @@ impl ProofEngine {
     where
         F: FnMut(&mut ProofEngine, f32),
     {
+        self.run_with_overlay(move |engine, dt, _gl| {
+            update(engine, dt);
+        });
+    }
+
+    /// Run the engine with an overlay callback.
+    /// The overlay callback receives the glow GL context reference and is called
+    /// AFTER scene rendering but BEFORE buffer swap — perfect for egui.
+    pub fn run_with_overlay<F>(&mut self, mut update: F)
+    where
+        F: FnMut(&mut ProofEngine, f32, &glow::Context),
+    {
         let pipeline = render::Pipeline::init(&self.config);
         self.pipeline = Some(pipeline);
 
@@ -166,8 +178,17 @@ impl ProofEngine {
             // Step force fields and physics
             self.scene.tick(dt);
 
-            // User update
-            update(self, dt);
+            // Get GL context ref for the overlay
+            let gl_ptr = self.pipeline.as_ref().map(|p| p.gl() as *const glow::Context);
+
+            // User update + overlay
+            if let Some(ptr) = gl_ptr {
+                // SAFETY: the pipeline (and thus the GL context) is alive for
+                // the entire duration of this call. We use a raw pointer to
+                // break the borrow on self so the update closure can mutate engine.
+                let gl_ref = unsafe { &*ptr };
+                update(self, dt, gl_ref);
+            }
 
             // Render
             if let Some(ref mut p) = self.pipeline {
@@ -243,6 +264,22 @@ impl ProofEngine {
 impl ProofEngine {
     pub fn request_quit(&mut self) {
         self.input.quit_requested = true;
+    }
+
+    /// Get a reference to the glow GL context (for egui integration).
+    /// Returns None if the pipeline hasn't been initialized yet.
+    pub fn gl(&self) -> Option<&glow::Context> {
+        self.pipeline.as_ref().map(|p| p.gl())
+    }
+
+    /// Get the window reference (for egui-winit event processing).
+    pub fn window(&self) -> Option<&winit::window::Window> {
+        self.pipeline.as_ref().map(|p| p.window())
+    }
+
+    /// Get the current window size in pixels.
+    pub fn window_size(&self) -> (u32, u32) {
+        self.pipeline.as_ref().map(|p| p.window_size()).unwrap_or((1600, 1000))
     }
 }
 

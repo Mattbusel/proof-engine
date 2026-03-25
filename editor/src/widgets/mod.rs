@@ -168,38 +168,45 @@ impl WidgetTheme {
 /// Shared widget drawing utilities.
 pub struct WidgetDraw;
 
+/// UI scale factor — controls size of all editor UI elements.
+/// At camera Z=10, FOV=60, the visible area is ~18x11 world units.
+/// We want ~80 columns of text across that, so char_w ≈ 0.18.
+pub const UI_SCALE: f32 = 0.18;
+pub const UI_CHAR_W: f32 = 0.18;
+pub const UI_CHAR_H: f32 = 0.24;
+pub const UI_Z: f32 = 1.5;
+
 impl WidgetDraw {
     /// Draw text at a position on a specific layer, returning the width in world units.
     pub fn text(engine: &mut ProofEngine, x: f32, y: f32, text: &str, color: Vec4, emission: f32, layer: RenderLayer) -> f32 {
-        let char_w = 0.42;
         for (i, ch) in text.chars().enumerate() {
             if ch == ' ' { continue; }
             engine.spawn_glyph(Glyph {
                 character: ch,
-                position: Vec3::new(x + i as f32 * char_w, y, 1.5),
+                position: Vec3::new(x + i as f32 * UI_CHAR_W, y, UI_Z),
                 color,
                 emission,
                 layer,
+                scale: Vec2::splat(UI_SCALE * 2.5),
                 lifetime: 0.02,
                 ..Default::default()
             });
         }
-        text.len() as f32 * char_w
+        text.len() as f32 * UI_CHAR_W
     }
 
-    /// Draw a filled rectangle.
+    /// Draw a filled rectangle using block characters.
     pub fn fill_rect(engine: &mut ProofEngine, rect: Rect, color: Vec4) {
-        let char_w = 0.42;
-        let char_h = 0.55;
-        let cols = (rect.w / char_w) as usize;
-        let rows = (rect.h / char_h) as usize;
+        let cols = (rect.w / UI_CHAR_W) as usize;
+        let rows = (rect.h / UI_CHAR_H) as usize;
         for row in 0..rows.max(1) {
             for col in 0..cols.max(1) {
                 engine.spawn_glyph(Glyph {
                     character: '█',
-                    position: Vec3::new(rect.x + col as f32 * char_w, rect.y - row as f32 * char_h, 1.2),
+                    position: Vec3::new(rect.x + col as f32 * UI_CHAR_W, rect.y - row as f32 * UI_CHAR_H, UI_Z - 0.3),
                     color,
                     emission: 0.0,
+                    scale: Vec2::splat(UI_SCALE * 2.5),
                     layer: RenderLayer::UI,
                     lifetime: 0.02,
                     ..Default::default()

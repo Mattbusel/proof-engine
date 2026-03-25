@@ -572,6 +572,25 @@ impl Pipeline {
         self.running
     }
 
+    // ── Public accessors for editor/egui integration ──────────────────────────
+
+    /// Get a reference to the raw glow OpenGL context.
+    /// Used by egui-glow to render UI on top of the scene.
+    pub fn gl(&self) -> &glow::Context {
+        &self.gl
+    }
+
+    /// Get the window reference (for egui-winit event processing).
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    /// Get the current window size.
+    pub fn window_size(&self) -> (u32, u32) {
+        let size = self.window.inner_size();
+        (size.width, size.height)
+    }
+
     // ── Private render pass execution ─────────────────────────────────────────
 
     unsafe fn execute_render_passes(&mut self, view_proj: Mat4) {
@@ -707,7 +726,7 @@ unsafe fn upload_atlas(gl: &glow::Context, atlas: &FontAtlas) -> glow::Texture {
         glow::TEXTURE_2D, 0, glow::R8 as i32,
         atlas.width as i32, atlas.height as i32,
         0, glow::RED, glow::UNSIGNED_BYTE,
-        Some(&atlas.pixels),
+        glow::PixelUnpackData::Slice(Some(&atlas.pixels)),
     );
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
