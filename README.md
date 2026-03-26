@@ -3,6 +3,8 @@
 
 ## Live Demo
 
+![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/Screenshot%202026-03-25%20231046.png?raw=true)
+
 ![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
 
 **What you're looking at:** Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. Each particle is its own light source with emission, color, temperature, and physical mass. The engine does not distinguish between geometry and lighting. The matter IS the light.
