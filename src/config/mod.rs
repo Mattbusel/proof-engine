@@ -361,14 +361,14 @@ impl Default for RenderConfig {
 
 impl RenderConfig {
     pub fn validate(&mut self) {
-        self.bloom_intensity      = self.bloom_intensity.clamp(0.0, 5.0);
-        self.bloom_radius         = self.bloom_radius.clamp(1.0, 32.0);
-        self.chromatic_aberration = self.chromatic_aberration.clamp(0.0, 0.05);
+        self.bloom_intensity      = self.bloom_intensity.clamp(0.0, 20.0);
+        self.bloom_radius         = self.bloom_radius.clamp(1.0, 128.0);
+        self.chromatic_aberration = self.chromatic_aberration.clamp(0.0, 0.2);
         self.film_grain           = self.film_grain.clamp(0.0, 0.5);
         self.scanline_intensity   = self.scanline_intensity.clamp(0.0, 1.0);
         self.font_size            = self.font_size.clamp(8, 64);
-        self.render_scale         = self.render_scale.clamp(0.25, 2.0);
-        self.particle_multiplier  = self.particle_multiplier.clamp(0.0, 4.0);
+        self.render_scale         = self.render_scale.clamp(0.25, 8.0);
+        self.particle_multiplier  = self.particle_multiplier.max(0.0);
         self.motion_blur_samples  = self.motion_blur_samples.clamp(1, 16);
     }
 }
@@ -594,7 +594,7 @@ mod tests {
         c.validate();
         assert_eq!(c.window_width, 7680);
         assert_eq!(c.window_height, 240);
-        assert!(c.render.bloom_intensity <= 5.0);
+        assert!(c.render.bloom_intensity <= 20.0);
     }
 
     #[test]

@@ -189,6 +189,12 @@ impl ProofEngine {
             // happens after the scene render.
             let gl_ptr = self.pipeline.as_ref().map(|p| p.gl() as *const glow::Context);
 
+            // Sync render config so runtime changes (particle_multiplier, bloom, etc.)
+            // take effect this frame.
+            if let Some(ref mut p) = self.pipeline {
+                p.update_render_config(&self.config.render);
+            }
+
             // Render scene first
             if let Some(ref mut p) = self.pipeline {
                 p.render(&self.scene, &self.camera);

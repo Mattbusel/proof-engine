@@ -64,12 +64,26 @@ layout(location = 9)  in vec2  i_uv_offset;
 layout(location = 10) in vec2  i_uv_size;
 
 uniform mat4 u_view_proj;
+// Oversampling: each base instance is rendered u_n_copies times.
+// vertex_attrib_divisor is set to u_n_copies so all copies share the same
+// instance attributes. gl_InstanceID / u_n_copies selects the base particle;
+// gl_InstanceID % u_n_copies selects the copy and drives the jitter hash.
+uniform uint u_n_copies;
 
 out vec2  f_uv;
 out vec4  f_color;
 out float f_emission;
 out vec3  f_glow_color;
 out float f_glow_radius;
+
+// Hash matching the CPU hf(seed, v) function — same constants, same bit ops.
+float hf(uint seed, uint v) {
+    uint n = seed * 374761393u + v * 668265263u;
+    n ^= (n >> 13u);
+    n *= 0x5851F42Du;
+    n ^= (n >> 16u);
+    return float(n & 0x00FFFFFFu) / float(0x01000000u);
+}
 
 void main() {
     float c = cos(i_rotation);
@@ -79,12 +93,29 @@ void main() {
         v_pos.x * s + v_pos.y * c
     ) * i_scale;
 
-    gl_Position = u_view_proj * vec4(i_position + vec3(rotated, 0.0), 1.0);
+    // Per-copy position jitter — only active when oversampling.
+    // Seeds mirror the CPU oversampling: seed = real_id*17 + copy_id, slots 30/31.
+    vec3 jitter = vec3(0.0);
+    if (u_n_copies > 1u) {
+        uint real_id = uint(gl_InstanceID) / u_n_copies;
+        uint copy_id = uint(gl_InstanceID) % u_n_copies;
+        uint jseed   = real_id * 17u + copy_id;
+        jitter = vec3(
+            (hf(jseed, 30u) - 0.5) * i_scale.x * 0.70,
+            (hf(jseed, 31u) - 0.5) * i_scale.y * 0.70,
+            0.0
+        );
+    }
+
+    gl_Position = u_view_proj * vec4(i_position + jitter + vec3(rotated, 0.0), 1.0);
     gl_Position.y = -gl_Position.y;  // FBO renders upside-down relative to screen
 
     f_uv         = i_uv_offset + v_uv * i_uv_size;
-    f_color      = i_color;
-    f_emission   = i_emission;
+    // Divide alpha and emission by n_copies so n_copies additive contributions
+    // sum to the same luminance as a single unscaled instance.
+    float inv_n  = 1.0 / float(u_n_copies);
+    f_color      = vec4(i_color.rgb, i_color.a * inv_n);
+    f_emission   = i_emission * inv_n;
     f_glow_color = i_glow_color;
     f_glow_radius = i_glow_radius;
 }
@@ -258,6 +289,7 @@ pub struct Pipeline {
     instance_vbo:  glow::Buffer,
     atlas_tex:     glow::Texture,
     loc_view_proj: glow::UniformLocation,
+    loc_n_copies:  Option<glow::UniformLocation>,
 
     // ── Post-processing pipeline (the real deal — reads RenderConfig) ─────────
     postfx: PostFxPipeline,
@@ -319,15 +351,21 @@ impl Pipeline {
         let window = window.expect("window was not created");
         let display = gl_config.display();
 
-        // ── 4. OpenGL 3.3 Core context ────────────────────────────────────────
+        // ── 4. OpenGL context — try 4.3 (compute shaders) then fall back to 3.3 ─
         let raw_handle = window.window_handle().unwrap().as_raw();
-        let ctx_attrs = ContextAttributesBuilder::new()
+        let ctx_attrs_43 = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::OpenGl(Some(Version::new(4, 3))))
+            .build(Some(raw_handle));
+        let ctx_attrs_33 = ContextAttributesBuilder::new()
             .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
             .build(Some(raw_handle));
 
         let not_current = unsafe {
-            display.create_context(&gl_config, &ctx_attrs)
-                   .expect("create_context failed")
+            display.create_context(&gl_config, &ctx_attrs_43)
+                   .unwrap_or_else(|_| {
+                       display.create_context(&gl_config, &ctx_attrs_33)
+                              .expect("create_context failed (both GL 4.3 and 3.3)")
+                   })
         };
 
         // ── 5. Window surface ─────────────────────────────────────────────────
@@ -362,10 +400,17 @@ impl Pipeline {
             gl.get_uniform_location(program, "u_view_proj")
               .expect("uniform u_view_proj not found")
         };
+        let loc_n_copies = unsafe {
+            gl.get_uniform_location(program, "u_n_copies")
+        };
         unsafe {
             gl.use_program(Some(program));
             if let Some(loc) = gl.get_uniform_location(program, "u_atlas") {
                 gl.uniform_1_i32(Some(&loc), 0);
+            }
+            // Default: no oversampling
+            if let Some(ref loc) = loc_n_copies {
+                gl.uniform_1_u32(Some(loc), 1u32);
             }
         }
 
@@ -398,7 +443,7 @@ impl Pipeline {
             running: true,
             render_config: config.render.clone(),
             event_loop, window, surface, context,
-            gl, program, vao, quad_vbo, instance_vbo, atlas_tex, loc_view_proj,
+            gl, program, vao, quad_vbo, instance_vbo, atlas_tex, loc_view_proj, loc_n_copies,
             postfx,
             atlas,
             instances: Vec::with_capacity(8192),
@@ -743,17 +788,32 @@ impl Pipeline {
                 glow::DYNAMIC_DRAW,
             );
 
-            // Draw all glyphs in one instanced call
+            // Oversampling: each base instance is rendered n_copies times.
+            // vertex_attrib_divisor = n_copies → all n_copies share the same
+            // attribute data. The vertex shader uses gl_InstanceID to derive
+            // the copy index and compute per-copy position jitter.
+            let n_copies = self.render_config.particle_multiplier
+                .ceil().max(1.0) as u32;
+
             gl.use_program(Some(self.program));
             gl.uniform_matrix_4_f32_slice(
                 Some(&self.loc_view_proj),
                 false,
                 &view_proj.to_cols_array(),
             );
+            gl.uniform_1_u32(self.loc_n_copies.as_ref(), n_copies);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
             gl.bind_vertex_array(Some(self.vao));
-            gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, self.instances.len() as i32);
+            // Set attribute divisor to n_copies so each base instance repeats
+            // n_copies times before advancing to the next instance in the VBO.
+            for loc in 2u32..=10 {
+                gl.vertex_attrib_divisor(loc, n_copies);
+            }
+            gl.draw_arrays_instanced(
+                glow::TRIANGLES, 0, 6,
+                (self.instances.len() as u32 * n_copies) as i32,
+            );
             self.stats.draw_calls += 1;
         }
 
