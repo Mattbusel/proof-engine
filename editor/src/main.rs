@@ -101,6 +101,18 @@ fn main() {
                 editor_panels::asset_browser(ctx, &mut state, engine);
                 editor_panels::console_panel(ctx, &mut state);
                 editor_panels::help_window(ctx, &mut state);
+                editor_panels::world_editor_panel(ctx, &mut state, engine);
+                editor_panels::ai_behavior_panel(ctx, &mut state);
+                editor_panels::physics_panel(ctx, &mut state);
+                editor_panels::render_graph_panel(ctx, &mut state);
+                editor_panels::dialogue_panel(ctx, &mut state);
+                editor_panels::quest_panel(ctx, &mut state);
+                editor_panels::spline_panel(ctx, &mut state);
+                editor_panels::cinematic_panel(ctx, &mut state);
+                editor_panels::inventory_panel(ctx, &mut state);
+                editor_panels::ability_panel(ctx, &mut state);
+                editor_panels::level_streaming_panel(ctx, &mut state);
+                editor_panels::audio_mixer_panel(ctx, &mut state);
             });
             let ewp = egui_ctx.is_pointer_over_area();
             let pr = egui_ctx.tessellate(fo.shapes, egui_ctx.pixels_per_point());

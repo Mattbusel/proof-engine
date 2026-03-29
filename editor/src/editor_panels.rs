@@ -31,6 +31,31 @@ pub struct EditorState {
     // Undo
     pub undo_stack: Vec<UndoEntry>,
     pub redo_stack: Vec<UndoEntry>,
+    // New panel toggles
+    pub show_world_editor: bool,
+    pub show_ai_behavior: bool,
+    pub show_physics: bool,
+    pub show_render_graph: bool,
+    pub show_dialogue: bool,
+    pub show_quest: bool,
+    pub show_spline: bool,
+    pub show_cinematic: bool,
+    pub show_inventory: bool,
+    pub show_ability: bool,
+    pub show_level_streaming: bool,
+    pub show_audio_mixer: bool,
+    // Per-panel state
+    pub world_seed: u64,
+    pub world_biome_filter: String,
+    pub ai_selected_tree: String,
+    pub physics_selected_body: String,
+    pub dialogue_search: String,
+    pub quest_search: String,
+    pub inventory_search: String,
+    pub ability_search: String,
+    pub audio_master_volume: f32,
+    pub audio_music_volume: f32,
+    pub audio_sfx_volume: f32,
 }
 
 #[derive(Clone)]
@@ -55,6 +80,16 @@ impl EditorState {
             console_log: vec![("Proof Editor ready. F1=help".into(), egui::Color32::from_rgb(100, 180, 255))],
             console_input: String::new(),
             undo_stack: Vec::new(), redo_stack: Vec::new(),
+            show_world_editor: false, show_ai_behavior: false, show_physics: false,
+            show_render_graph: false, show_dialogue: false, show_quest: false,
+            show_spline: false, show_cinematic: false, show_inventory: false,
+            show_ability: false, show_level_streaming: false, show_audio_mixer: false,
+            world_seed: 42, world_biome_filter: String::new(),
+            ai_selected_tree: "BehaviorTree_Enemy".to_string(),
+            physics_selected_body: "RigidBody_0".to_string(),
+            dialogue_search: String::new(), quest_search: String::new(),
+            inventory_search: String::new(), ability_search: String::new(),
+            audio_master_volume: 80.0, audio_music_volume: 60.0, audio_sfx_volume: 75.0,
         }
     }
 
@@ -169,6 +204,22 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                 ui.separator();
                 if ui.button("Toggle Bloom").clicked() { engine.config.render.bloom_enabled = !engine.config.render.bloom_enabled; ui.close_menu(); }
                 if ui.button("Reset Camera").clicked() { state.cam_x = 0.0; state.cam_y = 0.0; ui.close_menu(); }
+            });
+            ui.menu_button("Tools", |ui| {
+                if ui.button("World Editor").clicked() { state.show_world_editor = !state.show_world_editor; ui.close_menu(); }
+                if ui.button("AI Behavior").clicked() { state.show_ai_behavior = !state.show_ai_behavior; ui.close_menu(); }
+                if ui.button("Physics").clicked() { state.show_physics = !state.show_physics; ui.close_menu(); }
+                if ui.button("Render Graph").clicked() { state.show_render_graph = !state.show_render_graph; ui.close_menu(); }
+                ui.separator();
+                if ui.button("Dialogue Editor").clicked() { state.show_dialogue = !state.show_dialogue; ui.close_menu(); }
+                if ui.button("Quest Editor").clicked() { state.show_quest = !state.show_quest; ui.close_menu(); }
+                if ui.button("Spline Editor").clicked() { state.show_spline = !state.show_spline; ui.close_menu(); }
+                if ui.button("Cinematic Editor").clicked() { state.show_cinematic = !state.show_cinematic; ui.close_menu(); }
+                ui.separator();
+                if ui.button("Inventory").clicked() { state.show_inventory = !state.show_inventory; ui.close_menu(); }
+                if ui.button("Ability Editor").clicked() { state.show_ability = !state.show_ability; ui.close_menu(); }
+                if ui.button("Level Streaming").clicked() { state.show_level_streaming = !state.show_level_streaming; ui.close_menu(); }
+                if ui.button("Audio Mixer").clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!("FPS: {:.0}", state.fps));
@@ -753,4 +804,585 @@ pub fn help_window(ctx: &egui::Context, state: &mut EditorState) {
 
         if ui.button("Close").clicked() { state.show_help = false; }
     });
+}
+
+// ============================================================
+// World Editor Panel
+// ============================================================
+
+pub fn world_editor_panel(ctx: &egui::Context, state: &mut EditorState, _engine: &mut ProofEngine) {
+    if !state.show_world_editor { return; }
+    let mut open = state.show_world_editor;
+    egui::Window::new("World Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        egui::CollapsingHeader::new("Terrain").default_open(true).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Seed:");
+                let mut seed_str = state.world_seed.to_string();
+                if ui.text_edit_singleline(&mut seed_str).changed() {
+                    if let Ok(v) = seed_str.parse::<u64>() { state.world_seed = v; }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+                egui::ComboBox::from_id_salt("world_size").selected_text("1024").show_ui(ui, |ui| {
+                    let _ = ui.selectable_label(false, "512");
+                    let _ = ui.selectable_label(true, "1024");
+                    let _ = ui.selectable_label(false, "2048");
+                });
+            });
+            let _ = ui.button("Erode Terrain");
+        });
+        egui::CollapsingHeader::new("Biomes").default_open(true).show(ui, |ui| {
+            ui.horizontal(|ui| { ui.colored_label(egui::Color32::from_rgb(100, 160, 255), "Tundra"); ui.label("- Cold, icy plains"); });
+            ui.horizontal(|ui| { ui.colored_label(egui::Color32::from_rgb(255, 180, 60), "Desert"); ui.label("- Arid, sandy dunes"); });
+            ui.horizontal(|ui| { ui.colored_label(egui::Color32::from_rgb(60, 200, 80), "Forest"); ui.label("- Dense woodland"); });
+            ui.horizontal(|ui| { ui.colored_label(egui::Color32::from_rgb(60, 220, 220), "Ocean"); ui.label("- Deep water biome"); });
+            ui.horizontal(|ui| { ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "Mountain"); ui.label("- High altitude peaks"); });
+        });
+        egui::CollapsingHeader::new("Atmosphere").default_open(false).show(ui, |ui| {
+            static mut SUN: f32 = 45.0; static mut MIE: f32 = 0.3; static mut RAY: f32 = 0.5;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut SUN, 0.0..=360.0).text("Sun Angle"));
+                ui.add(egui::Slider::new(&mut MIE, 0.0..=1.0).text("Mie Scattering"));
+                ui.add(egui::Slider::new(&mut RAY, 0.0..=1.0).text("Rayleigh"));
+            }
+        });
+        egui::CollapsingHeader::new("Weather").default_open(false).show(ui, |ui| {
+            static mut WEATHER: usize = 0;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut WEATHER, 0, "Clear");
+                    ui.radio_value(&mut WEATHER, 1, "Cloudy");
+                    ui.radio_value(&mut WEATHER, 2, "Rain");
+                    ui.radio_value(&mut WEATHER, 3, "Storm");
+                });
+            }
+        });
+    });
+    state.show_world_editor = open;
+}
+
+// ============================================================
+// AI Behavior Panel
+// ============================================================
+
+pub fn ai_behavior_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_ai_behavior { return; }
+    let mut open = state.show_ai_behavior;
+    egui::Window::new("AI Behavior").open(&mut open).default_width(300.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Tree:");
+            ui.text_edit_singleline(&mut state.ai_selected_tree);
+            if ui.button("New Tree").clicked() { state.ai_selected_tree = "NewTree".to_string(); }
+        });
+        egui::CollapsingHeader::new("Node Types").default_open(true).show(ui, |ui| {
+            egui::Grid::new("ai_nodes").show(ui, |ui| {
+                ui.colored_label(egui::Color32::from_rgb(60, 200, 80), "●"); ui.label("Sequence"); ui.label("Runs children in order"); ui.end_row();
+                ui.colored_label(egui::Color32::from_rgb(60, 140, 255), "●"); ui.label("Selector"); ui.label("Tries until one succeeds"); ui.end_row();
+                ui.colored_label(egui::Color32::from_rgb(255, 220, 40), "●"); ui.label("Parallel"); ui.label("Runs all children"); ui.end_row();
+                ui.colored_label(egui::Color32::WHITE, "●"); ui.label("Action"); ui.label("Leaf node, executes"); ui.end_row();
+                ui.colored_label(egui::Color32::from_rgb(255, 160, 60), "●"); ui.label("Condition"); ui.label("Boolean check"); ui.end_row();
+            });
+        });
+        egui::CollapsingHeader::new("Blackboard").default_open(true).show(ui, |ui| {
+            egui::Grid::new("bb_grid").show(ui, |ui| {
+                ui.label("health"); ui.label("85.0"); ui.end_row();
+                ui.label("target_visible"); ui.label("true"); ui.end_row();
+                ui.label("distance_to_target"); ui.label("12.4"); ui.end_row();
+                ui.label("last_seen_pos"); ui.label("(3.2, -1.5)"); ui.end_row();
+            });
+        });
+        egui::CollapsingHeader::new("Debug").default_open(false).show(ui, |ui| {
+            static mut SHOW_TREE: bool = true; static mut SHOW_PATH: bool = false; static mut SHOW_VIS: bool = false;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.checkbox(&mut SHOW_TREE, "Show Tree");
+                ui.checkbox(&mut SHOW_PATH, "Show Path");
+                ui.checkbox(&mut SHOW_VIS, "Show Vision");
+            }
+        });
+    });
+    state.show_ai_behavior = open;
+}
+
+// ============================================================
+// Physics Panel
+// ============================================================
+
+pub fn physics_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_physics { return; }
+    let mut open = state.show_physics;
+    egui::Window::new("Physics").open(&mut open).default_width(300.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Body:");
+            ui.text_edit_singleline(&mut state.physics_selected_body);
+        });
+        egui::CollapsingHeader::new("Rigid Body").default_open(true).show(ui, |ui| {
+            static mut MASS: f32 = 1.0; static mut REST: f32 = 0.3; static mut FRIC: f32 = 0.5; static mut LDAMP: f32 = 0.1;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut MASS, 0.1..=1000.0).text("Mass"));
+                ui.add(egui::Slider::new(&mut REST, 0.0..=1.0).text("Restitution"));
+                ui.add(egui::Slider::new(&mut FRIC, 0.0..=1.0).text("Friction"));
+                ui.add(egui::Slider::new(&mut LDAMP, 0.0..=1.0).text("Linear Damping"));
+            }
+        });
+        egui::CollapsingHeader::new("Constraints").default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Fixed");
+                let _ = ui.button("Hinge");
+                let _ = ui.button("Slider");
+                let _ = ui.button("Ball-Socket");
+            });
+        });
+        egui::CollapsingHeader::new("Simulation").default_open(false).show(ui, |ui| {
+            static mut GX: f32 = 0.0; static mut GY: f32 = -9.81; static mut STEPS: u32 = 4;
+            static mut CCD: bool = false; static mut SLEEP: bool = true;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut GX, -20.0..=20.0).text("Gravity X"));
+                ui.add(egui::Slider::new(&mut GY, -20.0..=20.0).text("Gravity Y"));
+                ui.add(egui::Slider::new(&mut STEPS, 1..=10).text("Substeps"));
+                ui.checkbox(&mut CCD, "Enable CCD");
+                ui.checkbox(&mut SLEEP, "Enable Sleeping");
+            }
+        });
+    });
+    state.show_physics = open;
+}
+
+// ============================================================
+// Render Graph Panel
+// ============================================================
+
+pub fn render_graph_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_render_graph { return; }
+    let mut open = state.show_render_graph;
+    egui::Window::new("Render Graph").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        egui::CollapsingHeader::new("Pass List").default_open(true).show(ui, |ui| {
+            let passes = [
+                ("GBuffer", egui::Color32::from_rgb(60, 200, 80)),
+                ("Shadow Map", egui::Color32::from_rgb(60, 140, 255)),
+                ("Lighting", egui::Color32::from_rgb(255, 220, 40)),
+                ("SSAO", egui::Color32::from_rgb(180, 80, 255)),
+                ("Bloom", egui::Color32::from_rgb(255, 120, 180)),
+                ("Tonemap", egui::Color32::WHITE),
+            ];
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                egui::Grid::new("passes").show(ui, |ui| {
+                    for (name, color) in &passes {
+                        ui.colored_label(*color, "●");
+                        ui.label(*name);
+                        ui.label("Ready");
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+        egui::CollapsingHeader::new("Resource Budget").default_open(true).show(ui, |ui| {
+            egui::Grid::new("rg_budget").show(ui, |ui| {
+                ui.label("Textures:"); ui.label("128 MB"); ui.end_row();
+                ui.label("Buffers:"); ui.label("32 MB"); ui.end_row();
+                ui.label("Render targets:"); ui.label("64 MB"); ui.end_row();
+            });
+        });
+        let _ = ui.button("Compile Graph");
+    });
+    state.show_render_graph = open;
+}
+
+// ============================================================
+// Dialogue Panel
+// ============================================================
+
+pub fn dialogue_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_dialogue { return; }
+    let mut open = state.show_dialogue;
+    egui::Window::new("Dialogue Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("dlg_tree").selected_text("Merchant_01").show_ui(ui, |ui| {
+                let _ = ui.selectable_label(true, "Merchant_01");
+                let _ = ui.selectable_label(false, "Guard_Intro");
+                let _ = ui.selectable_label(false, "QuestGiver_A");
+            });
+            if ui.button("New Dialogue").clicked() {}
+        });
+        ui.label("Nodes: 24");
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.text_edit_singleline(&mut state.dialogue_search);
+        });
+        egui::CollapsingHeader::new("Node Breakdown").default_open(true).show(ui, |ui| {
+            egui::Grid::new("dlg_types").show(ui, |ui| {
+                ui.label("Speaker:"); ui.label("12"); ui.end_row();
+                ui.label("Choice:"); ui.label("7"); ui.end_row();
+                ui.label("Condition:"); ui.label("3"); ui.end_row();
+                ui.label("Jump:"); ui.label("2"); ui.end_row();
+            });
+        });
+        egui::CollapsingHeader::new("Localization").default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Language:");
+                egui::ComboBox::from_id_salt("dlg_lang").selected_text("EN").show_ui(ui, |ui| {
+                    for lang in &["EN", "FR", "DE", "ES", "JA"] {
+                        let _ = ui.selectable_label(false, *lang);
+                    }
+                });
+            });
+            ui.label("Missing keys: 3");
+        });
+    });
+    state.show_dialogue = open;
+}
+
+// ============================================================
+// Quest Panel
+// ============================================================
+
+pub fn quest_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_quest { return; }
+    let mut open = state.show_quest;
+    egui::Window::new("Quest Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.text_edit_singleline(&mut state.quest_search);
+        });
+        egui::CollapsingHeader::new("Quests").default_open(true).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                let quests = [
+                    ("The Lost Sword", egui::Color32::from_rgb(60, 200, 80), "Active"),
+                    ("Merchant Plea", egui::Color32::from_rgb(60, 200, 80), "Active"),
+                    ("Clear the Mines", egui::Color32::from_rgb(160, 160, 160), "Complete"),
+                    ("Bandit Camp", egui::Color32::from_rgb(255, 100, 80), "Failed"),
+                    ("Ancient Relic", egui::Color32::from_rgb(60, 200, 80), "Active"),
+                ];
+                for (name, color, status) in &quests {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(*color, *status);
+                        ui.label(*name);
+                    });
+                }
+            });
+        });
+        egui::CollapsingHeader::new("Objectives").default_open(true).show(ui, |ui| {
+            ui.label("Kill Bandits:");
+            ui.add(egui::ProgressBar::new(0.6).text("6/10"));
+            static mut REACHED: bool = false;
+            #[allow(static_mut_refs)]
+            unsafe { ui.checkbox(&mut REACHED, "Reach Location"); }
+        });
+        egui::CollapsingHeader::new("Rewards").default_open(false).show(ui, |ui| {
+            egui::Grid::new("quest_rewards").show(ui, |ui| {
+                ui.label("XP:"); ui.label("500"); ui.end_row();
+                ui.label("Gold:"); ui.label("100"); ui.end_row();
+                ui.label("Item:"); ui.label("Iron Sword"); ui.end_row();
+            });
+        });
+        egui::CollapsingHeader::new("Faction Standing").default_open(false).show(ui, |ui| {
+            static mut F1: f32 = 20.0; static mut F2: f32 = -40.0; static mut F3: f32 = 10.0;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut F1, -100.0..=100.0).text("Merchants"));
+                ui.add(egui::Slider::new(&mut F2, -100.0..=100.0).text("Bandits"));
+                ui.add(egui::Slider::new(&mut F3, -100.0..=100.0).text("Guards"));
+            }
+        });
+    });
+    state.show_quest = open;
+}
+
+// ============================================================
+// Spline Panel
+// ============================================================
+
+pub fn spline_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_spline { return; }
+    let mut open = state.show_spline;
+    egui::Window::new("Spline Editor").open(&mut open).default_width(280.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Type:");
+            egui::ComboBox::from_id_salt("spline_type").selected_text("Catmull-Rom").show_ui(ui, |ui| {
+                let _ = ui.selectable_label(true, "Catmull-Rom");
+                let _ = ui.selectable_label(false, "Bezier");
+                let _ = ui.selectable_label(false, "B-Spline");
+            });
+        });
+        egui::Grid::new("spline_info").show(ui, |ui| {
+            ui.label("Control Points:"); ui.label("8"); ui.end_row();
+            ui.label("Total Length:"); ui.label("42.3 units"); ui.end_row();
+        });
+        static mut ARC_LEN: bool = true; static mut CLOSED: bool = false; static mut TENSION: f32 = 0.5;
+        #[allow(static_mut_refs)]
+        unsafe {
+            ui.checkbox(&mut ARC_LEN, "Arc-length Parameterization");
+            ui.checkbox(&mut CLOSED, "Closed Loop");
+            ui.add(egui::Slider::new(&mut TENSION, 0.0..=1.0).text("Tension"));
+        }
+        egui::CollapsingHeader::new("Rail System").default_open(false).show(ui, |ui| {
+            static mut GAUGE: f32 = 1.435; static mut BANK: f32 = 5.0;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut GAUGE, 0.5..=3.0).text("Gauge Width"));
+                ui.label(format!("Banking Angle: {:.1}°", BANK));
+                ui.add(egui::Slider::new(&mut BANK, -45.0..=45.0).text("Banking"));
+            }
+        });
+    });
+    state.show_spline = open;
+}
+
+// ============================================================
+// Cinematic Panel
+// ============================================================
+
+pub fn cinematic_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_cinematic { return; }
+    let mut open = state.show_cinematic;
+    egui::Window::new("Cinematic Editor").open(&mut open).default_width(340.0).show(ctx, |ui| {
+        egui::CollapsingHeader::new("Timeline").default_open(true).show(ui, |ui| {
+            static mut PLAYING: bool = false; static mut TIME: f32 = 0.0;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.horizontal(|ui| {
+                    if ui.button(if PLAYING { "Pause" } else { "Play" }).clicked() { PLAYING = !PLAYING; }
+                    if ui.button("Stop").clicked() { PLAYING = false; TIME = 0.0; }
+                });
+                ui.label(format!("Time: {:.2}s / 120.00s", TIME));
+                ui.label("Timecode: 00:02:00:00 (SMPTE)");
+            }
+        });
+        egui::CollapsingHeader::new("Tracks").default_open(true).show(ui, |ui| {
+            static mut CAM_VIS: bool = true; static mut ACT_VIS: bool = true;
+            static mut ANI_VIS: bool = true; static mut AUD_VIS: bool = true;
+            #[allow(static_mut_refs)]
+            unsafe {
+                egui::Grid::new("tracks").show(ui, |ui| {
+                    ui.checkbox(&mut CAM_VIS, ""); ui.label("Camera"); ui.label("CameraTrack_01"); ui.end_row();
+                    ui.checkbox(&mut ACT_VIS, ""); ui.label("Actor"); ui.label("Player_Anim"); ui.end_row();
+                    ui.checkbox(&mut ANI_VIS, ""); ui.label("Animation"); ui.label("Cutscene_A"); ui.end_row();
+                    ui.checkbox(&mut AUD_VIS, ""); ui.label("Audio"); ui.label("Music_Dramatic"); ui.end_row();
+                });
+            }
+        });
+        egui::CollapsingHeader::new("Export").default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Format:");
+                egui::ComboBox::from_id_salt("cin_export").selected_text("MP4").show_ui(ui, |ui| {
+                    let _ = ui.selectable_label(false, "EDL");
+                    let _ = ui.selectable_label(false, "SRT");
+                    let _ = ui.selectable_label(true, "MP4");
+                });
+                let _ = ui.button("Export");
+            });
+        });
+    });
+    state.show_cinematic = open;
+}
+
+// ============================================================
+// Inventory Panel
+// ============================================================
+
+pub fn inventory_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_inventory { return; }
+    let mut open = state.show_inventory;
+    egui::Window::new("Inventory").open(&mut open).default_width(360.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.text_edit_singleline(&mut state.inventory_search);
+        });
+        ui.horizontal(|ui| {
+            let _ = ui.button("All");
+            let _ = ui.button("Weapon");
+            let _ = ui.button("Armor");
+            let _ = ui.button("Consumable");
+        });
+        let items = [
+            ("Iron Sword", egui::Color32::WHITE, "Common", "1H Blade, 15 dmg"),
+            ("Steel Shield", egui::Color32::from_rgb(60, 200, 80), "Uncommon", "Block 40%"),
+            ("Elven Bow", egui::Color32::from_rgb(60, 140, 255), "Rare", "Range 30m, 22 dmg"),
+            ("Arcane Staff", egui::Color32::from_rgb(180, 80, 255), "Epic", "Spell power +40"),
+            ("Dragon Scale Armor", egui::Color32::from_rgb(255, 160, 40), "Legendary", "Armor 80, Fire res"),
+            ("Health Potion", egui::Color32::WHITE, "Common", "Restore 50 HP"),
+            ("Mana Crystal", egui::Color32::from_rgb(60, 200, 80), "Uncommon", "Restore 30 MP"),
+            ("Shadow Cloak", egui::Color32::from_rgb(60, 140, 255), "Rare", "Stealth +25"),
+        ];
+        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+            egui::Grid::new("inv_items").striped(true).show(ui, |ui| {
+                for (name, color, rarity, desc) in &items {
+                    ui.colored_label(*color, *rarity);
+                    ui.label(*name);
+                    ui.label(*desc);
+                    ui.end_row();
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Sort by:");
+            egui::ComboBox::from_id_salt("inv_sort").selected_text("Rarity").show_ui(ui, |ui| {
+                let _ = ui.selectable_label(false, "Name");
+                let _ = ui.selectable_label(true, "Rarity");
+                let _ = ui.selectable_label(false, "Value");
+                let _ = ui.selectable_label(false, "Weight");
+            });
+        });
+    });
+    state.show_inventory = open;
+}
+
+// ============================================================
+// Ability Panel
+// ============================================================
+
+pub fn ability_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_ability { return; }
+    let mut open = state.show_ability;
+    egui::Window::new("Ability Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.text_edit_singleline(&mut state.ability_search);
+        });
+        ui.horizontal(|ui| {
+            let _ = ui.button("Active");
+            let _ = ui.button("Passive");
+            let _ = ui.button("Toggle");
+        });
+        let abilities = [
+            ("Fireball", "8.0s", "Active"),
+            ("Ice Lance", "3.0s", "Active"),
+            ("Shield Bash", "5.0s", "Active"),
+            ("Berserker", "-", "Passive"),
+            ("Stealth", "toggle", "Toggle"),
+            ("Healing Aura", "15.0s", "Active"),
+        ];
+        egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+            egui::Grid::new("ability_list").show(ui, |ui| {
+                for (name, cd, kind) in &abilities {
+                    ui.label(*kind);
+                    ui.label(*name);
+                    ui.label(format!("CD: {}", cd));
+                    ui.end_row();
+                }
+            });
+        });
+        egui::CollapsingHeader::new("Selected: Fireball").default_open(true).show(ui, |ui| {
+            static mut DMG_MIN: f32 = 40.0; static mut DMG_MAX: f32 = 80.0;
+            static mut COST: f32 = 30.0; static mut RANGE: f32 = 20.0; static mut AREA: f32 = 4.0;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.add(egui::Slider::new(&mut DMG_MIN, 0.0..=200.0).text("Damage Min"));
+                ui.add(egui::Slider::new(&mut DMG_MAX, 0.0..=200.0).text("Damage Max"));
+                ui.add(egui::Slider::new(&mut COST, 0.0..=100.0).text("Mana Cost"));
+                ui.add(egui::Slider::new(&mut RANGE, 0.0..=50.0).text("Range"));
+                ui.add(egui::Slider::new(&mut AREA, 0.0..=20.0).text("Area"));
+            }
+        });
+        egui::CollapsingHeader::new("Status Effects").default_open(false).show(ui, |ui| {
+            let effects = [("Burning", 0.6f32), ("Stunned", 0.2f32), ("Weakened", 0.8f32)];
+            for (name, pct) in &effects {
+                ui.horizontal(|ui| {
+                    ui.label(*name);
+                    ui.add(egui::ProgressBar::new(*pct).desired_width(100.0));
+                });
+            }
+        });
+    });
+    state.show_ability = open;
+}
+
+// ============================================================
+// Level Streaming Panel
+// ============================================================
+
+pub fn level_streaming_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_level_streaming { return; }
+    let mut open = state.show_level_streaming;
+    egui::Window::new("Level Streaming").open(&mut open).default_width(320.0).show(ctx, |ui| {
+        egui::Grid::new("ls_info").show(ui, |ui| {
+            ui.label("World Size:"); ui.label("4096 x 4096 m"); ui.end_row();
+            ui.label("Loaded Cells:"); ui.label("12 / 256"); ui.end_row();
+        });
+        static mut MEM_BUDGET: f32 = 2048.0; static mut STREAM_DIST: f32 = 800.0;
+        #[allow(static_mut_refs)]
+        unsafe {
+            ui.add(egui::Slider::new(&mut MEM_BUDGET, 0.0..=8192.0).text("Memory Budget MB"));
+            ui.add(egui::Slider::new(&mut STREAM_DIST, 100.0..=5000.0).text("Streaming Distance m"));
+        }
+        egui::CollapsingHeader::new("Cell List").default_open(true).show(ui, |ui| {
+            let cells = [
+                ("Cell_0_0", egui::Color32::from_rgb(60, 200, 80), "Loaded"),
+                ("Cell_0_1", egui::Color32::from_rgb(60, 200, 80), "Loaded"),
+                ("Cell_1_0", egui::Color32::from_rgb(255, 220, 40), "Loading"),
+                ("Cell_1_1", egui::Color32::from_rgb(60, 200, 80), "Loaded"),
+                ("Cell_2_0", egui::Color32::from_rgb(130, 130, 130), "Unloaded"),
+                ("Cell_2_1", egui::Color32::from_rgb(130, 130, 130), "Unloaded"),
+                ("Cell_3_0", egui::Color32::from_rgb(130, 130, 130), "Unloaded"),
+                ("Cell_3_1", egui::Color32::from_rgb(255, 220, 40), "Loading"),
+            ];
+            egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                egui::Grid::new("cell_list").show(ui, |ui| {
+                    for (name, color, status) in &cells {
+                        ui.colored_label(*color, *status);
+                        ui.label(*name);
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+        egui::CollapsingHeader::new("Priority Rules").default_open(false).show(ui, |ui| {
+            ui.label("1. Player proximity (radius 800m)");
+            ui.label("2. Camera frustum priority");
+            ui.label("3. Last-used eviction policy");
+        });
+    });
+    state.show_level_streaming = open;
+}
+
+// ============================================================
+// Audio Mixer Panel
+// ============================================================
+
+pub fn audio_mixer_panel(ctx: &egui::Context, state: &mut EditorState) {
+    if !state.show_audio_mixer { return; }
+    let mut open = state.show_audio_mixer;
+    egui::Window::new("Audio Mixer").open(&mut open).default_width(300.0).show(ctx, |ui| {
+        ui.add(egui::Slider::new(&mut state.audio_master_volume, 0.0..=100.0).text("Master"));
+        ui.separator();
+        ui.add(egui::Slider::new(&mut state.audio_music_volume, 0.0..=100.0).text("Music"));
+        ui.add(egui::Slider::new(&mut state.audio_sfx_volume, 0.0..=100.0).text("SFX"));
+        static mut VOICE_VOL: f32 = 85.0;
+        #[allow(static_mut_refs)]
+        unsafe { ui.add(egui::Slider::new(&mut VOICE_VOL, 0.0..=100.0).text("Voice")); }
+        egui::CollapsingHeader::new("Effects Chain (SFX Bus)").default_open(true).show(ui, |ui| {
+            static mut EQ: bool = true; static mut COMP: bool = true; static mut REVERB: bool = false;
+            static mut ROOM: f32 = 0.4;
+            #[allow(static_mut_refs)]
+            unsafe {
+                ui.checkbox(&mut EQ, "EQ");
+                ui.checkbox(&mut COMP, "Compressor");
+                ui.checkbox(&mut REVERB, "Reverb");
+                if REVERB {
+                    ui.add(egui::Slider::new(&mut ROOM, 0.0..=1.0).text("Room Size"));
+                }
+            }
+        });
+        egui::CollapsingHeader::new("Spatial Audio").default_open(false).show(ui, |ui| {
+            static mut MAX_DIST: f32 = 50.0;
+            #[allow(static_mut_refs)]
+            unsafe { ui.add(egui::Slider::new(&mut MAX_DIST, 1.0..=500.0).text("Max Distance")); }
+            ui.horizontal(|ui| {
+                ui.label("Rolloff:");
+                egui::ComboBox::from_id_salt("rolloff").selected_text("Inverse").show_ui(ui, |ui| {
+                    let _ = ui.selectable_label(false, "Linear");
+                    let _ = ui.selectable_label(true, "Inverse");
+                    let _ = ui.selectable_label(false, "Log");
+                });
+            });
+        });
+        ui.separator();
+        ui.label("Active voices: 14 / 64");
+    });
+    state.show_audio_mixer = open;
 }
