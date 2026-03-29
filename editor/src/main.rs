@@ -81,6 +81,17 @@ fn main() {
         engine.camera.position.x.target=state.cam_x; engine.camera.position.y.target=state.cam_y;
         engine.camera.position.x.position=state.cam_x; engine.camera.position.y.position=state.cam_y;
 
+        if state.model_3d_mode {
+            let az = state.model_cam_azimuth.to_radians();
+            let el = state.model_cam_elevation.to_radians();
+            let cam_x = state.model_cam_distance * el.cos() * az.sin();
+            let cam_y = state.model_cam_distance * el.sin();
+            engine.camera.position.x.target = cam_x;
+            engine.camera.position.x.position = cam_x;
+            engine.camera.position.y.target = cam_y;
+            engine.camera.position.y.position = cam_y;
+        }
+
         if state.needs_rebuild { rebuild_scene(engine, &state.document); state.needs_rebuild = false; }
 
         if let Some(painter) = egui_painter.as_mut() {
@@ -92,6 +103,16 @@ fn main() {
             if input.scroll_delta!=0.0 { ri.events.push(egui::Event::MouseWheel{unit:egui::MouseWheelUnit::Line,delta:egui::vec2(0.0,input.scroll_delta),modifiers:Default::default()}); }
 
             let fo = egui_ctx.run(ri, |ctx| {
+                // ── Dark theme with polished accent colors ──
+                let mut visuals = egui::Visuals::dark();
+                visuals.window_corner_radius = egui::CornerRadius::same(6);
+                visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(28, 30, 36);
+                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(40, 42, 50);
+                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 58, 70);
+                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 130, 200);
+                visuals.window_fill = egui::Color32::from_rgb(22, 24, 30);
+                visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
+                ctx.set_visuals(visuals);
                 editor_panels::menu_bar(ctx, &mut state, engine);
                 editor_panels::hierarchy_panel(ctx, &mut state);
                 editor_panels::inspector_panel(ctx, &mut state);
@@ -113,6 +134,7 @@ fn main() {
                 editor_panels::ability_panel(ctx, &mut state);
                 editor_panels::level_streaming_panel(ctx, &mut state);
                 editor_panels::audio_mixer_panel(ctx, &mut state);
+                editor_panels::modeling_panel(ctx, &mut state, engine);
             });
             let ewp = egui_ctx.is_pointer_over_area();
             let pr = egui_ctx.tessellate(fo.shapes, egui_ctx.pixels_per_point());

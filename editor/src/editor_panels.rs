@@ -44,6 +44,34 @@ pub struct EditorState {
     pub show_ability: bool,
     pub show_level_streaming: bool,
     pub show_audio_mixer: bool,
+    pub show_modeling: bool,
+    // 3D Modeling
+    pub model_brush: String,
+    pub model_brush_radius: f32,
+    pub model_brush_strength: f32,
+    pub model_brush_density: f32,
+    pub model_active_char: char,
+    pub model_symmetry: String,
+    pub model_layer: usize,
+    pub model_layers: Vec<(String, bool)>,
+    pub model_particle_count: usize,
+    pub model_lod_level: usize,
+    pub model_snap_grid: bool,
+    pub model_snap_size: f32,
+    pub model_pivot_x: f32,
+    pub model_pivot_y: f32,
+    pub model_pivot_z: f32,
+    pub model_3d_mode: bool,
+    pub model_cam_azimuth: f32,
+    pub model_cam_elevation: f32,
+    pub model_cam_distance: f32,
+    pub model_wireframe: bool,
+    pub model_show_normals: bool,
+    pub model_show_grid: bool,
+    pub model_selected_primitive: String,
+    pub model_prim_size: f32,
+    pub model_prim_segments: u32,
+    pub model_history: Vec<String>,
     // Per-panel state
     pub world_seed: u64,
     pub world_biome_filter: String,
@@ -84,6 +112,33 @@ impl EditorState {
             show_render_graph: false, show_dialogue: false, show_quest: false,
             show_spline: false, show_cinematic: false, show_inventory: false,
             show_ability: false, show_level_streaming: false, show_audio_mixer: false,
+            show_modeling: false,
+            model_brush: "Add".to_string(),
+            model_brush_radius: 1.0,
+            model_brush_strength: 0.5,
+            model_brush_density: 10.0,
+            model_active_char: '@',
+            model_symmetry: "None".to_string(),
+            model_layer: 0,
+            model_layers: vec![("Layer 0".to_string(), true)],
+            model_particle_count: 0,
+            model_lod_level: 0,
+            model_snap_grid: false,
+            model_snap_size: 0.5,
+            model_pivot_x: 0.0,
+            model_pivot_y: 0.0,
+            model_pivot_z: 0.0,
+            model_3d_mode: false,
+            model_cam_azimuth: 45.0,
+            model_cam_elevation: 30.0,
+            model_cam_distance: 15.0,
+            model_wireframe: false,
+            model_show_normals: false,
+            model_show_grid: true,
+            model_selected_primitive: "Sphere".to_string(),
+            model_prim_size: 2.0,
+            model_prim_segments: 16,
+            model_history: Vec::new(),
             world_seed: 42, world_biome_filter: String::new(),
             ai_selected_tree: "BehaviorTree_Enemy".to_string(),
             physics_selected_body: "RigidBody_0".to_string(),
@@ -147,21 +202,22 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
     egui::TopBottomPanel::top("menu").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New (Ctrl+N)").clicked() {
+                ui.set_min_width(200.0);
+                if shortcut_item(ui, "New", "Ctrl+N") {
                     state.push_undo("New Scene");
                     state.document = SceneDocument::new();
                     state.needs_rebuild = true;
                     state.set_status("New scene");
                     ui.close_menu();
                 }
-                if ui.button("Save (Ctrl+S)").clicked() {
+                if shortcut_item(ui, "Save", "Ctrl+S") {
                     match state.document.save("scene.json") {
                         Ok(_) => { state.set_status("Saved scene.json"); state.log("Saved scene.json", egui::Color32::from_rgb(100, 200, 100)); }
                         Err(e) => { state.set_status(&format!("Save failed: {}", e)); state.log(&format!("Save error: {}", e), egui::Color32::from_rgb(255, 100, 100)); }
                     }
                     ui.close_menu();
                 }
-                if ui.button("Load (Ctrl+O)").clicked() {
+                if shortcut_item(ui, "Load", "Ctrl+O") {
                     state.push_undo("Before Load");
                     match SceneDocument::load("scene.json") {
                         Ok(doc) => { state.document = doc; state.needs_rebuild = true; state.set_status("Loaded"); state.log("Loaded scene.json", egui::Color32::from_rgb(100, 200, 100)); }
@@ -173,11 +229,12 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                 if ui.button("Quit").clicked() { engine.request_quit(); }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.button("Undo (Ctrl+Z)").clicked() { state.undo(); ui.close_menu(); }
-                if ui.button("Redo (Ctrl+Y)").clicked() { state.redo(); ui.close_menu(); }
+                ui.set_min_width(200.0);
+                if shortcut_item(ui, "Undo", "Ctrl+Z") { state.undo(); ui.close_menu(); }
+                if shortcut_item(ui, "Redo", "Ctrl+Y") { state.redo(); ui.close_menu(); }
                 ui.separator();
-                if ui.button("Select All (Ctrl+A)").clicked() { state.document.select_all(); ui.close_menu(); }
-                if ui.button("Delete (Del)").clicked() {
+                if shortcut_item(ui, "Select All", "Ctrl+A") { state.document.select_all(); ui.close_menu(); }
+                if shortcut_item(ui, "Delete", "Del") {
                     state.push_undo("Delete");
                     let sel = state.document.selection.clone();
                     for id in sel { state.document.remove_node(id); }
@@ -185,7 +242,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                     state.needs_rebuild = true;
                     ui.close_menu();
                 }
-                if ui.button("Duplicate (Ctrl+D)").clicked() {
+                if shortcut_item(ui, "Duplicate", "Ctrl+D") {
                     state.push_undo("Duplicate");
                     let sel = state.document.selection.clone();
                     let mut new_ids = Vec::new();
@@ -196,7 +253,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                 }
             });
             ui.menu_button("View", |ui| {
-                if ui.button("Help (F1)").clicked() { state.show_help = !state.show_help; ui.close_menu(); }
+                ui.set_min_width(200.0);
+                if shortcut_item(ui, "Help", "F1") { state.show_help = !state.show_help; ui.close_menu(); }
                 if ui.button("Console").clicked() { state.show_console = !state.show_console; ui.close_menu(); }
                 if ui.button("Force Fields").clicked() { state.show_fields_panel = !state.show_fields_panel; ui.close_menu(); }
                 if ui.button("Asset Browser").clicked() { state.show_asset_browser = !state.show_asset_browser; ui.close_menu(); }
@@ -206,32 +264,42 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                 if ui.button("Reset Camera").clicked() { state.cam_x = 0.0; state.cam_y = 0.0; ui.close_menu(); }
             });
             ui.menu_button("Tools", |ui| {
-                if ui.button("World Editor").clicked() { state.show_world_editor = !state.show_world_editor; ui.close_menu(); }
-                if ui.button("AI Behavior").clicked() { state.show_ai_behavior = !state.show_ai_behavior; ui.close_menu(); }
-                if ui.button("Physics").clicked() { state.show_physics = !state.show_physics; ui.close_menu(); }
-                if ui.button("Render Graph").clicked() { state.show_render_graph = !state.show_render_graph; ui.close_menu(); }
+                ui.set_min_width(200.0);
+                if ui.button("[W]  World Editor").clicked() { state.show_world_editor = !state.show_world_editor; ui.close_menu(); }
+                if ui.button("[AI] AI Behavior").clicked() { state.show_ai_behavior = !state.show_ai_behavior; ui.close_menu(); }
+                if ui.button("[PH] Physics").clicked() { state.show_physics = !state.show_physics; ui.close_menu(); }
+                if ui.button("[RG] Render Graph").clicked() { state.show_render_graph = !state.show_render_graph; ui.close_menu(); }
                 ui.separator();
-                if ui.button("Dialogue Editor").clicked() { state.show_dialogue = !state.show_dialogue; ui.close_menu(); }
-                if ui.button("Quest Editor").clicked() { state.show_quest = !state.show_quest; ui.close_menu(); }
-                if ui.button("Spline Editor").clicked() { state.show_spline = !state.show_spline; ui.close_menu(); }
-                if ui.button("Cinematic Editor").clicked() { state.show_cinematic = !state.show_cinematic; ui.close_menu(); }
+                if ui.button("[DL] Dialogue Editor").clicked() { state.show_dialogue = !state.show_dialogue; ui.close_menu(); }
+                if ui.button("[QT] Quest Editor").clicked() { state.show_quest = !state.show_quest; ui.close_menu(); }
+                if ui.button("[SP] Spline Editor").clicked() { state.show_spline = !state.show_spline; ui.close_menu(); }
+                if ui.button("[CN] Cinematic Editor").clicked() { state.show_cinematic = !state.show_cinematic; ui.close_menu(); }
                 ui.separator();
-                if ui.button("Inventory").clicked() { state.show_inventory = !state.show_inventory; ui.close_menu(); }
-                if ui.button("Ability Editor").clicked() { state.show_ability = !state.show_ability; ui.close_menu(); }
-                if ui.button("Level Streaming").clicked() { state.show_level_streaming = !state.show_level_streaming; ui.close_menu(); }
-                if ui.button("Audio Mixer").clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("FPS: {:.0}", state.fps));
+                if ui.button("[IN] Inventory").clicked() { state.show_inventory = !state.show_inventory; ui.close_menu(); }
+                if ui.button("[AB] Ability Editor").clicked() { state.show_ability = !state.show_ability; ui.close_menu(); }
+                if ui.button("[LS] Level Streaming").clicked() { state.show_level_streaming = !state.show_level_streaming; ui.close_menu(); }
+                if ui.button("[AU] Audio Mixer").clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
                 ui.separator();
-                ui.label(format!("Nodes: {} | Undo: {}", state.document.node_count(), state.undo_stack.len()));
-                if state.status_timer > 0.0 {
-                    ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(100, 220, 100), &state.status_msg);
-                }
+                if ui.button("[3D] 3D Modeler").clicked() { state.show_modeling = !state.show_modeling; ui.close_menu(); }
             });
         });
     });
+}
+
+/// Render a menu item with a right-aligned keyboard shortcut hint.
+fn shortcut_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
+    let mut clicked = false;
+    let item_resp = ui.horizontal(|ui| {
+        let w = ui.available_width();
+        if ui.add_sized([w, 20.0], egui::Button::new(
+            egui::RichText::new(format!("{:<24}{}", label, shortcut))
+                .monospace()
+        )).clicked() {
+            clicked = true;
+        }
+    });
+    let _ = item_resp;
+    clicked
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -242,103 +310,191 @@ pub fn hierarchy_panel(ctx: &egui::Context, state: &mut EditorState) {
     static mut SEARCH: String = String::new();
     static mut FILTER: Option<NodeKind> = None;
 
-    egui::SidePanel::left("hierarchy").default_width(200.0).show(ctx, |ui| {
-        ui.heading("Hierarchy");
+    const ACCENT: egui::Color32 = egui::Color32::from_rgb(70, 130, 200);
+    const PANEL_HEADER: egui::Color32 = egui::Color32::from_rgb(30, 33, 42);
 
-        // Search bar
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            // SAFETY: single-threaded editor, these statics are fine
-            unsafe { ui.text_edit_singleline(&mut SEARCH); }
-        });
+    egui::SidePanel::left("hierarchy")
+        .default_width(210.0)
+        .min_width(160.0)
+        .show(ctx, |ui| {
+            // Panel title bar
+            let title_rect = ui.available_rect_before_wrap();
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(title_rect.min, egui::vec2(title_rect.width(), 28.0)),
+                0.0, PANEL_HEADER,
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("HIERARCHY").size(11.0).strong()
+                    .color(egui::Color32::from_rgb(160, 170, 190)));
+            });
+            ui.add_space(4.0);
+            ui.separator();
 
-        // Filter buttons
-        ui.horizontal(|ui| {
-            let filter = unsafe { &mut FILTER };
-            if ui.selectable_label(filter.is_none(), "All").clicked() { *filter = None; }
-            if ui.selectable_label(*filter == Some(NodeKind::Glyph), "@Glyph").clicked() { *filter = Some(NodeKind::Glyph); }
-            if ui.selectable_label(*filter == Some(NodeKind::Field), "~Field").clicked() { *filter = Some(NodeKind::Field); }
-            if ui.selectable_label(*filter == Some(NodeKind::Entity), "#Entity").clicked() { *filter = Some(NodeKind::Entity); }
-        });
+            // Search bar
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                unsafe { ui.add(egui::TextEdit::singleline(&mut SEARCH)
+                    .hint_text("Search nodes...")
+                    .desired_width(f32::INFINITY)); }
+            });
+            ui.add_space(4.0);
 
-        ui.separator();
+            // Tab-style filter buttons
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                let filter = unsafe { &mut FILTER };
+                let tabs = [
+                    (None, "All"),
+                    (Some(NodeKind::Glyph), "@ Glyphs"),
+                    (Some(NodeKind::Field), "~ Fields"),
+                    (Some(NodeKind::Entity), "# Entities"),
+                ];
+                for (kind, label) in &tabs {
+                    let selected = *filter == *kind;
+                    let txt = egui::RichText::new(*label).size(11.0);
+                    let btn = egui::Button::new(txt)
+                        .fill(if selected { ACCENT } else { egui::Color32::from_rgb(35, 37, 46) })
+                        .stroke(egui::Stroke::new(1.0, if selected { ACCENT } else { egui::Color32::from_rgb(55, 58, 70) }));
+                    if ui.add(btn).clicked() { *filter = *kind; }
+                }
+            });
 
-        if state.document.node_count() == 0 {
-            ui.label("Empty scene. Click viewport to place.");
-            return;
-        }
+            ui.add_space(4.0);
+            ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let search = unsafe { SEARCH.to_lowercase() };
-            let filter = unsafe { FILTER };
-            let mut clicked_id = None;
-
-            // Group by kind for tree structure
-            let entities: Vec<&SceneNode> = state.document.nodes()
-                .filter(|n| n.kind == NodeKind::Entity)
-                .filter(|n| filter.map_or(true, |f| f == n.kind))
-                .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
-                .collect();
-            let fields: Vec<&SceneNode> = state.document.nodes()
-                .filter(|n| n.kind == NodeKind::Field)
-                .filter(|n| filter.map_or(true, |f| f == n.kind))
-                .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
-                .collect();
-            let glyphs: Vec<&SceneNode> = state.document.nodes()
-                .filter(|n| n.kind == NodeKind::Glyph)
-                .filter(|n| filter.map_or(true, |f| f == n.kind))
-                .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
-                .collect();
-
-            // Entities section
-            if !entities.is_empty() && filter != Some(NodeKind::Glyph) && filter != Some(NodeKind::Field) {
-                let header = egui::CollapsingHeader::new(format!("Entities ({})", entities.len()))
-                    .default_open(true);
-                header.show(ui, |ui| {
-                    for node in &entities {
-                        let sel = state.document.selection.contains(&node.id);
-                        let label = egui::RichText::new(format!("# {}", node.name))
-                            .color(if sel { egui::Color32::YELLOW } else { egui::Color32::from_rgb(180, 120, 255) });
-                        if ui.selectable_label(sel, label).clicked() { clicked_id = Some(node.id); }
-                    }
+            if state.document.node_count() == 0 {
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Empty scene").color(egui::Color32::from_rgb(100, 105, 120)));
+                    ui.label(egui::RichText::new("Click viewport to place").size(11.0).color(egui::Color32::from_rgb(80, 85, 100)));
                 });
+                return;
             }
 
-            // Fields section
-            if !fields.is_empty() && filter != Some(NodeKind::Glyph) && filter != Some(NodeKind::Entity) {
-                let header = egui::CollapsingHeader::new(format!("Force Fields ({})", fields.len()))
-                    .default_open(true);
-                header.show(ui, |ui| {
-                    for node in &fields {
-                        let sel = state.document.selection.contains(&node.id);
-                        let ft_name = node.field_type.as_ref().map(|f| f.label()).unwrap_or("Unknown");
-                        let label = egui::RichText::new(format!("~ {} [{}]", node.name, ft_name))
-                            .color(if sel { egui::Color32::YELLOW } else { egui::Color32::from_rgb(255, 180, 80) });
-                        if ui.selectable_label(sel, label).clicked() { clicked_id = Some(node.id); }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let search = unsafe { SEARCH.to_lowercase() };
+                let filter = unsafe { FILTER };
+                let mut clicked_id: Option<u32> = None;
+                let mut ctx_action: Option<(u32, &'static str)> = None;
+
+                let entities: Vec<(u32, String)> = state.document.nodes()
+                    .filter(|n| n.kind == NodeKind::Entity)
+                    .filter(|n| filter.map_or(true, |f| f == n.kind))
+                    .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
+                    .map(|n| (n.id, n.name.clone()))
+                    .collect();
+                let fields: Vec<(u32, String, Option<FieldType>)> = state.document.nodes()
+                    .filter(|n| n.kind == NodeKind::Field)
+                    .filter(|n| filter.map_or(true, |f| f == n.kind))
+                    .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
+                    .map(|n| (n.id, n.name.clone(), n.field_type))
+                    .collect();
+                let glyphs: Vec<(u32, String, Option<char>)> = state.document.nodes()
+                    .filter(|n| n.kind == NodeKind::Glyph)
+                    .filter(|n| filter.map_or(true, |f| f == n.kind))
+                    .filter(|n| search.is_empty() || n.name.to_lowercase().contains(&search))
+                    .map(|n| (n.id, n.name.clone(), n.character))
+                    .collect();
+
+                // Section header helper (closure-like macro pattern)
+                let section_color = egui::Color32::from_rgb(36, 38, 48);
+
+                // Entities section
+                if !entities.is_empty() && filter != Some(NodeKind::Glyph) && filter != Some(NodeKind::Field) {
+                    let bg = ui.available_rect_before_wrap();
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(bg.min, egui::vec2(bg.width(), 20.0)),
+                        0.0, section_color,
+                    );
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("  # Entities  ({})", entities.len()))
+                            .size(11.0).strong().color(egui::Color32::from_rgb(180, 120, 255))
+                    ).default_open(true).show(ui, |ui| {
+                        for (id, name) in &entities {
+                            let sel = state.document.selection.contains(id);
+                            let label = egui::RichText::new(format!("   # {}", name))
+                                .color(if sel { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 160, 255) });
+                            let resp = ui.selectable_label(sel, label);
+                            if resp.clicked() { clicked_id = Some(*id); }
+                            resp.context_menu(|ui| {
+                                if ui.button("Duplicate").clicked() { ctx_action = Some((*id, "dup")); ui.close_menu(); }
+                                if ui.button("Delete").clicked() { ctx_action = Some((*id, "del")); ui.close_menu(); }
+                                if ui.button("Focus").clicked() { ctx_action = Some((*id, "focus")); ui.close_menu(); }
+                            });
+                        }
+                    });
+                }
+
+                // Fields section
+                if !fields.is_empty() && filter != Some(NodeKind::Glyph) && filter != Some(NodeKind::Entity) {
+                    let bg = ui.available_rect_before_wrap();
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(bg.min, egui::vec2(bg.width(), 20.0)),
+                        0.0, section_color,
+                    );
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("  ~ Force Fields  ({})", fields.len()))
+                            .size(11.0).strong().color(egui::Color32::from_rgb(255, 180, 80))
+                    ).default_open(true).show(ui, |ui| {
+                        for (id, name, ft) in &fields {
+                            let sel = state.document.selection.contains(id);
+                            let ft_name = ft.as_ref().map(|f| f.label()).unwrap_or("?");
+                            let label = egui::RichText::new(format!("   ~ {} [{}]", name, ft_name))
+                                .color(if sel { egui::Color32::WHITE } else { egui::Color32::from_rgb(255, 200, 120) });
+                            let resp = ui.selectable_label(sel, label);
+                            if resp.clicked() { clicked_id = Some(*id); }
+                            resp.context_menu(|ui| {
+                                if ui.button("Duplicate").clicked() { ctx_action = Some((*id, "dup")); ui.close_menu(); }
+                                if ui.button("Delete").clicked() { ctx_action = Some((*id, "del")); ui.close_menu(); }
+                                if ui.button("Focus").clicked() { ctx_action = Some((*id, "focus")); ui.close_menu(); }
+                            });
+                        }
+                    });
+                }
+
+                // Glyphs section
+                if !glyphs.is_empty() && filter != Some(NodeKind::Field) && filter != Some(NodeKind::Entity) {
+                    let bg = ui.available_rect_before_wrap();
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(bg.min, egui::vec2(bg.width(), 20.0)),
+                        0.0, section_color,
+                    );
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("  @ Glyphs  ({})", glyphs.len()))
+                            .size(11.0).strong().color(egui::Color32::from_rgb(150, 210, 150))
+                    ).default_open(glyphs.len() < 30).show(ui, |ui| {
+                        for (id, name, ch) in &glyphs {
+                            let sel = state.document.selection.contains(id);
+                            let c = ch.unwrap_or('?');
+                            let label = egui::RichText::new(format!("   @ {} '{}'", name, c))
+                                .color(if sel { egui::Color32::WHITE } else { egui::Color32::from_rgb(170, 220, 170) });
+                            let resp = ui.selectable_label(sel, label);
+                            if resp.clicked() { clicked_id = Some(*id); }
+                            resp.context_menu(|ui| {
+                                if ui.button("Duplicate").clicked() { ctx_action = Some((*id, "dup")); ui.close_menu(); }
+                                if ui.button("Delete").clicked() { ctx_action = Some((*id, "del")); ui.close_menu(); }
+                                if ui.button("Focus").clicked() { ctx_action = Some((*id, "focus")); ui.close_menu(); }
+                            });
+                        }
+                    });
+                }
+
+                if let Some(id) = clicked_id {
+                    state.document.selection = vec![id];
+                }
+                if let Some((id, action)) = ctx_action {
+                    match action {
+                        "dup" => { state.push_undo("Duplicate"); if let Some(nid) = state.document.duplicate_node(id) { state.document.selection = vec![nid]; } state.needs_rebuild = true; }
+                        "del" => { state.push_undo("Delete"); state.document.remove_node(id); state.document.selection.retain(|s| *s != id); state.needs_rebuild = true; }
+                        "focus" => { if let Some(n) = state.document.get_node(id) { state.cam_x = n.position.x; state.cam_y = n.position.y; } }
+                        _ => {}
                     }
-                });
-            }
-
-            // Glyphs section (collapsible since there are many)
-            if !glyphs.is_empty() && filter != Some(NodeKind::Field) && filter != Some(NodeKind::Entity) {
-                let header = egui::CollapsingHeader::new(format!("Glyphs ({})", glyphs.len()))
-                    .default_open(glyphs.len() < 30);
-                header.show(ui, |ui| {
-                    for node in &glyphs {
-                        let sel = state.document.selection.contains(&node.id);
-                        let ch = node.character.unwrap_or('?');
-                        let label = egui::RichText::new(format!("@ {} '{}'", node.name, ch))
-                            .color(if sel { egui::Color32::YELLOW } else { egui::Color32::from_rgb(150, 200, 150) });
-                        if ui.selectable_label(sel, label).clicked() { clicked_id = Some(node.id); }
-                    }
-                });
-            }
-
-            if let Some(id) = clicked_id {
-                state.document.selection = vec![id];
-            }
+                }
+            });
         });
-    });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -346,58 +502,96 @@ pub fn hierarchy_panel(ctx: &egui::Context, state: &mut EditorState) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub fn inspector_panel(ctx: &egui::Context, state: &mut EditorState) {
-    egui::SidePanel::right("inspector").default_width(250.0).show(ctx, |ui| {
-        ui.heading("Inspector");
+    egui::SidePanel::right("inspector")
+        .default_width(260.0)
+        .min_width(200.0)
+        .show(ctx, |ui| {
+        let title_rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(title_rect.min, egui::vec2(title_rect.width(), 28.0)),
+            0.0, egui::Color32::from_rgb(30, 33, 42),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("INSPECTOR").size(11.0).strong()
+                .color(egui::Color32::from_rgb(160, 170, 190)));
+        });
+        ui.add_space(4.0);
         ui.separator();
 
         if let Some(&id) = state.document.selection.first() {
             if let Some(node) = state.document.get_node_mut(id) {
                 let mut changed = false;
 
-                // Name
-                ui.horizontal(|ui| { ui.label("Name:"); ui.label(&node.name); });
-                ui.label(format!("Type: {:?}  ID: {}", node.kind, node.id));
-                ui.separator();
+                ui.add_space(6.0);
+                let kind_color = match node.kind {
+                    NodeKind::Entity => egui::Color32::from_rgb(180, 120, 255),
+                    NodeKind::Field  => egui::Color32::from_rgb(255, 180, 80),
+                    NodeKind::Glyph  => egui::Color32::from_rgb(150, 210, 150),
+                    _                => egui::Color32::GRAY,
+                };
+                let kind_label = match node.kind {
+                    NodeKind::Entity => "# Entity",
+                    NodeKind::Field  => "~ Field",
+                    NodeKind::Glyph  => "@ Glyph",
+                    _                => "? Node",
+                };
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.colored_label(kind_color, kind_label);
+                    ui.label(egui::RichText::new(format!("  ID:{}", node.id)).size(10.0)
+                        .color(egui::Color32::from_rgb(100, 105, 120)));
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Name").size(11.0).color(egui::Color32::from_rgb(140, 150, 170)));
+                    ui.add(egui::TextEdit::singleline(&mut node.name).desired_width(f32::INFINITY));
+                });
+                ui.add_space(6.0);
 
-                // ── Transform section ──
-                egui::CollapsingHeader::new("Transform").default_open(true).show(ui, |ui| {
+                egui::CollapsingHeader::new(egui::RichText::new("  Transform").size(12.0))
+                    .default_open(true).show(ui, |ui| {
+                    ui.add_space(2.0);
                     changed |= ui.add(egui::Slider::new(&mut node.position.x, -30.0..=30.0).text("X")).changed();
                     changed |= ui.add(egui::Slider::new(&mut node.position.y, -30.0..=30.0).text("Y")).changed();
-                    changed |= ui.add(egui::Slider::new(&mut node.rotation, 0.0..=360.0).text("Rotation")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut node.rotation, 0.0..=360.0).text("Rot")).changed();
                     changed |= ui.add(egui::Slider::new(&mut node.scale, 0.1..=5.0).text("Scale")).changed();
                 });
 
-                // ── Visual section ──
-                egui::CollapsingHeader::new("Visual").default_open(true).show(ui, |ui| {
+                egui::CollapsingHeader::new(egui::RichText::new("  Visual").size(12.0))
+                    .default_open(true).show(ui, |ui| {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Color").size(11.0).color(egui::Color32::from_rgb(140, 150, 170)));
+                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(node.color.x, node.color.y, node.color.z, node.color.w);
+                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::OnlyBlend).changed() {
+                            node.color.x = rgba.r(); node.color.y = rgba.g(); node.color.z = rgba.b(); node.color.w = rgba.a();
+                            changed = true;
+                        }
+                    });
                     changed |= ui.add(egui::Slider::new(&mut node.emission, 0.0..=5.0).text("Emission")).changed();
                     changed |= ui.add(egui::Slider::new(&mut node.glow_radius, 0.0..=5.0).text("Glow Radius")).changed();
-
                     if let Some(ref mut ch) = node.character {
                         ui.horizontal(|ui| {
-                            ui.label(format!("Char: '{}'", ch));
-                            let chars = ['@', '#', '*', '+', 'o', 'x', 'X', 'O', '.', ':', '~', '=', '>', '<', '^', 'v'];
-                            for &c in &chars[..8] {
+                            ui.label(egui::RichText::new(format!("Char: '{}'", ch)).size(11.0));
+                            for &c in &['@', '#', '*', '+', 'o', 'x', 'X', 'O'] {
                                 if ui.small_button(&c.to_string()).clicked() { *ch = c; changed = true; }
                             }
                         });
                     }
-
-                    // Color
-                    let mut rgb = [node.color.x, node.color.y, node.color.z];
-                    if ui.color_edit_button_rgb(&mut rgb).changed() {
-                        node.color.x = rgb[0]; node.color.y = rgb[1]; node.color.z = rgb[2];
+                    ui.add_space(4.0);
+                    if ui.add(egui::Button::new(egui::RichText::new("  Apply Changes  ").size(12.0))
+                        .fill(egui::Color32::from_rgb(55, 110, 170))
+                    ).clicked() {
                         changed = true;
                     }
-                    changed |= ui.add(egui::Slider::new(&mut node.color.w, 0.0..=1.0).text("Alpha")).changed();
                 });
 
-                // ── Force Field section (only for Field nodes) ──
                 if node.kind == NodeKind::Field {
-                    egui::CollapsingHeader::new("Force Field").default_open(true).show(ui, |ui| {
-                        if let Some(ref ft) = node.field_type {
-                            ui.label(format!("Type: {}", ft.label()));
-                        }
-                        // Field type selector
+                    egui::CollapsingHeader::new(egui::RichText::new("  Force Field").size(12.0))
+                        .default_open(true).show(ui, |ui| {
                         let mut ft_idx = node.field_type.as_ref()
                             .and_then(|ft| FieldType::all().iter().position(|f| std::mem::discriminant(f) == std::mem::discriminant(ft)))
                             .unwrap_or(0);
@@ -413,82 +607,163 @@ pub fn inspector_panel(ctx: &egui::Context, state: &mut EditorState) {
                             node.field_type = Some(FieldType::all()[ft_idx]);
                             changed = true;
                         }
-
-                        ui.separator();
-                        ui.label("Parameters (adjust via field presets):");
-                        // Per-field-type sliders would go here
-                        // For now, show the field properties as labels
                         for (k, v) in &node.properties {
                             ui.horizontal(|ui| { ui.label(format!("{}: {}", k, v)); });
                         }
                     });
                 }
 
-                // ── Entity section (only for Entity nodes) ──
                 if node.kind == NodeKind::Entity {
-                    egui::CollapsingHeader::new("Entity").default_open(true).show(ui, |ui| {
+                    egui::CollapsingHeader::new(egui::RichText::new("  Entity").size(12.0))
+                        .default_open(true).show(ui, |ui| {
                         ui.label("Formation: Ring (12 glyphs)");
-                        ui.label("Binding: Force cohesion");
-                        // These would be editable in a full implementation:
                         ui.label("HP: 100 / 100");
                         ui.label("Cohesion: 0.7");
                         ui.label("Pulse Rate: 0.5 Hz");
                     });
                 }
 
-                // ── Tags ──
-                egui::CollapsingHeader::new("Tags").default_open(false).show(ui, |ui| {
-                    for tag in &node.tags {
-                        ui.label(format!("  {}", tag));
+                egui::CollapsingHeader::new(egui::RichText::new("  Tags").size(12.0))
+                    .default_open(false).show(ui, |ui| {
+                    for tag in &node.tags { ui.label(format!("  {}", tag)); }
+                    if node.tags.is_empty() {
+                        ui.label(egui::RichText::new("  (none)").color(egui::Color32::from_rgb(100, 105, 120)));
                     }
-                    if node.tags.is_empty() { ui.label("  (none)"); }
                 });
 
                 if changed { state.needs_rebuild = true; }
             }
         } else {
-            ui.label("No selection");
-            ui.label("Click in viewport to place objects.");
-            ui.separator();
-            ui.label(format!("Tool: {:?}", state.tool));
-            ui.label("Shift+click to multi-select");
-            ui.label("Ctrl+C/V to copy/paste");
+            ui.add_space(20.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No Selection").color(egui::Color32::from_rgb(100, 105, 120)));
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!("Tool: {:?}", state.tool)).size(11.0).color(egui::Color32::from_rgb(80, 85, 100)));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Click viewport to select").size(11.0).color(egui::Color32::from_rgb(80, 85, 100)));
+                ui.label(egui::RichText::new("Shift+click: multi-select").size(11.0).color(egui::Color32::from_rgb(80, 85, 100)));
+            });
         }
     });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Toolbar
+// Top toolbar (tools + scene info + FPS) — replaces the old bottom toolbar
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-pub fn toolbar_panel(ctx: &egui::Context, state: &mut EditorState, engine: &mut ProofEngine) {
-    egui::TopBottomPanel::bottom("toolbar").min_height(60.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Tool:");
-            for (kind, label) in &[(ToolKind::Select, "Select(V)"), (ToolKind::Move, "Move(G)"),
-                (ToolKind::Place, "Place(P)"), (ToolKind::Field, "Field(F)"),
-                (ToolKind::Entity, "Entity(E)"), (ToolKind::Particle, "Burst(X)")] {
-                if ui.selectable_label(state.tool == *kind, *label).clicked() { state.tool = *kind; }
+pub fn toolbar_panel(ctx: &egui::Context, state: &mut EditorState, _engine: &mut ProofEngine) {
+    const ACCENT: egui::Color32 = egui::Color32::from_rgb(70, 130, 200);
+    const TOOLBAR_BG: egui::Color32 = egui::Color32::from_rgb(24, 26, 32);
+
+    egui::TopBottomPanel::top("toolbar")
+        .exact_height(34.0)
+        .show(ctx, |ui| {
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(rect, 0.0, TOOLBAR_BG);
+
+        ui.horizontal_centered(|ui| {
+            ui.add_space(6.0);
+
+            // Tool buttons
+            let tools = [
+                (ToolKind::Select, "V  Select"),
+                (ToolKind::Move,   "G  Move"),
+                (ToolKind::Place,  "P  Place"),
+                (ToolKind::Field,  "F  Field"),
+                (ToolKind::Entity, "E  Entity"),
+                (ToolKind::Particle, "X  Burst"),
+            ];
+            for (kind, label) in &tools {
+                let selected = state.tool == *kind;
+                let btn = egui::Button::new(egui::RichText::new(*label).size(11.5))
+                    .fill(if selected { ACCENT } else { egui::Color32::from_rgb(38, 40, 50) })
+                    .stroke(egui::Stroke::new(1.0, if selected { egui::Color32::from_rgb(120, 170, 230) } else { egui::Color32::from_rgb(55, 58, 70) }));
+                if ui.add(btn).clicked() { state.tool = *kind; }
+                ui.add_space(2.0);
             }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Chars:");
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Palettes
+            ui.label(egui::RichText::new("Chars:").size(11.0).color(egui::Color32::from_rgb(140, 150, 170)));
             let cn: Vec<&str> = CHAR_PALETTES.iter().map(|(n, _)| *n).collect();
-            egui::ComboBox::from_id_salt("ch").selected_text(cn[state.char_palette_idx]).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("ch").selected_text(cn[state.char_palette_idx])
+                .width(90.0).show_ui(ui, |ui| {
                 for (i, n) in cn.iter().enumerate() { ui.selectable_value(&mut state.char_palette_idx, i, *n); }
             });
-            ui.label("Colors:");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Colors:").size(11.0).color(egui::Color32::from_rgb(140, 150, 170)));
             let ccn: Vec<&str> = COLOR_PALETTES.iter().map(|(n, _)| *n).collect();
-            egui::ComboBox::from_id_salt("co").selected_text(ccn[state.color_palette_idx]).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("co").selected_text(ccn[state.color_palette_idx])
+                .width(90.0).show_ui(ui, |ui| {
                 for (i, n) in ccn.iter().enumerate() { ui.selectable_value(&mut state.color_palette_idx, i, *n); }
             });
-            ui.label("Field:");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Field:").size(11.0).color(egui::Color32::from_rgb(140, 150, 170)));
             let fn_: Vec<&str> = FieldType::all().iter().map(|f| f.label()).collect();
-            egui::ComboBox::from_id_salt("fl").selected_text(fn_[state.field_type_idx]).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("fl").selected_text(fn_[state.field_type_idx])
+                .width(100.0).show_ui(ui, |ui| {
                 for (i, n) in fn_.iter().enumerate() { ui.selectable_value(&mut state.field_type_idx, i, *n); }
             });
-            ui.add(egui::Slider::new(&mut state.emission, 0.0..=5.0).text("Em"));
-            ui.add(egui::Slider::new(&mut state.glow_radius, 0.0..=5.0).text("Glow"));
+            ui.add_space(6.0);
+            ui.add(egui::Slider::new(&mut state.emission, 0.0..=5.0).text("Em").max_decimals(1));
+            ui.add_space(4.0);
+            ui.add(egui::Slider::new(&mut state.glow_radius, 0.0..=5.0).text("Glow").max_decimals(1));
+
+            // Right side: scene name + stats + FPS
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+
+                // FPS
+                let fps = state.fps;
+                let fps_color = if fps >= 55.0 { egui::Color32::from_rgb(80, 220, 100) }
+                    else if fps >= 30.0 { egui::Color32::from_rgb(255, 210, 60) }
+                    else { egui::Color32::from_rgb(255, 80, 80) };
+                ui.label(egui::RichText::new(format!("{:.0} fps", fps)).color(fps_color).size(11.5));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("({:.1}, {:.1})", state.cam_x, state.cam_y)).size(10.5).color(egui::Color32::from_rgb(120, 130, 150)));
+                ui.separator();
+                // Scene info
+                let dirty = if !state.undo_stack.is_empty() { " *" } else { "" };
+                ui.label(egui::RichText::new(format!("scene{} — {} nodes", dirty, state.document.node_count())).size(11.0).color(egui::Color32::from_rgb(180, 185, 200)));
+            });
+        });
+    });
+
+    // Status bar at bottom
+    egui::TopBottomPanel::bottom("status_bar")
+        .exact_height(26.0)
+        .show(ctx, |ui| {
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 22, 28));
+
+        ui.horizontal_centered(|ui| {
+            ui.add_space(8.0);
+            // Left: timed status message
+            if state.status_timer > 0.0 {
+                let alpha = (state.status_timer * 85.0).min(255.0) as u8;
+                ui.label(egui::RichText::new(&state.status_msg).size(11.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(100, 220, 100, alpha)));
+            } else {
+                ui.label(egui::RichText::new("Ready").size(11.0).color(egui::Color32::from_rgb(70, 80, 95)));
+            }
+
+            // Right: undo count + node breakdown
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!(
+                    "Nodes: {}  |  Glyphs: {}  |  Fields: {}  |  Entities: {}",
+                    state.document.node_count(),
+                    state.document.glyph_count(),
+                    state.document.field_count(),
+                    state.document.nodes().filter(|n| n.kind == NodeKind::Entity).count(),
+                )).size(10.5).color(egui::Color32::from_rgb(120, 130, 150)));
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Undo: {}  Redo: {}", state.undo_stack.len(), state.redo_stack.len()))
+                    .size(10.5).color(egui::Color32::from_rgb(100, 110, 130)));
+            });
         });
     });
 }
@@ -813,7 +1088,7 @@ pub fn help_window(ctx: &egui::Context, state: &mut EditorState) {
 pub fn world_editor_panel(ctx: &egui::Context, state: &mut EditorState, _engine: &mut ProofEngine) {
     if !state.show_world_editor { return; }
     let mut open = state.show_world_editor;
-    egui::Window::new("World Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[W] World Editor").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         egui::CollapsingHeader::new("Terrain").default_open(true).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Seed:");
@@ -871,7 +1146,7 @@ pub fn world_editor_panel(ctx: &egui::Context, state: &mut EditorState, _engine:
 pub fn ai_behavior_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_ai_behavior { return; }
     let mut open = state.show_ai_behavior;
-    egui::Window::new("AI Behavior").open(&mut open).default_width(300.0).show(ctx, |ui| {
+    egui::Window::new("[AI] AI Behavior").open(&mut open).default_width(300.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Tree:");
             ui.text_edit_singleline(&mut state.ai_selected_tree);
@@ -914,7 +1189,7 @@ pub fn ai_behavior_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn physics_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_physics { return; }
     let mut open = state.show_physics;
-    egui::Window::new("Physics").open(&mut open).default_width(300.0).show(ctx, |ui| {
+    egui::Window::new("[PH] Physics").open(&mut open).default_width(300.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Body:");
             ui.text_edit_singleline(&mut state.physics_selected_body);
@@ -960,7 +1235,7 @@ pub fn physics_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn render_graph_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_render_graph { return; }
     let mut open = state.show_render_graph;
-    egui::Window::new("Render Graph").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[RG] Render Graph").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         egui::CollapsingHeader::new("Pass List").default_open(true).show(ui, |ui| {
             let passes = [
                 ("GBuffer", egui::Color32::from_rgb(60, 200, 80)),
@@ -1000,7 +1275,7 @@ pub fn render_graph_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn dialogue_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_dialogue { return; }
     let mut open = state.show_dialogue;
-    egui::Window::new("Dialogue Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[DL] Dialogue Editor").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("dlg_tree").selected_text("Merchant_01").show_ui(ui, |ui| {
                 let _ = ui.selectable_label(true, "Merchant_01");
@@ -1044,7 +1319,7 @@ pub fn dialogue_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn quest_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_quest { return; }
     let mut open = state.show_quest;
-    egui::Window::new("Quest Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[QT] Quest Editor").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.text_edit_singleline(&mut state.quest_search);
@@ -1100,7 +1375,7 @@ pub fn quest_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn spline_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_spline { return; }
     let mut open = state.show_spline;
-    egui::Window::new("Spline Editor").open(&mut open).default_width(280.0).show(ctx, |ui| {
+    egui::Window::new("[SP] Spline Editor").open(&mut open).default_width(280.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Type:");
             egui::ComboBox::from_id_salt("spline_type").selected_text("Catmull-Rom").show_ui(ui, |ui| {
@@ -1140,7 +1415,7 @@ pub fn spline_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn cinematic_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_cinematic { return; }
     let mut open = state.show_cinematic;
-    egui::Window::new("Cinematic Editor").open(&mut open).default_width(340.0).show(ctx, |ui| {
+    egui::Window::new("[CN] Cinematic Editor").open(&mut open).default_width(340.0).resizable(true).collapsible(true).show(ctx, |ui| {
         egui::CollapsingHeader::new("Timeline").default_open(true).show(ui, |ui| {
             static mut PLAYING: bool = false; static mut TIME: f32 = 0.0;
             #[allow(static_mut_refs)]
@@ -1188,7 +1463,7 @@ pub fn cinematic_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn inventory_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_inventory { return; }
     let mut open = state.show_inventory;
-    egui::Window::new("Inventory").open(&mut open).default_width(360.0).show(ctx, |ui| {
+    egui::Window::new("[IN] Inventory").open(&mut open).default_width(360.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.text_edit_singleline(&mut state.inventory_search);
@@ -1239,7 +1514,7 @@ pub fn inventory_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn ability_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_ability { return; }
     let mut open = state.show_ability;
-    egui::Window::new("Ability Editor").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[AB] Ability Editor").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.text_edit_singleline(&mut state.ability_search);
@@ -1299,7 +1574,7 @@ pub fn ability_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn level_streaming_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_level_streaming { return; }
     let mut open = state.show_level_streaming;
-    egui::Window::new("Level Streaming").open(&mut open).default_width(320.0).show(ctx, |ui| {
+    egui::Window::new("[LS] Level Streaming").open(&mut open).default_width(320.0).resizable(true).collapsible(true).show(ctx, |ui| {
         egui::Grid::new("ls_info").show(ui, |ui| {
             ui.label("World Size:"); ui.label("4096 x 4096 m"); ui.end_row();
             ui.label("Loaded Cells:"); ui.label("12 / 256"); ui.end_row();
@@ -1347,7 +1622,7 @@ pub fn level_streaming_panel(ctx: &egui::Context, state: &mut EditorState) {
 pub fn audio_mixer_panel(ctx: &egui::Context, state: &mut EditorState) {
     if !state.show_audio_mixer { return; }
     let mut open = state.show_audio_mixer;
-    egui::Window::new("Audio Mixer").open(&mut open).default_width(300.0).show(ctx, |ui| {
+    egui::Window::new("[AU] Audio Mixer").open(&mut open).default_width(300.0).resizable(true).collapsible(true).show(ctx, |ui| {
         ui.add(egui::Slider::new(&mut state.audio_master_volume, 0.0..=100.0).text("Master"));
         ui.separator();
         ui.add(egui::Slider::new(&mut state.audio_music_volume, 0.0..=100.0).text("Music"));
@@ -1385,4 +1660,389 @@ pub fn audio_mixer_panel(ctx: &egui::Context, state: &mut EditorState) {
         ui.label("Active voices: 14 / 64");
     });
     state.show_audio_mixer = open;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3D Particle Modeler panel
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub fn modeling_panel(ctx: &egui::Context, state: &mut EditorState, engine: &mut ProofEngine) {
+    if !state.show_modeling { return; }
+    let mut open = state.show_modeling;
+    egui::Window::new("[3D] Particle Modeler")
+        .open(&mut open)
+        .default_width(320.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            // ── Section 1: 3D Viewport Controls ──────────────────────────────
+            egui::CollapsingHeader::new("3D Viewport Controls").default_open(true).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Azimuth");
+                    ui.add(egui::Slider::new(&mut state.model_cam_azimuth, -180.0..=180.0).suffix("°"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Elevation");
+                    ui.add(egui::Slider::new(&mut state.model_cam_elevation, -90.0..=90.0).suffix("°"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Distance");
+                    ui.add(egui::Slider::new(&mut state.model_cam_distance, 1.0..=50.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut state.model_3d_mode, "3D Mode");
+                    ui.checkbox(&mut state.model_wireframe, "Wireframe");
+                    ui.checkbox(&mut state.model_show_normals, "Normals");
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut state.model_show_grid, "Grid");
+                    ui.checkbox(&mut state.model_snap_grid, "Snap");
+                    ui.add(egui::DragValue::new(&mut state.model_snap_size).speed(0.05).range(0.05..=5.0).prefix("size:"));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Front").clicked() {
+                        state.model_cam_azimuth = 0.0; state.model_cam_elevation = 0.0;
+                    }
+                    if ui.button("Top").clicked() {
+                        state.model_cam_azimuth = 0.0; state.model_cam_elevation = 89.9;
+                    }
+                    if ui.button("Side").clicked() {
+                        state.model_cam_azimuth = 90.0; state.model_cam_elevation = 0.0;
+                    }
+                    if ui.button("Iso").clicked() {
+                        state.model_cam_azimuth = 45.0; state.model_cam_elevation = 35.0;
+                    }
+                });
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Particles: {}", state.model_particle_count))
+                    .color(egui::Color32::from_rgb(80, 220, 100)));
+            });
+
+            // ── Section 2: Brush ─────────────────────────────────────────────
+            egui::CollapsingHeader::new("Brush").default_open(true).show(ui, |ui| {
+                let brush_options = ["Add", "Remove", "Smooth", "Color", "Inflate", "Pinch", "Flatten", "Clone"];
+                egui::ComboBox::from_label("Brush Type")
+                    .selected_text(state.model_brush.clone())
+                    .show_ui(ui, |ui| {
+                        for opt in &brush_options {
+                            ui.selectable_value(&mut state.model_brush, opt.to_string(), *opt);
+                        }
+                    });
+                ui.add(egui::Slider::new(&mut state.model_brush_radius, 0.1..=5.0).text("Radius"));
+                ui.add(egui::Slider::new(&mut state.model_brush_strength, 0.0..=1.0).text("Strength"));
+                if state.model_brush == "Add" {
+                    ui.add(egui::Slider::new(&mut state.model_brush_density, 1.0..=200.0).text("Density"));
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Char:");
+                    let mut ch_str = state.model_active_char.to_string();
+                    let resp = ui.add(egui::TextEdit::singleline(&mut ch_str).desired_width(24.0));
+                    if resp.changed() {
+                        if let Some(c) = ch_str.chars().next() {
+                            state.model_active_char = c;
+                        }
+                    }
+                });
+                let sym_options = ["None", "X", "Y", "Z", "XYZ"];
+                egui::ComboBox::from_label("Symmetry")
+                    .selected_text(state.model_symmetry.clone())
+                    .show_ui(ui, |ui| {
+                        for opt in &sym_options {
+                            ui.selectable_value(&mut state.model_symmetry, opt.to_string(), *opt);
+                        }
+                    });
+            });
+
+            // ── Section 3: Primitives ────────────────────────────────────────
+            egui::CollapsingHeader::new("Primitives").default_open(false).show(ui, |ui| {
+                let prim_options = ["Sphere", "Cube", "Cylinder", "Cone", "Torus", "Plane", "Metaballs"];
+                egui::ComboBox::from_label("Primitive")
+                    .selected_text(state.model_selected_primitive.clone())
+                    .show_ui(ui, |ui| {
+                        for opt in &prim_options {
+                            ui.selectable_value(&mut state.model_selected_primitive, opt.to_string(), *opt);
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("Size:");
+                    ui.add(egui::DragValue::new(&mut state.model_prim_size).speed(0.1).range(0.1..=20.0));
+                    ui.label("Segments:");
+                    ui.add(egui::DragValue::new(&mut state.model_prim_segments).speed(1).range(3..=64));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Pivot X:");
+                    ui.add(egui::DragValue::new(&mut state.model_pivot_x).speed(0.1));
+                    ui.label("Y:");
+                    ui.add(egui::DragValue::new(&mut state.model_pivot_y).speed(0.1));
+                    ui.label("Z:");
+                    ui.add(egui::DragValue::new(&mut state.model_pivot_z).speed(0.1));
+                });
+                if ui.button("Spawn Primitive").clicked() {
+                    let pivot = Vec3::new(state.model_pivot_x, state.model_pivot_y, state.model_pivot_z);
+                    let s = state.model_prim_size;
+                    let segs = state.model_prim_segments;
+                    let prim = state.model_selected_primitive.clone();
+                    match prim.as_str() {
+                        "Sphere" => {
+                            let n_particles = (segs * segs) as usize;
+                            let golden = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+                            for i in 0..n_particles {
+                                let y = 1.0 - (i as f32 / (n_particles - 1) as f32) * 2.0;
+                                let radius = (1.0 - y * y).sqrt();
+                                let theta = golden * i as f32;
+                                let x = theta.cos() * radius;
+                                let z = theta.sin() * radius;
+                                let pos = Vec3::new(x, y, z) * s + pivot;
+                                let chars = ['@', '#', '*', '+', 'o', 'x', '.', ':', '~'];
+                                let ch = chars[i % chars.len()];
+                                engine.spawn_glyph(Glyph {
+                                    character: ch,
+                                    position: pos,
+                                    color: Vec4::new(0.4 + y * 0.3, 0.7, 0.9 - y * 0.2, 0.9),
+                                    emission: 0.8,
+                                    glow_radius: 0.3,
+                                    mass: 0.0,
+                                    layer: RenderLayer::Entity,
+                                    ..Default::default()
+                                });
+                            }
+                            state.model_particle_count += n_particles;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Cube" => {
+                            let half = s * 0.5;
+                            let faces = [
+                                (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0)),
+                                (Vec3::new(-1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0)),
+                                (Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)),
+                                (Vec3::new(0.0, -1.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0)),
+                                (Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+                                (Vec3::new(0.0, 0.0, -1.0), Vec3::new(-1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+                            ];
+                            let n = segs as usize;
+                            let chars = ['#', '@', '+', '*', 'o', '.'];
+                            let mut count = 0usize;
+                            for (fi, (normal, u_dir, v_dir)) in faces.iter().enumerate() {
+                                for iu in 0..n {
+                                    for iv in 0..n {
+                                        let u = (iu as f32 / (n - 1) as f32) * 2.0 - 1.0;
+                                        let v = (iv as f32 / (n - 1) as f32) * 2.0 - 1.0;
+                                        let pos = (*normal + *u_dir * u + *v_dir * v) * half + pivot;
+                                        let ch = chars[count % chars.len()];
+                                        let t = (iu + iv) as f32 / (n * 2) as f32;
+                                        engine.spawn_glyph(Glyph {
+                                            character: ch,
+                                            position: pos,
+                                            color: Vec4::new(0.3 + t * 0.5, 0.5 + fi as f32 * 0.08, 0.8, 0.9),
+                                            emission: 0.6,
+                                            glow_radius: 0.2,
+                                            mass: 0.0,
+                                            layer: RenderLayer::Entity,
+                                            ..Default::default()
+                                        });
+                                        count += 1;
+                                    }
+                                }
+                            }
+                            state.model_particle_count += count;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Torus" => {
+                            let major_r = s;
+                            let minor_r = s * 0.35;
+                            let nu = segs as usize;
+                            let nv = (segs / 2).max(4) as usize;
+                            let chars = ['o', 'O', '@', '#', '~', '*'];
+                            let mut count = 0usize;
+                            for iu in 0..nu {
+                                for iv in 0..nv {
+                                    let u = (iu as f32 / nu as f32) * std::f32::consts::TAU;
+                                    let v = (iv as f32 / nv as f32) * std::f32::consts::TAU;
+                                    let x = (major_r + minor_r * v.cos()) * u.cos();
+                                    let y = (major_r + minor_r * v.cos()) * u.sin();
+                                    let z = minor_r * v.sin();
+                                    let pos = Vec3::new(x, y, z) + pivot;
+                                    let ch = chars[count % chars.len()];
+                                    let t = iu as f32 / nu as f32;
+                                    engine.spawn_glyph(Glyph {
+                                        character: ch,
+                                        position: pos,
+                                        color: Vec4::new(0.8 - t * 0.3, 0.4 + t * 0.4, 0.9, 0.9),
+                                        emission: 0.7,
+                                        glow_radius: 0.25,
+                                        mass: 0.0,
+                                        layer: RenderLayer::Entity,
+                                        ..Default::default()
+                                    });
+                                    count += 1;
+                                }
+                            }
+                            state.model_particle_count += count;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Cylinder" => {
+                            let n = segs as usize;
+                            let chars = ['|', '/', '-', '\\', '@', '#'];
+                            let mut count = 0usize;
+                            for i in 0..n {
+                                let theta = (i as f32 / n as f32) * std::f32::consts::TAU;
+                                let x = theta.cos() * s;
+                                let z = theta.sin() * s;
+                                for j in 0..n {
+                                    let y = (j as f32 / (n - 1) as f32) * 2.0 - 1.0;
+                                    let pos = Vec3::new(x, y * s, z) + pivot;
+                                    let ch = chars[count % chars.len()];
+                                    engine.spawn_glyph(Glyph {
+                                        character: ch,
+                                        position: pos,
+                                        color: Vec4::new(0.5, 0.8 - (y * 0.3).abs(), 0.6, 0.9),
+                                        emission: 0.6,
+                                        glow_radius: 0.2,
+                                        mass: 0.0,
+                                        layer: RenderLayer::Entity,
+                                        ..Default::default()
+                                    });
+                                    count += 1;
+                                }
+                            }
+                            state.model_particle_count += count;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Cone" => {
+                            let n = segs as usize;
+                            let chars = ['^', '*', '+', '#', '@', '.'];
+                            let mut count = 0usize;
+                            for i in 0..n {
+                                let theta = (i as f32 / n as f32) * std::f32::consts::TAU;
+                                for j in 0..n {
+                                    let t = j as f32 / (n - 1) as f32;
+                                    let r = t * s;
+                                    let y = (1.0 - t) * s;
+                                    let x = theta.cos() * r;
+                                    let z = theta.sin() * r;
+                                    let pos = Vec3::new(x, y, z) + pivot;
+                                    let ch = chars[count % chars.len()];
+                                    engine.spawn_glyph(Glyph {
+                                        character: ch,
+                                        position: pos,
+                                        color: Vec4::new(0.9 - t * 0.4, 0.5, 0.3 + t * 0.5, 0.9),
+                                        emission: 0.6,
+                                        glow_radius: 0.2,
+                                        mass: 0.0,
+                                        layer: RenderLayer::Entity,
+                                        ..Default::default()
+                                    });
+                                    count += 1;
+                                }
+                            }
+                            state.model_particle_count += count;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Plane" => {
+                            let n = segs as usize;
+                            let chars = ['.', ',', '\'', '`', '-', '_'];
+                            let mut count = 0usize;
+                            for ix in 0..n {
+                                for iz in 0..n {
+                                    let x = (ix as f32 / (n - 1) as f32) * 2.0 - 1.0;
+                                    let z = (iz as f32 / (n - 1) as f32) * 2.0 - 1.0;
+                                    let pos = Vec3::new(x * s, 0.0, z * s) + pivot;
+                                    let ch = chars[count % chars.len()];
+                                    engine.spawn_glyph(Glyph {
+                                        character: ch,
+                                        position: pos,
+                                        color: Vec4::new(0.4, 0.7, 0.4, 0.8),
+                                        emission: 0.3,
+                                        glow_radius: 0.1,
+                                        mass: 0.0,
+                                        layer: RenderLayer::Entity,
+                                        ..Default::default()
+                                    });
+                                    count += 1;
+                                }
+                            }
+                            state.model_particle_count += count;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        "Metaballs" => {
+                            let n_balls = segs.min(8) as usize;
+                            let golden = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+                            let total = n_balls * 20;
+                            let chars = ['*', 'o', '@', '#', '+', '.'];
+                            for i in 0..total {
+                                let y = 1.0 - (i as f32 / (total - 1) as f32) * 2.0;
+                                let radius = (1.0 - y * y).sqrt();
+                                let theta = golden * i as f32;
+                                let x = theta.cos() * radius;
+                                let z = theta.sin() * radius;
+                                let blob_idx = i % n_balls;
+                                let blob_off = Vec3::new(
+                                    (blob_idx as f32 * 1.3).sin() * s * 0.5,
+                                    (blob_idx as f32 * 0.9).cos() * s * 0.5,
+                                    (blob_idx as f32 * 0.7).sin() * s * 0.3,
+                                );
+                                let pos = Vec3::new(x, y, z) * (s * 0.5) + blob_off + pivot;
+                                let ch = chars[i % chars.len()];
+                                engine.spawn_glyph(Glyph {
+                                    character: ch,
+                                    position: pos,
+                                    color: Vec4::new(0.9, 0.4 + y * 0.3, 0.7, 0.9),
+                                    emission: 0.9,
+                                    glow_radius: 0.4,
+                                    mass: 0.0,
+                                    layer: RenderLayer::Entity,
+                                    ..Default::default()
+                                });
+                            }
+                            state.model_particle_count += total;
+                            state.model_history.push(format!("Spawn {}", state.model_selected_primitive));
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+            // ── Section 4: Layers ────────────────────────────────────────────
+            egui::CollapsingHeader::new("Layers").default_open(false).show(ui, |ui| {
+                let mut remove_idx: Option<usize> = None;
+                egui::ScrollArea::vertical().max_height(120.0).id_salt("model_layers").show(ui, |ui| {
+                    let active = state.model_layer;
+                    for (idx, (name, visible)) in state.model_layers.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(visible, "");
+                            let is_active = idx == active;
+                            let label = egui::RichText::new(name.as_str())
+                                .color(if is_active { egui::Color32::from_rgb(100, 200, 255) } else { egui::Color32::LIGHT_GRAY });
+                            ui.label(label);
+                            if ui.small_button("X").clicked() {
+                                remove_idx = Some(idx);
+                            }
+                        });
+                    }
+                });
+                if let Some(idx) = remove_idx {
+                    if state.model_layers.len() > 1 {
+                        state.model_layers.remove(idx);
+                        if state.model_layer >= state.model_layers.len() {
+                            state.model_layer = state.model_layers.len() - 1;
+                        }
+                    }
+                }
+                if ui.button("Add Layer").clicked() {
+                    let n = state.model_layers.len();
+                    state.model_layers.push((format!("Layer {}", n), true));
+                    state.model_layer = n;
+                }
+            });
+
+            // ── Section 5: History ───────────────────────────────────────────
+            egui::CollapsingHeader::new("History").default_open(false).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(100.0).id_salt("model_history").show(ui, |ui| {
+                    let start = state.model_history.len().saturating_sub(20);
+                    for entry in &state.model_history[start..] {
+                        ui.label(entry);
+                    }
+                });
+            });
+        });
+    state.show_modeling = open;
 }
