@@ -1,0 +1,575 @@
+
+// ============================================================
+// ADDITIONAL TERRAIN ROAD TOOL IMPLS
+// ============================================================
+
+impl TerrainRoadTool {
+    pub fn begin_road_placement(&mut self, road_type: RoadType) {
+        let id = self.segments.len() as u32 + 1;
+        let seg = RoadSegment {
+            id, road_type, spline: RoadSpline::new(), width: 7.4, lane_count: 2,
+            elevation_profile: Vec::new(), cross_section: None, speed_limit_kph: 80,
+            surface_type: SurfaceType::Asphalt, traffic_flow: TrafficFlowSim::new(1000.0),
+            erosion: RoadErosionState::new(), grade_ok: true, sight_dist_ok: true,
+        };
+        self.segments.insert(id, seg);
+        self.state.active_segment_id = Some(id);
+    }
+    pub fn finish_road_placement(&mut self) { self.state.active_segment_id = None; }
+    pub fn place_roundabout(&mut self, center: Vec3, arms: Vec<Vec3>) {
+        let id = self.network.add_node(center, RoadNodeType::Intersection);
+        for arm in arms {
+            let arm_id = self.network.add_node(arm, RoadNodeType::Intersection);
+            self.network.connect(id, arm_id);
+        }
+    }
+    pub fn add_city_node(&mut self, pos: Vec3, node_type: RoadNodeType, population: u32) -> u32 {
+        let id = self.city_nodes.len() as u32 + 1;
+        self.city_nodes.push(CityNode { id, position: pos, node_type, population });
+        self.network.add_node(pos, node_type)
+    }
+    pub fn generate_procedural_roads(&mut self) {
+        let nodes: Vec<_> = self.city_nodes.iter().map(|n| (n.id, n.position)).collect();
+        for i in 0..nodes.len().saturating_sub(1) {
+            let from_id = self.network.nodes.len() as u32;
+            let to_id = from_id + 1;
+            let _ = self.add_road_segment(nodes[i].1, nodes[i+1].1, RoadType::Arterial);
+        }
+    }
+    pub fn step_traffic_simulation(&mut self, dt: f32) {
+        for seg in self.segments.values_mut() { seg.traffic_flow.step(dt); }
+    }
+    pub fn run_erosion_simulation(&mut self, steps: u32) {
+        for seg in self.segments.values_mut() {
+            for _ in 0..steps { seg.erosion.step(0.1); }
+        }
+    }
+    pub fn statistics(&self) -> RoadNetworkStats {
+        let total_length: f32 = self.segments.values().map(|s| s.spline.length()).sum();
+        RoadNetworkStats { total_segments: self.segments.len(), total_nodes: self.network.nodes.len(), total_length_km: total_length / 1000.0 }
+    }
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"TRTV");
+        v.extend_from_slice(&(self.segments.len() as u32).to_le_bytes());
+        v
+    }
+    pub fn deserialize(&mut self, data: &[u8]) -> bool { data.len() >= 8 }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoadNetworkStats {
+    pub total_segments: usize,
+    pub total_nodes: usize,
+    pub total_length_km: f32,
+}
+
+impl GradeOptimizer {
+    pub fn new(max_grade: f32) -> Self { Self { max_grade, max_cut_depth: 8.0, max_fill_height: 6.0, balance_earthwork: true, segments: Vec::new() } }
+    pub fn optimize(&mut self, profile: &[(f32, f32)], _budget: f32) -> Vec<GradeSegment> {
+        let mut result = Vec::new();
+        for i in 0..profile.len().saturating_sub(1) {
+            let (s1, e1) = profile[i]; let (s2, e2) = profile[i+1];
+            let grade = (e2 - e1) / (s2 - s1) * 100.0;
+            let cut = if e1 > e2 { e1 - e2 } else { 0.0 };
+            let fill = if e2 > e1 { e2 - e1 } else { 0.0 };
+            result.push(GradeSegment { start_station: s1, end_station: s2, cut_depth_m: cut, fill_height_m: fill, grade_percent: grade });
+        }
+        self.segments = result.clone();
+        result
+    }
+    pub fn total_earthwork(&self) -> (f32, f32) {
+        let cut: f32 = self.segments.iter().map(|s| s.cut_depth_m * (s.end_station - s.start_station)).sum();
+        let fill: f32 = self.segments.iter().map(|s| s.fill_height_m * (s.end_station - s.start_station)).sum();
+        (cut, fill)
+    }
+    pub fn mass_haul_diagram(&self) -> Vec<(f32, f32)> {
+        let mut cumulative = 0.0;
+        self.segments.iter().map(|s| { cumulative += s.cut_depth_m - s.fill_height_m; (s.start_station, cumulative) }).collect()
+    }
+}
+
+impl PavementStructure {
+    pub fn recommend_structure(cbr: f32, esal: f64) -> Self {
+        let sn = 1.0 + (esal.log10() as f32 - 4.0) * 0.8;
+        let layers = vec![
+            PavementLayer { name: "Surface".into(), material: "Dense Graded Asphalt".into(), thickness_mm: 50.0 + sn * 10.0, elastic_modulus_mpa: 3000.0, poisson_ratio: 0.35 },
+            PavementLayer { name: "Base".into(), material: "Crushed Aggregate".into(), thickness_mm: 150.0 + sn * 20.0, elastic_modulus_mpa: 300.0, poisson_ratio: 0.40 },
+            PavementLayer { name: "Subbase".into(), material: "Granular Material".into(), thickness_mm: 200.0, elastic_modulus_mpa: 100.0, poisson_ratio: 0.45 },
+        ];
+        Self { layers, subgrade_cbr: cbr, design_esal: esal, reliability: 0.95 }
+    }
+    pub fn total_thickness_mm(&self) -> f32 { self.layers.iter().map(|l| l.thickness_mm).sum() }
+    pub fn structural_number(&self) -> f32 { self.layers.iter().map(|l| l.thickness_mm / 25.4 * 0.44).sum() }
+}
+
+impl IntersectionCapacityAnalysis {
+    pub fn new(cycle_length: f32) -> Self { Self { approaches: Vec::new(), phases: Vec::new(), cycle_length, saturation_flow_base: 1900.0 } }
+    pub fn add_approach(&mut self, volume: f32, phf: f32, turn_type: TurnType) {
+        self.approaches.push(ApproachMovement { volume_vph: volume, phf, turn_type, shared_lane: false });
+    }
+    pub fn add_phase(&mut self, movements: Vec<usize>, green_time: f32) {
+        self.phases.push(SignalPhase { movements, green_time, yellow_time: 3.0, all_red_time: 1.0 });
+    }
+    pub fn vc_ratio(&self, approach_idx: usize) -> f32 {
+        if approach_idx >= self.approaches.len() { return 0.0; }
+        let ap = &self.approaches[approach_idx];
+        let g = self.phases.first().map(|p| p.green_time).unwrap_or(30.0);
+        let c = self.saturation_flow_base * g / self.cycle_length;
+        if c <= 0.0 { return 1.0; }
+        ap.volume_vph / ap.phf / c
+    }
+    pub fn level_of_service(&self, approach_idx: usize) -> char {
+        let vc = self.vc_ratio(approach_idx);
+        match vc { v if v <= 0.6 => 'A', v if v <= 0.7 => 'B', v if v <= 0.8 => 'C', v if v <= 0.9 => 'D', v if v <= 1.0 => 'E', _ => 'F' }
+    }
+    pub fn webster_optimal_cycle(&self, _demand: f32) -> f32 {
+        let l = 5.0 * self.phases.len() as f32;
+        let y: f32 = self.phases.iter().enumerate().map(|(i, _)| { let g = self.phases[i].green_time; g / self.saturation_flow_base }).sum();
+        if y >= 1.0 { return 120.0; }
+        ((1.5 * l + 5.0) / (1.0 - y)).clamp(40.0, 150.0)
+    }
+}
+
+impl RoundaboutDesign {
+    pub fn single_lane(inscribed_diameter: f32) -> Self {
+        Self { inscribed_diameter, central_island_diameter: inscribed_diameter * 0.4, circulatory_width: inscribed_diameter * 0.25,
+            truck_apron_width: 1.5, entries: Vec::new(), design_vehicle: "WB-12".into() }
+    }
+    pub fn add_entry(&mut self, approach_volume: f32, entry_width: f32) {
+        let id = self.entries.len() as u32 + 1;
+        let bearing = (id as f32 - 1.0) * 90.0;
+        self.entries.push(RoundaboutEntry { approach_volume, entry_width, entry_radius: 15.0, flare_length: 30.0,
+            inscribed_diameter: self.inscribed_diameter, entry_id: id, bearing_deg: bearing, lane_count: 1,
+            entry_width_m: entry_width, flare_length_m: 30.0, approach_speed_kph: 40.0, design_flow_vph: approach_volume as u32, pedestrian_crossing: true });
+    }
+    pub fn entry_capacity(&self, entry: &RoundaboutEntry) -> f32 {
+        let fc = 1.0 - 0.1 * (entry.entry_width_m - 3.6) / 3.6;
+        1380.0 * entry.lane_count as f32 * fc
+    }
+    pub fn generate_geometry(&self, center: Vec3) -> Vec<Vec3> {
+        let r = self.inscribed_diameter / 2.0;
+        (0..=64).map(|i| { let a = i as f32 * std::f32::consts::TAU / 64.0; Vec3::new(center.x + r * a.cos(), center.y, center.z + r * a.sin()) }).collect()
+    }
+}
+
+impl BarrierSystem {
+    pub fn new(design_speed_kmh: f32) -> Self {
+        Self { sections: Vec::new(), clear_zone_width: 3.0 + design_speed_kmh * 0.05, design_speed_kmh }
+    }
+    pub fn auto_place_barriers(&mut self, hazards: &[(f32, f32, f32)]) {
+        for &(station, offset, length) in hazards {
+            if offset < self.clear_zone_width {
+                self.sections.push(GuardrailSection { barrier_type: BarrierType::WBeam, start_station: station, end_station: station + length,
+                    side: if offset >= 0.0 { 1 } else { -1 }, height_mm: 685, post_spacing_m: 2.0, terminal_type: "ET-Plus".into() });
+            }
+        }
+    }
+}
+
+impl GuardrailSection {
+    pub fn post_count(&self) -> u32 { ((self.end_station - self.start_station) / self.post_spacing_m).ceil() as u32 + 1 }
+}
+
+impl SignInventory {
+    pub fn new() -> Self { Self { signs: Vec::new(), delineators: Vec::new(), mile_markers: Vec::new() } }
+    pub fn add_sign(&mut self, sign: RoadSign) { self.signs.push(sign); }
+    pub fn auto_place_delineators(&mut self, road_length: f32, spacing: f32) {
+        let mut s = 0.0;
+        while s <= road_length { self.delineators.push((s, 1)); self.delineators.push((s, -1)); s += spacing; }
+    }
+    pub fn auto_place_mile_markers(&mut self, road_length: f32) {
+        let mut mile = 0u32;
+        let mut s = 0.0;
+        while s <= road_length { self.mile_markers.push((s, mile)); mile += 1; s += 1609.34; }
+    }
+}
+
+impl RoadSign {
+    pub fn speed_limit(speed_kph: f32, side: i32, station: u32) -> Self {
+        Self { sign_id: station, station_m: station as f32, sign_type: String::from("R2-1"), side, content: format!("SPEED LIMIT {}", speed_kph as u32), retroreflectivity: 250.0, installation_year: 2024 }
+    }
+    pub fn stop(station_m: f32, side: i32) -> Self {
+        Self { sign_id: 0, station_m, sign_type: String::from("R1-1"), side, content: String::from("STOP"), retroreflectivity: 250.0, installation_year: 2024 }
+    }
+}
+
+impl RoadLightingSystem {
+    pub fn new(spacing_m: f32) -> Self { Self { fixtures: Vec::new(), spacing_m } }
+    pub fn auto_place(&mut self, road_length: f32) {
+        let mut s = 0.0;
+        while s <= road_length { self.fixtures.push(LightingFixture { station: s, side: 1, pole_height_m: 10.0, lamp_lumens: 22000.0 }); s += self.spacing_m; }
+    }
+}
+
+impl NoiseBarrier {
+    pub fn concrete(start: f32, end: f32, side: i32, height_m: f32) -> Self {
+        let insertion_loss = 5.0 + height_m * 2.0;
+        Self { start_station: start, end_station: end, height_m, side, insertion_loss_db: insertion_loss }
+    }
+}
+
+impl NoiseAnalysis {
+    pub fn new(source_level_db: f32, receptor_distance_m: f32) -> Self {
+        Self { barriers: Vec::new(), source_level_db, receptor_distance_m }
+    }
+    pub fn receptor_level_db(&self) -> f32 {
+        let distance_loss = 20.0 * (self.receptor_distance_m / 1.0).log10();
+        let barrier_loss: f32 = self.barriers.iter().map(|b| b.insertion_loss_db).sum();
+        (self.source_level_db - distance_loss - barrier_loss).max(0.0)
+    }
+}
+
+impl OriginDestinationMatrix {
+    pub fn new(zones: Vec<String>) -> Self {
+        let n = zones.len();
+        Self { zones, matrix: vec![vec![0.0; n]; n] }
+    }
+    pub fn set(&mut self, from: usize, to: usize, trips: f32) {
+        if from < self.matrix.len() && to < self.matrix[from].len() { self.matrix[from][to] = trips; }
+    }
+    pub fn total_trips(&self) -> f32 { self.matrix.iter().flat_map(|r| r.iter()).sum() }
+}
+
+impl PavementConditionIndex {
+    pub fn new(sample_area: f32) -> Self { Self { pci_value: 100.0, distress_types: Vec::new(), sample_unit_area: sample_area } }
+    pub fn add_distress(&mut self, distress_type: &str, quantity: f32, severity: f32) {
+        self.distress_types.push((distress_type.to_string(), quantity, severity));
+    }
+    pub fn calculate_pci(&mut self) {
+        let deduct_total: f32 = self.distress_types.iter().map(|(_, q, s)| (q / self.sample_unit_area * 100.0) * s * 2.0).sum();
+        self.pci_value = (100.0 - deduct_total * 0.5).clamp(0.0, 100.0);
+    }
+    pub fn condition_category(&self) -> &str {
+        match self.pci_value { v if v >= 85.0 => "Good", v if v >= 70.0 => "Satisfactory", v if v >= 55.0 => "Fair", v if v >= 40.0 => "Poor", v if v >= 25.0 => "Very Poor", v if v >= 10.0 => "Serious", _ => "Failed" }
+    }
+    pub fn recommended_treatment(&self) -> &str {
+        match self.pci_value { v if v >= 70.0 => "Routine Maintenance", v if v >= 55.0 => "Preventive Maintenance", v if v >= 40.0 => "Rehabilitation", _ => "Reconstruction" }
+    }
+}
+
+impl AssetRecord {
+    pub fn new(asset_id: u32, asset_type: &str, station: f32, installation_year: u32, replacement_cost: f32) -> Self {
+        Self { asset_id, asset_type: asset_type.to_string(), station, installation_year, condition_score: 100.0, replacement_cost, remaining_life_years: 20.0, maintenance_history: Vec::new() }
+    }
+    pub fn update_condition(&mut self, current_year: u32) {
+        let age = (current_year - self.installation_year) as f32;
+        self.condition_score = (100.0 - age * 3.0).max(0.0);
+        self.remaining_life_years = ((20.0 - age).max(0.0)) as f32;
+    }
+    pub fn add_maintenance(&mut self, year: u32, treatment: &str, cost: f32) {
+        self.maintenance_history.push((year, treatment.to_string(), cost));
+    }
+}
+
+impl AssetManagementSystem {
+    pub fn new(annual_budget: f32, current_year: u32) -> Self { Self { assets: Vec::new(), annual_budget, current_year } }
+    pub fn add_asset(&mut self, asset: AssetRecord) { self.assets.push(asset); }
+    pub fn network_condition_index(&self) -> f32 {
+        if self.assets.is_empty() { return 100.0; }
+        self.assets.iter().map(|a| a.condition_score).sum::<f32>() / self.assets.len() as f32
+    }
+    pub fn budget_allocation(&self) -> Vec<(u32, f32)> {
+        let mut alloc = Vec::new();
+        for asset in &self.assets {
+            let urgency = 100.0 - asset.condition_score;
+            let budget = urgency * self.annual_budget / 100.0;
+            alloc.push((asset.asset_id, budget));
+        }
+        alloc
+    }
+}
+
+impl CriticalPathMethod {
+    pub fn standard_road_schedule() -> Self {
+        let activities = vec![
+            ConstructionActivity { id: 1, name: "Survey & Design".into(), duration_days: 60, predecessors: Vec::new(), resources: HashMap::new(), cost: 500_000.0, early_start: 0, early_finish: 60, late_start: 0, late_finish: 60, float: 0 },
+            ConstructionActivity { id: 2, name: "Clearing & Grubbing".into(), duration_days: 30, predecessors: vec![1], resources: HashMap::new(), cost: 200_000.0, early_start: 60, early_finish: 90, late_start: 60, late_finish: 90, float: 0 },
+            ConstructionActivity { id: 3, name: "Earthwork".into(), duration_days: 90, predecessors: vec![2], resources: HashMap::new(), cost: 1_500_000.0, early_start: 90, early_finish: 180, late_start: 90, late_finish: 180, float: 0 },
+            ConstructionActivity { id: 4, name: "Drainage".into(), duration_days: 45, predecessors: vec![3], resources: HashMap::new(), cost: 800_000.0, early_start: 180, early_finish: 225, late_start: 180, late_finish: 225, float: 0 },
+            ConstructionActivity { id: 5, name: "Paving".into(), duration_days: 60, predecessors: vec![4], resources: HashMap::new(), cost: 2_000_000.0, early_start: 225, early_finish: 285, late_start: 225, late_finish: 285, float: 0 },
+            ConstructionActivity { id: 6, name: "Signing & Marking".into(), duration_days: 20, predecessors: vec![5], resources: HashMap::new(), cost: 150_000.0, early_start: 285, early_finish: 305, late_start: 285, late_finish: 305, float: 0 },
+        ];
+        Self { activities }
+    }
+    pub fn critical_path(&self) -> Vec<&ConstructionActivity> { self.activities.iter().filter(|a| a.float == 0).collect() }
+    pub fn project_duration(&self) -> u32 { self.activities.iter().map(|a| a.early_finish).max().unwrap_or(0) }
+    pub fn total_cost(&self) -> f32 { self.activities.iter().map(|a| a.cost).sum() }
+}
+
+impl UtilityConflictDetector {
+    pub fn new() -> Self { Self { utilities: Vec::new(), conflicts: Vec::new() } }
+    pub fn add_utility(&mut self, line: UtilityLine) { self.utilities.push(line); }
+    pub fn detect_conflicts(&mut self, road_pts: &[Vec3], tolerance: f32) {
+        for util in &self.utilities {
+            for rp in road_pts {
+                for up in &util.polyline {
+                    let dist = (*rp - *up).length();
+                    if dist < tolerance {
+                        self.conflicts.push(UtilityConflict { utility_id: util.id, conflict_station: rp.x, conflict_type: format!("proximity_{}", util.utility_type), relocation_cost: util.diameter_mm * 10.0, criticality: if dist < tolerance * 0.3 { 3 } else { 1 } });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    pub fn total_relocation_cost(&self) -> f32 { self.conflicts.iter().map(|c| c.relocation_cost).sum() }
+}
+
+impl UtilityLine {
+    pub fn water_main(id: u32, depth_m: f32, polyline: Vec<Vec3>) -> Self {
+        Self { id, utility_type: "water_main".into(), depth_m, polyline, diameter_mm: 300.0 }
+    }
+}
+
+impl HydrologicBasin {
+    pub fn new(area_ha: f32, land_use: &str) -> Self {
+        let c = match land_use { "commercial" => 0.85, "suburban" => 0.40, "rural" => 0.25, _ => 0.50 };
+        let tc = 10.0 + (area_ha.sqrt() * 0.5);
+        Self { area_ha, runoff_coefficient: c, tc_minutes: tc, land_use: land_use.to_string() }
+    }
+    pub fn idf_intensity(return_period_yr: f32, tc_minutes: f32) -> f32 {
+        let a = 200.0 * return_period_yr.powf(0.3);
+        a / (tc_minutes + 20.0).powf(0.8)
+    }
+    pub fn peak_discharge_rational(&self, intensity_mm_hr: f32) -> f32 {
+        self.runoff_coefficient * intensity_mm_hr * self.area_ha / 360.0
+    }
+}
+
+impl CulvertDesign {
+    pub fn new(diameter_mm: f32, length_m: f32, slope: f32) -> Self { Self { diameter_mm, length_m, slope, manning_n: 0.013 } }
+    pub fn size_for_discharge(discharge_m3s: f32, slope: f32) -> f32 {
+        let d = (discharge_m3s * self._manning_n_static() / (1.0 * slope.sqrt())).powf(3.0 / 8.0) * 1000.0;
+        let sizes = [300.0f32, 450.0, 600.0, 750.0, 900.0, 1050.0, 1200.0, 1500.0, 1800.0];
+        sizes.iter().copied().find(|&s| s >= d.max(300.0)).unwrap_or(1800.0)
+    }
+    fn _manning_n_static() -> f32 { 0.013 }
+    pub fn full_flow_capacity(&self) -> f32 {
+        let r = (self.diameter_mm / 1000.0) / 4.0;
+        let a = std::f32::consts::PI * (self.diameter_mm / 2000.0).powi(2);
+        a / self.manning_n * r.powf(2.0/3.0) * self.slope.sqrt()
+    }
+}
+
+impl SpeedZoneManager {
+    pub fn new(default_speed_kph: u32) -> Self { Self { zones: Vec::new(), default_speed_kph } }
+    pub fn add_zone(&mut self, zone: SpeedZone) { self.zones.push(zone); }
+    pub fn speed_at_station(&self, station_m: f32, default_speed: u32) -> u32 {
+        for zone in &self.zones {
+            if station_m >= zone.start_station && station_m <= zone.end_station { return zone.speed_limit_kph; }
+        }
+        default_speed
+    }
+}
+
+impl SpeedZone {
+    pub fn school_zone(id: u32, start: f32, end: f32) -> Self {
+        Self { zone_id: id, start_station: start, end_station: end, speed_limit_kph: 30, zone_type: String::from("school"), time_restricted: true, active_hours_start: 7, active_hours_end: 17 }
+    }
+}
+
+impl RoadEmissionsModel {
+    pub fn new(segment_length_km: f32) -> Self {
+        let factors = vec![
+            VehicleEmissionsFactor { vehicle_class: "passenger_car".into(), co2_g_per_km: 180.0, fuel_l_per_100km: 8.0 },
+            VehicleEmissionsFactor { vehicle_class: "heavy_truck".into(), co2_g_per_km: 900.0, fuel_l_per_100km: 35.0 },
+        ];
+        Self { factors, traffic_volumes: HashMap::new(), segment_length_km }
+    }
+    pub fn set_volume(&mut self, vehicle_class: &str, daily_volume: f32) { self.traffic_volumes.insert(vehicle_class.to_string(), daily_volume); }
+    pub fn daily_co2_kg(&self) -> f32 {
+        self.factors.iter().map(|f| {
+            let vol = self.traffic_volumes.get(&f.vehicle_class).copied().unwrap_or(0.0);
+            f.co2_g_per_km * self.segment_length_km * vol / 1000.0
+        }).sum()
+    }
+    pub fn annual_co2_tonnes(&self) -> f32 { self.daily_co2_kg() * 365.0 / 1000.0 }
+}
+
+impl SuperelevationTable {
+    pub fn for_rural_highway(design_speed_kph: f32) -> Self {
+        let table: Vec<(f32, f32)> = vec![
+            (7000.0, 0.01), (3000.0, 0.02), (1500.0, 0.04), (800.0, 0.06), (500.0, 0.08),
+            (350.0, 0.10), (230.0, 0.12),
+        ];
+        Self { design_speed_kph, max_superelevation: 0.10, table }
+    }
+    pub fn required_superelevation(&self, radius_m: f32) -> f32 {
+        for &(r, e) in &self.table { if radius_m >= r { return e; } }
+        self.max_superelevation
+    }
+    pub fn transition_length_m(&self, superelevation: f32, lane_width_m: f32) -> f32 {
+        superelevation * lane_width_m * self.design_speed_kph / 10.0
+    }
+}
+
+impl VerticalCurve {
+    pub fn a_value(&self) -> f32 { (self.g2_percent - self.g1_percent).abs() }
+    pub fn k_value(&self) -> f32 { if self.a_value() < 0.001 { 0.0 } else { self.length_m / self.a_value() } }
+    pub fn min_length_sight_distance(&self) -> f32 {
+        let a = self.a_value();
+        match self.curve_type { VerticalCurveType::Crest => a * self.design_speed_kph * self.design_speed_kph / 658.0, VerticalCurveType::Sag => a * self.design_speed_kph * self.design_speed_kph / 385.0 }
+    }
+    pub fn comfort_check_sag(&self) -> bool {
+        match self.curve_type { VerticalCurveType::Sag => self.k_value() >= self.design_speed_kph / 10.0, _ => true }
+    }
+}
+
+impl HorizontalCurve {
+    pub fn external_distance_m(&self) -> f32 { self.radius_m * (1.0 / (self.delta_angle_deg.to_radians() / 2.0).cos() - 1.0) }
+    pub fn middle_ordinate_m(&self) -> f32 { self.radius_m * (1.0 - (self.delta_angle_deg.to_radians() / 2.0).cos()) }
+    pub fn degree_of_curve_arc(&self) -> f32 { 1719.0 / self.radius_m }
+}
+
+impl NetworkEquilibriumSolver {
+    pub fn new() -> Self { Self { links: Vec::new(), nodes: Vec::new(), od_demands: Vec::new(), iteration_count: 0, convergence_gap: 0.001 } }
+    pub fn add_link(&mut self, link: NetworkLink) { if !self.nodes.contains(&link.from_node) { self.nodes.push(link.from_node); } if !self.nodes.contains(&link.to_node) { self.nodes.push(link.to_node); } self.links.push(link); }
+    pub fn add_demand(&mut self, origin: u32, destination: u32, demand_vph: f32) { self.od_demands.push(OdDemand { origin, destination, demand_vph }); }
+    pub fn solve(&mut self, max_iter: u32, _gap: f32) {
+        for _ in 0..max_iter {
+            for link in &mut self.links {
+                let total_demand: f32 = self.od_demands.iter().map(|d| d.demand_vph).sum();
+                link.current_flow = total_demand / self.links.len() as f32;
+            }
+            self.iteration_count += 1;
+        }
+    }
+    pub fn total_vehicle_hours_traveled(&self) -> f32 { self.links.iter().map(|l| l.current_flow * l.travel_time_bpr() / 60.0).sum() }
+}
+
+impl PavementManagementSystem {
+    pub fn new(annual_budget: f32) -> Self {
+        let mut costs = HashMap::new();
+        costs.insert("crack_seal", 3.0f32);
+        costs.insert("thin_overlay", 15.0f32);
+        costs.insert("mill_and_fill", 35.0f32);
+        costs.insert("reconstruction", 120.0f32);
+        Self { sample_units: Vec::new(), annual_budget, treatment_unit_costs: costs }
+    }
+    pub fn add_unit(&mut self, unit: PavementSampleUnit) { self.sample_units.push(unit); }
+    pub fn network_pci(&self) -> f32 {
+        if self.sample_units.is_empty() { return 100.0; }
+        let total_area: f32 = self.sample_units.iter().map(|u| u.area_m2).sum();
+        if total_area <= 0.0 { return 100.0; }
+        self.sample_units.iter().map(|u| u.compute_pci() * u.area_m2).sum::<f32>() / total_area
+    }
+    pub fn prioritized_treatment_list(&self) -> Vec<(u32, &str, f32)> {
+        let mut list: Vec<_> = self.sample_units.iter().map(|u| {
+            let pci = u.compute_pci();
+            let treatment = u.recommended_treatment();
+            let cost = *self.treatment_unit_costs.get(treatment).unwrap_or(&0.0) * u.area_m2;
+            (u.unit_id, treatment, cost)
+        }).collect();
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        list
+    }
+}
+
+impl PavementSampleUnit {
+    pub fn new(unit_id: u32, area_m2: f32) -> Self { Self { unit_id, area_m2, distresses: Vec::new(), last_survey_year: 2024 } }
+    pub fn add_distress(&mut self, distress: DistressObservation) { self.distresses.push(distress); }
+    pub fn compute_pci(&self) -> f32 {
+        let deduct: f32 = self.distresses.iter().map(|d| d.density_percent * d.severity as f32 * 1.5).sum();
+        (100.0 - deduct * 0.4).clamp(0.0, 100.0)
+    }
+    pub fn condition_rating(&self) -> &str {
+        let pci = self.compute_pci();
+        match pci { v if v >= 85.0 => "Good", v if v >= 70.0 => "Satisfactory", v if v >= 55.0 => "Fair", v if v >= 40.0 => "Poor", v if v >= 25.0 => "Very Poor", _ => "Failed" }
+    }
+    pub fn recommended_treatment(&self) -> &str {
+        let pci = self.compute_pci();
+        match pci { v if v >= 70.0 => "crack_seal", v if v >= 55.0 => "thin_overlay", v if v >= 40.0 => "mill_and_fill", _ => "reconstruction" }
+    }
+    pub fn predicted_pci(&self, years: u32) -> f32 { (self.compute_pci() - years as f32 * 2.5).max(0.0) }
+}
+
+impl FrictionInventory {
+    pub fn deficient_stations(&self) -> Vec<f32> { self.measurements.iter().filter(|m| m.skid_number < self.minimum_acceptable_sn).map(|m| m.station_m).collect() }
+    pub fn network_friction_rating(&self) -> &str {
+        let avg = self.average_skid_number();
+        match avg { v if v >= 55.0 => "Excellent", v if v >= 45.0 => "Good", v if v >= 35.0 => "Fair", _ => "Poor" }
+    }
+}
+
+impl SkidResistanceMeasurement {
+    pub fn new(station_m: f32, skid_number: f32, texture_depth_mm: f32, surface_type: &str) -> Self {
+        Self { station_m, skid_number, international_friction_index: skid_number / 100.0, texture_depth_mm, surface_type: surface_type.to_string() }
+    }
+    pub fn wet_stopping_distance_m(&self, speed_kph: f32) -> f32 {
+        let mu = self.skid_number / 100.0;
+        let v = speed_kph / 3.6;
+        v * v / (2.0 * 9.81 * mu)
+    }
+    pub fn friction_class(&self) -> &str {
+        match self.skid_number { v if v >= 60.0 => "Excellent", v if v >= 50.0 => "Good", v if v >= 40.0 => "Adequate", v if v >= 30.0 => "Marginal", _ => "Deficient" }
+    }
+}
+
+impl AirQualityMonitor {
+    pub fn exceeds_naaqs_co(&self) -> bool { self.co_ppb > 35000.0 }
+    pub fn aqi_pm25(&self) -> u32 {
+        let aqi = (self.pm25_ug_m3 / 35.0 * 50.0) as u32;
+        aqi.clamp(0, 500)
+    }
+    pub fn aqi_category(&self) -> &str {
+        let aqi = self.aqi_pm25();
+        match aqi { 0..=50 => "Good", 51..=100 => "Moderate", 101..=150 => "Unhealthy for Sensitive Groups", 151..=200 => "Unhealthy", 201..=300 => "Very Unhealthy", _ => "Hazardous" }
+    }
+}
+
+impl RoadNoiseMonitor {
+    pub fn new(monitor_id: u32, distance_m: f32, l_eq: f32, fhwa_criteria: f32) -> Self {
+        Self { monitor_id, distance_from_road_m: distance_m, l_eq_dba: l_eq, l_10_dba: l_eq + 3.0, l_90_dba: l_eq - 15.0, peak_hour_db: l_eq + 5.0, fhwa_noise_abatement_criteria: fhwa_criteria }
+    }
+    pub fn exceeds_abatement_criteria(&self) -> bool { self.l_eq_dba >= self.fhwa_noise_abatement_criteria }
+    pub fn qualifies_for_barrier(&self, background_db: f32) -> bool { self.l_eq_dba - background_db >= 5.0 || self.exceeds_abatement_criteria() }
+    pub fn estimated_barrier_height_m(&self) -> f32 { ((self.l_eq_dba - self.fhwa_noise_abatement_criteria + 5.0) / 2.0).max(1.0) }
+}
+
+impl EnvironmentalMonitoringProgram {
+    pub fn new() -> Self { Self { air_stations: Vec::new(), noise_stations: Vec::new(), monitoring_frequency_days: 30 } }
+    pub fn add_air_station(&mut self, station: AirQualityMonitor) { self.air_stations.push(station); }
+    pub fn add_noise_station(&mut self, station: RoadNoiseMonitor) { self.noise_stations.push(station); }
+    pub fn naaqs_violations(&self) -> usize { self.air_stations.iter().filter(|s| s.exceeds_naaqs_pm25() || s.exceeds_naaqs_pm10() || s.exceeds_naaqs_co()).count() }
+    pub fn noise_exceedances(&self) -> usize { self.noise_stations.iter().filter(|s| s.exceeds_abatement_criteria()).count() }
+    pub fn summary_report(&self) -> HashMap<&'static str, String> {
+        let mut r = HashMap::new();
+        r.insert("air_stations", self.air_stations.len().to_string());
+        r.insert("noise_stations", self.noise_stations.len().to_string());
+        r.insert("naaqs_violations", self.naaqs_violations().to_string());
+        r.insert("noise_exceedances", self.noise_exceedances().to_string());
+        r
+    }
+}
+
+impl RoadProjectSummary {
+    pub fn new(name: &str, length_km: f32, lanes: u32, design_speed: f32) -> Self {
+        Self { project_name: name.to_string(), total_length_km: length_km, total_lanes: lanes, design_speed_kph: design_speed,
+            terrain_type: "rolling".into(), estimated_construction_cost_usd: length_km * lanes as f32 * 2_500_000.0,
+            construction_duration_months: (length_km * 4.0) as u32, design_year: 2024, opening_year: 2026,
+            design_horizon_year: 2044, peak_hour_volume: 2000, level_of_service: 'C' }
+    }
+    pub fn cost_per_lane_km(&self) -> f32 { self.estimated_construction_cost_usd / (self.total_lanes as f32 * self.total_length_km).max(0.001) }
+    pub fn is_feasible(&self) -> bool { self.total_length_km > 0.0 && self.total_lanes > 0 }
+    pub fn export_csv_row(&self) -> String { format!("{},{:.2},{},{:.0}", self.project_name, self.total_length_km, self.total_lanes, self.estimated_construction_cost_usd) }
+    pub fn export_json(&self) -> String { format!("{{\"name\":\"{}\",\"length_km\":{:.2}}}", self.project_name, self.total_length_km) }
+}
+
+impl RoadDesignQualityCheckList {
+    pub fn standard_road_checklist(_design_speed: f32, _has_shoulders: bool, _has_lighting: bool) -> Self {
+        let items = vec![
+            ("Horizontal alignment OK".into(), true),
+            ("Vertical alignment OK".into(), true),
+            ("Sight distances adequate".into(), true),
+            ("Cross section OK".into(), true),
+            ("Drainage designed".into(), true),
+            ("Superelevation within limits".into(), true),
+            ("Grade within limits".into(), true),
+        ];
+        Self { items }
+    }
+    pub fn overall_pass(&self) -> bool { self.items.iter().all(|(_, p)| *p) }
+    pub fn failed_count(&self) -> usize { self.items.iter().filter(|(_, p)| !*p).count() }
+    pub fn completion_percent(&self) -> f32 { if self.items.is_empty() { 100.0 } else { self.items.iter().filter(|(_, p)| *p).count() as f32 / self.items.len() as f32 * 100.0 } }
+}

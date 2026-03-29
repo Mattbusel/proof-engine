@@ -1,0 +1,1232 @@
+
+// ============================================================
+// POST-PROCESS EFFECTS PIPELINE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PostProcessEffectType {
+    Bloom, DepthOfField, MotionBlur, AmbientOcclusion, Vignette,
+    ChromaticAberration, FilmGrain, ColorGrading, ToneMapping,
+    Sharpen, LensFlare, GodRays, ScreenSpaceReflections,
+}
+
+#[derive(Debug, Clone)]
+pub struct PostProcessEffect {
+    pub effect_type: PostProcessEffectType,
+    pub enabled: bool,
+    pub intensity: f32,
+    pub params: HashMap<String, f32>,
+}
+
+impl PostProcessEffect {
+    pub fn new(effect_type: PostProcessEffectType, intensity: f32) -> Self {
+        Self { effect_type, enabled: true, intensity, params: HashMap::new() }
+    }
+    pub fn bloom(threshold: f32, scatter: f32, intensity: f32) -> Self {
+        let mut e = Self::new(PostProcessEffectType::Bloom, intensity);
+        e.params.insert("threshold".to_string(), threshold);
+        e.params.insert("scatter".to_string(), scatter);
+        e
+    }
+    pub fn depth_of_field(focal_length_mm: f32, aperture: f32, focus_distance_m: f32) -> Self {
+        let mut e = Self::new(PostProcessEffectType::DepthOfField, 1.0);
+        e.params.insert("focal_length_mm".to_string(), focal_length_mm);
+        e.params.insert("aperture".to_string(), aperture);
+        e.params.insert("focus_distance_m".to_string(), focus_distance_m);
+        e
+    }
+    pub fn motion_blur(shutter_angle: f32, sample_count: f32) -> Self {
+        let mut e = Self::new(PostProcessEffectType::MotionBlur, 1.0);
+        e.params.insert("shutter_angle".to_string(), shutter_angle);
+        e.params.insert("sample_count".to_string(), sample_count);
+        e
+    }
+    pub fn vignette(intensity: f32, smoothness: f32) -> Self {
+        let mut e = Self::new(PostProcessEffectType::Vignette, intensity);
+        e.params.insert("smoothness".to_string(), smoothness);
+        e
+    }
+    pub fn film_grain(intensity: f32, response: f32) -> Self {
+        let mut e = Self::new(PostProcessEffectType::FilmGrain, intensity);
+        e.params.insert("response".to_string(), response);
+        e
+    }
+    pub fn effect_type_str(&self) -> &'static str {
+        match &self.effect_type {
+            PostProcessEffectType::Bloom => "Bloom",
+            PostProcessEffectType::DepthOfField => "DepthOfField",
+            PostProcessEffectType::MotionBlur => "MotionBlur",
+            PostProcessEffectType::AmbientOcclusion => "AmbientOcclusion",
+            PostProcessEffectType::Vignette => "Vignette",
+            PostProcessEffectType::ChromaticAberration => "ChromaticAberration",
+            PostProcessEffectType::FilmGrain => "FilmGrain",
+            PostProcessEffectType::ColorGrading => "ColorGrading",
+            PostProcessEffectType::ToneMapping => "ToneMapping",
+            PostProcessEffectType::Sharpen => "Sharpen",
+            PostProcessEffectType::LensFlare => "LensFlare",
+            PostProcessEffectType::GodRays => "GodRays",
+            PostProcessEffectType::ScreenSpaceReflections => "SSR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PostProcessStack {
+    pub effects: Vec<PostProcessEffect>,
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature: f32,  // color temperature in Kelvin (relative offset)
+}
+
+impl PostProcessStack {
+    pub fn new() -> Self {
+        Self { effects: Vec::new(), exposure: 1.0, contrast: 1.0, saturation: 1.0, temperature: 0.0 }
+    }
+    pub fn add_effect(&mut self, e: PostProcessEffect) { self.effects.push(e); }
+    pub fn enabled_effects(&self) -> Vec<&PostProcessEffect> {
+        self.effects.iter().filter(|e| e.enabled).collect()
+    }
+    pub fn get_effect(&self, effect_type: &PostProcessEffectType) -> Option<&PostProcessEffect> {
+        self.effects.iter().find(|e| &e.effect_type == effect_type)
+    }
+    pub fn get_effect_mut(&mut self, effect_type: &PostProcessEffectType) -> Option<&mut PostProcessEffect> {
+        self.effects.iter_mut().find(|e| &e.effect_type == effect_type)
+    }
+    pub fn cinema_preset() -> Self {
+        let mut stack = Self::new();
+        stack.add_effect(PostProcessEffect::bloom(0.9, 0.7, 0.5));
+        stack.add_effect(PostProcessEffect::depth_of_field(35.0, 2.8, 5.0));
+        stack.add_effect(PostProcessEffect::vignette(0.4, 0.4));
+        stack.add_effect(PostProcessEffect::film_grain(0.15, 0.8));
+        stack.contrast = 1.15;
+        stack.saturation = 0.9;
+        stack.temperature = -200.0;
+        stack
+    }
+    pub fn horror_preset() -> Self {
+        let mut stack = Self::new();
+        stack.add_effect(PostProcessEffect::vignette(0.8, 0.3));
+        stack.add_effect(PostProcessEffect::film_grain(0.4, 0.9));
+        stack.contrast = 1.4;
+        stack.saturation = 0.3;
+        stack.temperature = -500.0;
+        stack.exposure = 0.8;
+        stack
+    }
+    pub fn daylight_preset() -> Self {
+        let mut stack = Self::new();
+        stack.add_effect(PostProcessEffect::bloom(1.0, 0.5, 0.3));
+        stack.contrast = 1.1;
+        stack.saturation = 1.2;
+        stack.temperature = 300.0;
+        stack.exposure = 1.1;
+        stack
+    }
+    pub fn effect_count(&self) -> usize { self.effects.len() }
+}
+
+// ============================================================
+// USD / ALEMBIC SCENE EXPORT
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UsdPrimType {
+    Xform, Mesh, Camera, Light, Scope, Material, Shader, Points,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsdPrim {
+    pub path: String,
+    pub prim_type: UsdPrimType,
+    pub attributes: HashMap<String, String>,
+    pub children: Vec<String>,
+    pub active: bool,
+    pub instanceable: bool,
+}
+
+impl UsdPrim {
+    pub fn new(path: &str, prim_type: UsdPrimType) -> Self {
+        Self { path: path.to_string(), prim_type, attributes: HashMap::new(),
+            children: Vec::new(), active: true, instanceable: false }
+    }
+    pub fn set_attr(&mut self, name: &str, value: &str) {
+        self.attributes.insert(name.to_string(), value.to_string());
+    }
+    pub fn get_attr(&self, name: &str) -> Option<&String> {
+        self.attributes.get(name)
+    }
+    pub fn prim_type_str(&self) -> &'static str {
+        match &self.prim_type {
+            UsdPrimType::Xform => "Xform", UsdPrimType::Mesh => "Mesh",
+            UsdPrimType::Camera => "Camera", UsdPrimType::Light => "Light",
+            UsdPrimType::Scope => "Scope", UsdPrimType::Material => "Material",
+            UsdPrimType::Shader => "Shader", UsdPrimType::Points => "Points",
+        }
+    }
+    pub fn sdf_declaration(&self) -> String {
+        format!("def {} \"{}\"", self.prim_type_str(), self.path.split('/').last().unwrap_or("root"))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UsdStage {
+    pub identifier: String,
+    pub prims: Vec<UsdPrim>,
+    pub default_prim: String,
+    pub start_time_code: f64,
+    pub end_time_code: f64,
+    pub time_codes_per_second: f64,
+    pub up_axis: String,
+}
+
+impl UsdStage {
+    pub fn new(identifier: &str) -> Self {
+        Self { identifier: identifier.to_string(), prims: Vec::new(),
+            default_prim: String::new(), start_time_code: 0.0,
+            end_time_code: 240.0, time_codes_per_second: 24.0, up_axis: "Y".to_string() }
+    }
+    pub fn add_prim(&mut self, p: UsdPrim) { self.prims.push(p); }
+    pub fn get_prim(&self, path: &str) -> Option<&UsdPrim> {
+        self.prims.iter().find(|p| p.path == path)
+    }
+    pub fn prim_count(&self) -> usize { self.prims.len() }
+    pub fn duration_seconds(&self) -> f64 {
+        (self.end_time_code - self.start_time_code) / self.time_codes_per_second
+    }
+    pub fn export_usda_header(&self) -> String {
+        format!(
+            "#usda 1.0\n(\n    defaultPrim = \"{}\"\n    startTimeCode = {}\n    endTimeCode = {}\n    timeCodesPerSecond = {}\n    upAxis = \"{}\"\n)\n",
+            self.default_prim, self.start_time_code, self.end_time_code,
+            self.time_codes_per_second, self.up_axis
+        )
+    }
+    pub fn prims_of_type(&self, prim_type: &UsdPrimType) -> Vec<&UsdPrim> {
+        self.prims.iter().filter(|p| &p.prim_type == prim_type).collect()
+    }
+    pub fn camera_prims(&self) -> Vec<&UsdPrim> { self.prims_of_type(&UsdPrimType::Camera) }
+    pub fn mesh_prims(&self) -> Vec<&UsdPrim> { self.prims_of_type(&UsdPrimType::Mesh) }
+}
+
+// ============================================================
+// ALEMBIC ARCHIVE SIMULATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AlembicSample {
+    pub time_s: f64,
+    pub positions: Vec<Vec3>,
+    pub velocities: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub uvs: Vec<Vec2>,
+}
+
+impl AlembicSample {
+    pub fn new(time_s: f64) -> Self {
+        Self { time_s, positions: Vec::new(), velocities: Vec::new(), normals: Vec::new(), uvs: Vec::new() }
+    }
+    pub fn point_count(&self) -> usize { self.positions.len() }
+    pub fn add_point(&mut self, pos: Vec3, vel: Vec3) {
+        self.positions.push(pos);
+        self.velocities.push(vel);
+    }
+    pub fn bounding_box(&self) -> (Vec3, Vec3) {
+        if self.positions.is_empty() { return (Vec3::ZERO, Vec3::ZERO); }
+        let mut min = self.positions[0];
+        let mut max = self.positions[0];
+        for &p in &self.positions {
+            min = min.min(p); max = max.max(p);
+        }
+        (min, max)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlembicObject {
+    pub name: String,
+    pub schema: String,  // "PolyMesh", "Points", "Xform", etc.
+    pub samples: Vec<AlembicSample>,
+    pub is_constant: bool,
+}
+
+impl AlembicObject {
+    pub fn new(name: &str, schema: &str) -> Self {
+        Self { name: name.to_string(), schema: schema.to_string(), samples: Vec::new(), is_constant: false }
+    }
+    pub fn add_sample(&mut self, s: AlembicSample) { self.samples.push(s); }
+    pub fn sample_count(&self) -> usize { self.samples.len() }
+    pub fn duration_s(&self) -> f64 {
+        if self.samples.is_empty() { return 0.0; }
+        let first = self.samples[0].time_s;
+        let last = self.samples[self.samples.len()-1].time_s;
+        last - first
+    }
+    pub fn sample_at_time(&self, t: f64) -> Option<&AlembicSample> {
+        if self.samples.is_empty() { return None; }
+        let idx = self.samples.iter().enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (a.time_s - t).abs().partial_cmp(&(b.time_s - t).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i);
+        idx.map(|i| &self.samples[i])
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AlembicArchive {
+    pub filename: String,
+    pub objects: Vec<AlembicObject>,
+    pub start_time: f64,
+    pub end_time: f64,
+    pub fps: f64,
+}
+
+impl AlembicArchive {
+    pub fn new(filename: &str, fps: f64) -> Self {
+        Self { filename: filename.to_string(), objects: Vec::new(), start_time: 0.0, end_time: 0.0, fps }
+    }
+    pub fn add_object(&mut self, o: AlembicObject) { self.objects.push(o); }
+    pub fn object_count(&self) -> usize { self.objects.len() }
+    pub fn total_samples(&self) -> usize { self.objects.iter().map(|o| o.sample_count()).sum() }
+    pub fn duration_s(&self) -> f64 { self.end_time - self.start_time }
+    pub fn frame_count(&self) -> usize { (self.duration_s() * self.fps) as usize }
+    pub fn find_object(&self, name: &str) -> Option<&AlembicObject> {
+        self.objects.iter().find(|o| o.name == name)
+    }
+}
+
+// ============================================================
+// QUANTIZED ANIMATION STREAM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct QuantizedQuat {
+    pub x: i16, pub y: i16, pub z: i16, pub w: i16,
+}
+
+impl QuantizedQuat {
+    pub fn from_quat(q: Quat) -> Self {
+        let scale = 32767.0_f32;
+        Self {
+            x: (q.x * scale) as i16,
+            y: (q.y * scale) as i16,
+            z: (q.z * scale) as i16,
+            w: (q.w * scale) as i16,
+        }
+    }
+    pub fn to_quat(&self) -> Quat {
+        let inv_scale = 1.0 / 32767.0;
+        Quat::from_xyzw(
+            self.x as f32 * inv_scale,
+            self.y as f32 * inv_scale,
+            self.z as f32 * inv_scale,
+            self.w as f32 * inv_scale,
+        ).normalize()
+    }
+    pub fn encode_smallest_three(q: Quat) -> (u8, i16, i16, i16) {
+        let components = [q.x, q.y, q.z, q.w];
+        let max_idx = components.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i).unwrap_or(3);
+        let sign = if components[max_idx] >= 0.0 { 1.0 } else { -1.0 };
+        let scale = 32767.0_f32 / std::f32::consts::FRAC_1_SQRT_2;
+        let small: Vec<i16> = (0..4).filter(|&i| i != max_idx)
+            .map(|i| (components[i] * sign * scale) as i16)
+            .collect();
+        (max_idx as u8, small[0], small[1], small[2])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QuantizedVec3 {
+    pub x: i16, pub y: i16, pub z: i16,
+}
+
+impl QuantizedVec3 {
+    pub fn from_vec3_range(v: Vec3, min: Vec3, max: Vec3) -> Self {
+        let range = max - min;
+        let norm = (v - min) / Vec3::new(range.x.max(0.001), range.y.max(0.001), range.z.max(0.001));
+        Self {
+            x: (norm.x.clamp(0.0, 1.0) * 65535.0 - 32768.0) as i16,
+            y: (norm.y.clamp(0.0, 1.0) * 65535.0 - 32768.0) as i16,
+            z: (norm.z.clamp(0.0, 1.0) * 65535.0 - 32768.0) as i16,
+        }
+    }
+    pub fn to_vec3_range(&self, min: Vec3, max: Vec3) -> Vec3 {
+        let range = max - min;
+        let t = Vec3::new(
+            (self.x as f32 + 32768.0) / 65535.0,
+            (self.y as f32 + 32768.0) / 65535.0,
+            (self.z as f32 + 32768.0) / 65535.0,
+        );
+        min + t * range
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QuantizedBoneFrame {
+    pub rotation: QuantizedQuat,
+    pub translation: QuantizedVec3,
+    pub scale: u16,  // uniform scale encoded as 16-bit fixed point
+}
+
+impl QuantizedBoneFrame {
+    pub fn new(rotation: Quat, translation: Vec3, scale: f32, t_min: Vec3, t_max: Vec3) -> Self {
+        Self {
+            rotation: QuantizedQuat::from_quat(rotation),
+            translation: QuantizedVec3::from_vec3_range(translation, t_min, t_max),
+            scale: (scale.clamp(0.0, 2.0) * 32767.5) as u16,
+        }
+    }
+    pub fn decode_scale(&self) -> f32 { self.scale as f32 / 32767.5 }
+    pub fn byte_size() -> usize { 14 } // 4*i16 + 3*i16 + u16 = 8+6+2=16 bytes
+}
+
+#[derive(Debug, Clone)]
+pub struct QuantizedAnimStream {
+    pub bone_count: u32,
+    pub frame_count: u32,
+    pub fps: f32,
+    pub translation_min: Vec3,
+    pub translation_max: Vec3,
+    pub frames: Vec<Vec<QuantizedBoneFrame>>,  // [frame][bone]
+    pub bone_names: Vec<String>,
+}
+
+impl QuantizedAnimStream {
+    pub fn new(bone_count: u32, fps: f32) -> Self {
+        Self { bone_count, frame_count: 0, fps, translation_min: Vec3::splat(-5.0),
+            translation_max: Vec3::splat(5.0), frames: Vec::new(), bone_names: Vec::new() }
+    }
+    pub fn add_frame(&mut self, bones: Vec<QuantizedBoneFrame>) {
+        self.frame_count += 1;
+        self.frames.push(bones);
+    }
+    pub fn duration_s(&self) -> f32 { self.frame_count as f32 / self.fps.max(0.001) }
+    pub fn total_bytes(&self) -> usize {
+        self.frame_count as usize * self.bone_count as usize * QuantizedBoneFrame::byte_size()
+    }
+    pub fn sample_frame(&self, time_s: f32) -> Option<&Vec<QuantizedBoneFrame>> {
+        let frame_idx = (time_s * self.fps) as usize;
+        self.frames.get(frame_idx.min(self.frames.len().saturating_sub(1)))
+    }
+    pub fn compression_ratio_vs_f32(&self) -> f32 {
+        let uncompressed = self.frame_count as usize * self.bone_count as usize * (4*4 + 3*4 + 4); // quat+vec3+scale as f32
+        let compressed = self.total_bytes();
+        if compressed == 0 { return 1.0; }
+        uncompressed as f32 / compressed as f32
+    }
+}
+
+// ============================================================
+// VFX INTEGRATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VfxEffectType {
+    ParticleEmitter, RibbonTrail, MeshDecal, FluidSim,
+    ClothSim, DestructionFx, GroundImpact, ExplosionRing,
+    FirePlume, SmokeColumn, ElectricArc, PortalEffect,
+}
+
+#[derive(Debug, Clone)]
+pub struct VfxBinding {
+    pub binding_id: u32,
+    pub effect_type: VfxEffectType,
+    pub attach_bone: String,
+    pub local_offset: Vec3,
+    pub local_rotation: Quat,
+    pub scale: f32,
+    pub start_time_s: f32,
+    pub duration_s: f32,
+    pub loop_count: i32,   // -1 = infinite
+    pub intensity: f32,
+    pub color_tint: Vec4,
+}
+
+impl VfxBinding {
+    pub fn new(binding_id: u32, effect_type: VfxEffectType, attach_bone: &str, start_time_s: f32) -> Self {
+        Self { binding_id, effect_type, attach_bone: attach_bone.to_string(),
+            local_offset: Vec3::ZERO, local_rotation: Quat::IDENTITY,
+            scale: 1.0, start_time_s, duration_s: 1.0, loop_count: 1,
+            intensity: 1.0, color_tint: Vec4::new(1.0, 1.0, 1.0, 1.0) }
+    }
+    pub fn end_time_s(&self) -> f32 { self.start_time_s + self.duration_s }
+    pub fn is_active_at(&self, time_s: f32) -> bool {
+        time_s >= self.start_time_s && (self.loop_count < 0 || time_s <= self.end_time_s())
+    }
+    pub fn effect_type_str(&self) -> &'static str {
+        match &self.effect_type {
+            VfxEffectType::ParticleEmitter => "Particle Emitter",
+            VfxEffectType::RibbonTrail => "Ribbon Trail",
+            VfxEffectType::MeshDecal => "Mesh Decal",
+            VfxEffectType::FluidSim => "Fluid Simulation",
+            VfxEffectType::ClothSim => "Cloth Simulation",
+            VfxEffectType::DestructionFx => "Destruction FX",
+            VfxEffectType::GroundImpact => "Ground Impact",
+            VfxEffectType::ExplosionRing => "Explosion Ring",
+            VfxEffectType::FirePlume => "Fire Plume",
+            VfxEffectType::SmokeColumn => "Smoke Column",
+            VfxEffectType::ElectricArc => "Electric Arc",
+            VfxEffectType::PortalEffect => "Portal Effect",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VfxLayer {
+    pub bindings: Vec<VfxBinding>,
+    pub global_scale: f32,
+    pub paused: bool,
+}
+
+impl VfxLayer {
+    pub fn new() -> Self { Self { bindings: Vec::new(), global_scale: 1.0, paused: false } }
+    pub fn add_binding(&mut self, b: VfxBinding) { self.bindings.push(b); }
+    pub fn active_at(&self, time_s: f32) -> Vec<&VfxBinding> {
+        if self.paused { return Vec::new(); }
+        self.bindings.iter().filter(|b| b.is_active_at(time_s)).collect()
+    }
+    pub fn total_bindings(&self) -> usize { self.bindings.len() }
+    pub fn bindings_of_type(&self, effect_type: &VfxEffectType) -> Vec<&VfxBinding> {
+        self.bindings.iter().filter(|b| &b.effect_type == effect_type).collect()
+    }
+}
+
+// ============================================================
+// SCENE RENDER PASS MANAGER
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenderPassType {
+    ZPrepass, Opaque, AlphaMask, Transparent, Decals,
+    VolumetricFog, DeferredLighting, ShadowMap, PostProcess,
+    UI, Debug, Custom(u8),
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderPass {
+    pub pass_type: RenderPassType,
+    pub name: String,
+    pub enabled: bool,
+    pub clear_color: Vec4,
+    pub clear_depth: bool,
+    pub render_target: String,
+    pub priority: i32,
+}
+
+impl RenderPass {
+    pub fn new(pass_type: RenderPassType, name: &str, priority: i32) -> Self {
+        Self { pass_type, name: name.to_string(), enabled: true,
+            clear_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+            clear_depth: true, render_target: "backbuffer".to_string(), priority }
+    }
+    pub fn pass_type_str(&self) -> String {
+        match &self.pass_type {
+            RenderPassType::ZPrepass => "ZPrepass".to_string(),
+            RenderPassType::Opaque => "Opaque".to_string(),
+            RenderPassType::AlphaMask => "AlphaMask".to_string(),
+            RenderPassType::Transparent => "Transparent".to_string(),
+            RenderPassType::Decals => "Decals".to_string(),
+            RenderPassType::VolumetricFog => "VolumetricFog".to_string(),
+            RenderPassType::DeferredLighting => "DeferredLighting".to_string(),
+            RenderPassType::ShadowMap => "ShadowMap".to_string(),
+            RenderPassType::PostProcess => "PostProcess".to_string(),
+            RenderPassType::UI => "UI".to_string(),
+            RenderPassType::Debug => "Debug".to_string(),
+            RenderPassType::Custom(n) => format!("Custom({})", n),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RenderPassManager {
+    pub passes: Vec<RenderPass>,
+}
+
+impl RenderPassManager {
+    pub fn new() -> Self { Self { passes: Vec::new() } }
+    pub fn add_pass(&mut self, p: RenderPass) { self.passes.push(p); }
+    pub fn default_pipeline() -> Self {
+        let mut mgr = Self::new();
+        mgr.add_pass(RenderPass::new(RenderPassType::ZPrepass, "Z Pre-pass", 0));
+        mgr.add_pass(RenderPass::new(RenderPassType::ShadowMap, "Shadow Maps", 5));
+        mgr.add_pass(RenderPass::new(RenderPassType::Opaque, "Opaque", 10));
+        mgr.add_pass(RenderPass::new(RenderPassType::AlphaMask, "Alpha Mask", 15));
+        mgr.add_pass(RenderPass::new(RenderPassType::DeferredLighting, "Deferred Lighting", 20));
+        mgr.add_pass(RenderPass::new(RenderPassType::Decals, "Decals", 25));
+        mgr.add_pass(RenderPass::new(RenderPassType::VolumetricFog, "Volumetric Fog", 30));
+        mgr.add_pass(RenderPass::new(RenderPassType::Transparent, "Transparent", 35));
+        mgr.add_pass(RenderPass::new(RenderPassType::PostProcess, "Post Process", 40));
+        mgr.add_pass(RenderPass::new(RenderPassType::UI, "UI", 45));
+        mgr
+    }
+    pub fn enabled_passes(&self) -> Vec<&RenderPass> {
+        let mut passes: Vec<&RenderPass> = self.passes.iter().filter(|p| p.enabled).collect();
+        passes.sort_by_key(|p| p.priority);
+        passes
+    }
+    pub fn count(&self) -> usize { self.passes.len() }
+}
+
+// ============================================================
+// SOUND CUE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoundCueType {
+    OneShot, Looping, Ambience, Dialogue, Music, Foley,
+}
+
+#[derive(Debug, Clone)]
+pub struct SoundCue {
+    pub cue_id: u32,
+    pub name: String,
+    pub cue_type: SoundCueType,
+    pub start_time_s: f32,
+    pub duration_s: f32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub spatial: bool,
+    pub position: Vec3,
+    pub falloff_radius_m: f32,
+    pub asset_path: String,
+}
+
+impl SoundCue {
+    pub fn new(cue_id: u32, name: &str, cue_type: SoundCueType, start_time_s: f32, duration_s: f32) -> Self {
+        Self { cue_id, name: name.to_string(), cue_type, start_time_s, duration_s,
+            volume: 1.0, pitch: 1.0, spatial: false, position: Vec3::ZERO,
+            falloff_radius_m: 20.0, asset_path: String::new() }
+    }
+    pub fn end_time_s(&self) -> f32 { self.start_time_s + self.duration_s }
+    pub fn is_active_at(&self, time_s: f32) -> bool {
+        time_s >= self.start_time_s && time_s <= self.end_time_s()
+    }
+    pub fn volume_at_distance(&self, distance_m: f32) -> f32 {
+        if !self.spatial || distance_m <= 0.0 { return self.volume; }
+        let ratio = (1.0 - distance_m / self.falloff_radius_m.max(0.001)).max(0.0);
+        self.volume * ratio * ratio  // inverse square falloff approximation
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SoundTrack {
+    pub track_name: String,
+    pub cues: Vec<SoundCue>,
+    pub muted: bool,
+    pub solo: bool,
+    pub master_volume: f32,
+}
+
+impl SoundTrack {
+    pub fn new(track_name: &str) -> Self {
+        Self { track_name: track_name.to_string(), cues: Vec::new(),
+            muted: false, solo: false, master_volume: 1.0 }
+    }
+    pub fn add_cue(&mut self, c: SoundCue) { self.cues.push(c); }
+    pub fn cues_at_time(&self, time_s: f32) -> Vec<&SoundCue> {
+        if self.muted { return Vec::new(); }
+        self.cues.iter().filter(|c| c.is_active_at(time_s)).collect()
+    }
+    pub fn duration_s(&self) -> f32 {
+        self.cues.iter().map(|c| c.end_time_s()).fold(0.0_f32, f32::max)
+    }
+    pub fn cue_count(&self) -> usize { self.cues.len() }
+}
+
+// ============================================================
+// RENDER SEQUENCE EXPORTER
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportFormat {
+    Png, Exr, Jpeg, Tiff, DpxRaw,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportColorspace {
+    Srgb, LinearRec709, Aces, DciP3, Rec2020,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderSequenceExport {
+    pub output_path: String,
+    pub format: ExportFormat,
+    pub colorspace: ExportColorspace,
+    pub width: u32,
+    pub height: u32,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub fps: f32,
+    pub bit_depth: u8,
+    pub include_alpha: bool,
+    pub denoise: bool,
+    pub aov_outputs: Vec<String>,
+}
+
+impl RenderSequenceExport {
+    pub fn new(output_path: &str, width: u32, height: u32, fps: f32) -> Self {
+        Self { output_path: output_path.to_string(), format: ExportFormat::Exr,
+            colorspace: ExportColorspace::LinearRec709,
+            width, height, start_frame: 1, end_frame: 100, fps,
+            bit_depth: 16, include_alpha: true, denoise: false, aov_outputs: Vec::new() }
+    }
+    pub fn frame_count(&self) -> u32 { self.end_frame - self.start_frame + 1 }
+    pub fn duration_s(&self) -> f32 { self.frame_count() as f32 / self.fps.max(0.001) }
+    pub fn bytes_per_frame(&self) -> u64 {
+        let channels = if self.include_alpha { 4 } else { 3 };
+        let bits_per_channel = self.bit_depth as u64;
+        self.width as u64 * self.height as u64 * channels * bits_per_channel / 8
+    }
+    pub fn total_bytes(&self) -> u64 {
+        self.bytes_per_frame() * self.frame_count() as u64
+    }
+    pub fn total_gb(&self) -> f64 { self.total_bytes() as f64 / (1024.0 * 1024.0 * 1024.0) }
+    pub fn format_str(&self) -> &'static str {
+        match &self.format {
+            ExportFormat::Png => "PNG", ExportFormat::Exr => "EXR",
+            ExportFormat::Jpeg => "JPEG", ExportFormat::Tiff => "TIFF",
+            ExportFormat::DpxRaw => "DPX",
+        }
+    }
+    pub fn frame_filename(&self, frame: u32) -> String {
+        let ext = self.format_str().to_lowercase();
+        format!("{}/frame_{:06}.{}", self.output_path, frame, ext)
+    }
+    pub fn add_aov(&mut self, aov_name: &str) { self.aov_outputs.push(aov_name.to_string()); }
+}
+
+// ============================================================
+// CUTSCENE DIRECTOR (HIGH-LEVEL ORCHESTRATOR)
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DirectorState {
+    Idle, Playing, Paused, Scrubbing, Recording,
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneDirector {
+    pub cutscene_id: String,
+    pub state: DirectorState,
+    pub current_time_s: f32,
+    pub total_duration_s: f32,
+    pub playback_speed: f32,
+    pub sound_tracks: Vec<SoundTrack>,
+    pub vfx_layer: VfxLayer,
+    pub post_process: PostProcessStack,
+    pub render_pass_mgr: RenderPassManager,
+    pub usd_stage: Option<UsdStage>,
+    pub export_settings: Option<RenderSequenceExport>,
+    pub markers: Vec<(f32, String)>,  // time -> label
+}
+
+impl CutsceneDirector {
+    pub fn new(cutscene_id: &str, total_duration_s: f32) -> Self {
+        Self { cutscene_id: cutscene_id.to_string(), state: DirectorState::Idle,
+            current_time_s: 0.0, total_duration_s, playback_speed: 1.0,
+            sound_tracks: Vec::new(), vfx_layer: VfxLayer::new(),
+            post_process: PostProcessStack::new(),
+            render_pass_mgr: RenderPassManager::default_pipeline(),
+            usd_stage: None, export_settings: None, markers: Vec::new() }
+    }
+    pub fn play(&mut self) { self.state = DirectorState::Playing; }
+    pub fn pause(&mut self) { self.state = DirectorState::Paused; }
+    pub fn stop(&mut self) { self.state = DirectorState::Idle; self.current_time_s = 0.0; }
+    pub fn seek(&mut self, time_s: f32) {
+        self.current_time_s = time_s.clamp(0.0, self.total_duration_s);
+        self.state = DirectorState::Scrubbing;
+    }
+    pub fn add_sound_track(&mut self, t: SoundTrack) { self.sound_tracks.push(t); }
+    pub fn add_marker(&mut self, time_s: f32, label: &str) {
+        self.markers.push((time_s, label.to_string()));
+    }
+    pub fn advance(&mut self, delta_s: f32) {
+        if self.state == DirectorState::Playing {
+            self.current_time_s = (self.current_time_s + delta_s * self.playback_speed)
+                .min(self.total_duration_s);
+            if self.current_time_s >= self.total_duration_s {
+                self.state = DirectorState::Idle;
+            }
+        }
+    }
+    pub fn active_sound_cues(&self) -> Vec<&SoundCue> {
+        self.sound_tracks.iter()
+            .flat_map(|t| t.cues_at_time(self.current_time_s))
+            .collect()
+    }
+    pub fn active_vfx(&self) -> Vec<&VfxBinding> {
+        self.vfx_layer.active_at(self.current_time_s)
+    }
+    pub fn progress_pct(&self) -> f32 {
+        if self.total_duration_s < 0.001 { return 0.0; }
+        self.current_time_s / self.total_duration_s * 100.0
+    }
+    pub fn markers_in_range(&self, start_s: f32, end_s: f32) -> Vec<&(f32, String)> {
+        self.markers.iter().filter(|(t, _)| *t >= start_s && *t <= end_s).collect()
+    }
+    pub fn render_pass_count(&self) -> usize { self.render_pass_mgr.count() }
+}
+
+// ============================================================
+// ANIMATION RETARGETING SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct BoneMapping {
+    pub source_bone: String,
+    pub target_bone: String,
+    pub rotation_offset: Quat,
+    pub scale_factor: f32,
+}
+
+impl BoneMapping {
+    pub fn new(source: &str, target: &str) -> Self {
+        Self { source_bone: source.to_string(), target_bone: target.to_string(),
+            rotation_offset: Quat::IDENTITY, scale_factor: 1.0 }
+    }
+    pub fn with_rotation_offset(mut self, rot: Quat) -> Self { self.rotation_offset = rot; self }
+    pub fn with_scale(mut self, scale: f32) -> Self { self.scale_factor = scale; self }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RetargetProfile {
+    pub source_skeleton: String,
+    pub target_skeleton: String,
+    pub bone_mappings: Vec<BoneMapping>,
+    pub unmapped_bone_policy: String,  // "zero", "t-pose", "skip"
+}
+
+impl RetargetProfile {
+    pub fn new(source: &str, target: &str) -> Self {
+        Self { source_skeleton: source.to_string(), target_skeleton: target.to_string(),
+            bone_mappings: Vec::new(), unmapped_bone_policy: "t-pose".to_string() }
+    }
+    pub fn add_mapping(&mut self, mapping: BoneMapping) { self.bone_mappings.push(mapping); }
+    pub fn find_mapping(&self, source_bone: &str) -> Option<&BoneMapping> {
+        self.bone_mappings.iter().find(|m| m.source_bone == source_bone)
+    }
+    pub fn mapping_count(&self) -> usize { self.bone_mappings.len() }
+    pub fn humanoid_biped() -> Self {
+        let mut p = Self::new("source_biped", "target_biped");
+        let bone_pairs = [
+            ("Hips", "pelvis"), ("Spine", "spine_01"), ("Spine1", "spine_02"),
+            ("Spine2", "spine_03"), ("Neck", "neck_01"), ("Head", "head"),
+            ("LeftShoulder", "clavicle_l"), ("LeftArm", "upperarm_l"),
+            ("LeftForeArm", "lowerarm_l"), ("LeftHand", "hand_l"),
+            ("RightShoulder", "clavicle_r"), ("RightArm", "upperarm_r"),
+            ("RightForeArm", "lowerarm_r"), ("RightHand", "hand_r"),
+            ("LeftUpLeg", "thigh_l"), ("LeftLeg", "calf_l"), ("LeftFoot", "foot_l"),
+            ("RightUpLeg", "thigh_r"), ("RightLeg", "calf_r"), ("RightFoot", "foot_r"),
+        ];
+        for (src, tgt) in &bone_pairs {
+            p.add_mapping(BoneMapping::new(src, tgt));
+        }
+        p
+    }
+}
+
+// ============================================================
+// FACIAL CAPTURE PROCESSING
+// ============================================================
+
+pub const ARKit_BLEND_SHAPE_NAMES: [&str; 52] = [
+    "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft", "eyeLookUpLeft",
+    "eyeSquintLeft", "eyeWideLeft", "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight",
+    "eyeLookOutRight", "eyeLookUpRight", "eyeSquintRight", "eyeWideRight",
+    "jawForward", "jawLeft", "jawRight", "jawOpen",
+    "mouthClose", "mouthFunnel", "mouthPucker", "mouthLeft", "mouthRight",
+    "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+    "mouthDimpleLeft", "mouthDimpleRight", "mouthStretchLeft", "mouthStretchRight",
+    "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
+    "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight",
+    "mouthUpperUpLeft", "mouthUpperUpRight", "browDownLeft", "browDownRight",
+    "browInnerUp", "browOuterUpLeft", "browOuterUpRight",
+    "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
+    "noseSneerLeft", "noseSneerRight", "tongueOut",
+];
+
+#[derive(Debug, Clone)]
+pub struct FacialCaptureFrame {
+    pub time_s: f64,
+    pub blend_shapes: [f32; 52],
+    pub head_rotation: Quat,
+    pub left_eye_rotation: Quat,
+    pub right_eye_rotation: Quat,
+    pub confidence: f32,
+}
+
+impl FacialCaptureFrame {
+    pub fn new(time_s: f64) -> Self {
+        Self { time_s, blend_shapes: [0.0; 52], head_rotation: Quat::IDENTITY,
+            left_eye_rotation: Quat::IDENTITY, right_eye_rotation: Quat::IDENTITY,
+            confidence: 1.0 }
+    }
+    pub fn set_blend_shape(&mut self, name: &str, value: f32) {
+        if let Some(idx) = ARKit_BLEND_SHAPE_NAMES.iter().position(|&n| n == name) {
+            self.blend_shapes[idx] = value.clamp(0.0, 1.0);
+        }
+    }
+    pub fn get_blend_shape(&self, name: &str) -> f32 {
+        ARKit_BLEND_SHAPE_NAMES.iter().position(|&n| n == name)
+            .map(|idx| self.blend_shapes[idx])
+            .unwrap_or(0.0)
+    }
+    pub fn jaw_open(&self) -> f32 { self.blend_shapes[17] }
+    pub fn mouth_smile_avg(&self) -> f32 { (self.blend_shapes[23] + self.blend_shapes[24]) / 2.0 }
+    pub fn eye_blink_avg(&self) -> f32 { (self.blend_shapes[0] + self.blend_shapes[7]) / 2.0 }
+    pub fn brow_raise_avg(&self) -> f32 { self.blend_shapes[43] }
+    pub fn detected_expression(&self) -> &'static str {
+        if self.mouth_smile_avg() > 0.5 { return "happy"; }
+        if self.blend_shapes[25] > 0.4 || self.blend_shapes[26] > 0.4 { return "sad"; }
+        if self.blend_shapes[40] > 0.3 || self.blend_shapes[41] > 0.3 { return "angry"; }
+        if self.brow_raise_avg() > 0.4 && self.jaw_open() > 0.3 { return "surprised"; }
+        if self.eye_blink_avg() > 0.7 { return "blinking"; }
+        "neutral"
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FacialCaptureTake {
+    pub take_id: String,
+    pub actor_name: String,
+    pub frames: Vec<FacialCaptureFrame>,
+    pub fps: f32,
+    pub camera_model: String,
+}
+
+impl FacialCaptureTake {
+    pub fn new(take_id: &str, actor_name: &str, fps: f32) -> Self {
+        Self { take_id: take_id.to_string(), actor_name: actor_name.to_string(),
+            frames: Vec::new(), fps, camera_model: "iPhone".to_string() }
+    }
+    pub fn add_frame(&mut self, f: FacialCaptureFrame) { self.frames.push(f); }
+    pub fn frame_count(&self) -> usize { self.frames.len() }
+    pub fn duration_s(&self) -> f64 {
+        if self.frames.is_empty() { return 0.0; }
+        self.frames[self.frames.len()-1].time_s - self.frames[0].time_s
+    }
+    pub fn frame_at_time(&self, time_s: f64) -> Option<&FacialCaptureFrame> {
+        if self.frames.is_empty() { return None; }
+        let idx = self.frames.iter().enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (a.time_s - time_s).abs().partial_cmp(&(b.time_s - time_s).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }).map(|(i, _)| i);
+        idx.map(|i| &self.frames[i])
+    }
+    pub fn average_confidence(&self) -> f32 {
+        if self.frames.is_empty() { return 0.0; }
+        self.frames.iter().map(|f| f.confidence).sum::<f32>() / self.frames.len() as f32
+    }
+    pub fn low_confidence_frames(&self, threshold: f32) -> Vec<&FacialCaptureFrame> {
+        self.frames.iter().filter(|f| f.confidence < threshold).collect()
+    }
+    pub fn smooth_blend_shapes(&mut self, window_size: usize) {
+        if self.frames.len() < window_size { return; }
+        let n = self.frames.len();
+        let orig: Vec<[f32; 52]> = self.frames.iter().map(|f| f.blend_shapes).collect();
+        for i in 0..n {
+            let start = i.saturating_sub(window_size / 2);
+            let end = (i + window_size / 2 + 1).min(n);
+            let count = (end - start) as f32;
+            for j in 0..52 {
+                let avg = orig[start..end].iter().map(|bs| bs[j]).sum::<f32>() / count;
+                self.frames[i].blend_shapes[j] = avg;
+            }
+        }
+    }
+    pub fn dominant_expression_histogram(&self) -> HashMap<String, usize> {
+        let mut hist: HashMap<String, usize> = HashMap::new();
+        for f in &self.frames {
+            *hist.entry(f.detected_expression().to_string()).or_insert(0) += 1;
+        }
+        hist
+    }
+}
+
+// ============================================================
+// SCENE LIGHTING KEYFRAMES
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LightKeyframe {
+    pub time_s: f32,
+    pub color: Vec3,
+    pub intensity: f32,
+    pub radius_or_angle: f32,
+    pub cast_shadows: bool,
+    pub shadow_softness: f32,
+}
+
+impl LightKeyframe {
+    pub fn new(time_s: f32, color: Vec3, intensity: f32) -> Self {
+        Self { time_s, color, intensity, radius_or_angle: 5.0, cast_shadows: true, shadow_softness: 1.0 }
+    }
+    pub fn lerp(&self, other: &LightKeyframe, t: f32) -> LightKeyframe {
+        let t = t.clamp(0.0, 1.0);
+        LightKeyframe {
+            time_s: self.time_s + (other.time_s - self.time_s) * t,
+            color: self.color.lerp(other.color, t),
+            intensity: self.intensity + (other.intensity - self.intensity) * t,
+            radius_or_angle: self.radius_or_angle + (other.radius_or_angle - self.radius_or_angle) * t,
+            cast_shadows: if t < 0.5 { self.cast_shadows } else { other.cast_shadows },
+            shadow_softness: self.shadow_softness + (other.shadow_softness - self.shadow_softness) * t,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LightAnimTrack {
+    pub light_name: String,
+    pub keyframes: Vec<LightKeyframe>,
+}
+
+impl LightAnimTrack {
+    pub fn new(light_name: &str) -> Self { Self { light_name: light_name.to_string(), keyframes: Vec::new() } }
+    pub fn add_keyframe(&mut self, kf: LightKeyframe) {
+        let idx = self.keyframes.partition_point(|k| k.time_s < kf.time_s);
+        self.keyframes.insert(idx, kf);
+    }
+    pub fn sample(&self, time_s: f32) -> Option<LightKeyframe> {
+        if self.keyframes.is_empty() { return None; }
+        if self.keyframes.len() == 1 { return Some(self.keyframes[0].clone()); }
+        let idx = self.keyframes.partition_point(|k| k.time_s <= time_s);
+        if idx == 0 { return Some(self.keyframes[0].clone()); }
+        if idx >= self.keyframes.len() { return Some(self.keyframes[self.keyframes.len()-1].clone()); }
+        let prev = &self.keyframes[idx-1];
+        let next = &self.keyframes[idx];
+        let span = next.time_s - prev.time_s;
+        let t = if span > 0.001 { (time_s - prev.time_s) / span } else { 0.0 };
+        Some(prev.lerp(next, t))
+    }
+    pub fn duration_s(&self) -> f32 {
+        if self.keyframes.is_empty() { return 0.0; }
+        self.keyframes[self.keyframes.len()-1].time_s
+    }
+    pub fn keyframe_count(&self) -> usize { self.keyframes.len() }
+}
+
+// ============================================================
+// TEST FUNCTIONS
+// ============================================================
+
+pub fn run_post_process_tests() {
+    let cinema = PostProcessStack::cinema_preset();
+    assert!(cinema.effect_count() > 0);
+    assert!(cinema.enabled_effects().len() > 0);
+
+    let horror = PostProcessStack::horror_preset();
+    assert!(horror.saturation < 0.5);
+    assert!(horror.contrast > 1.2);
+
+    let effect = PostProcessEffect::bloom(0.9, 0.7, 0.5);
+    assert_eq!(effect.effect_type_str(), "Bloom");
+    assert!(effect.params.contains_key("threshold"));
+}
+
+pub fn run_usd_stage_tests() {
+    let mut stage = UsdStage::new("/tmp/test_scene.usda");
+    stage.time_codes_per_second = 24.0;
+    stage.end_time_code = 240.0;
+
+    let mut root = UsdPrim::new("/root", UsdPrimType::Xform);
+    root.set_attr("xformOp:translate", "(0, 0, 0)");
+    stage.add_prim(root);
+
+    let cam = UsdPrim::new("/root/Camera", UsdPrimType::Camera);
+    stage.add_prim(cam);
+
+    assert_eq!(stage.prim_count(), 2);
+    assert_eq!(stage.duration_seconds(), 10.0);
+    assert_eq!(stage.camera_prims().len(), 1);
+    let header = stage.export_usda_header();
+    assert!(header.contains("usda 1.0"));
+}
+
+pub fn run_alembic_tests() {
+    let mut archive = AlembicArchive::new("crowd_sim.abc", 24.0);
+    archive.end_time = 4.0;
+
+    let mut crowd = AlembicObject::new("crowd_particles", "Points");
+    for i in 0..10 {
+        let mut sample = AlembicSample::new(i as f64 * (1.0 / 24.0));
+        for j in 0..100 {
+            let pos = Vec3::new(j as f32 * 0.1, 0.0, i as f32 * 0.05);
+            let vel = Vec3::new(0.5, 0.0, 0.0);
+            sample.add_point(pos, vel);
+        }
+        crowd.add_sample(sample);
+    }
+    archive.add_object(crowd);
+
+    assert_eq!(archive.object_count(), 1);
+    assert_eq!(archive.total_samples(), 10);
+    let obj = archive.find_object("crowd_particles").unwrap();
+    assert_eq!(obj.sample_count(), 10);
+    let sample = obj.sample_at_time(0.0).unwrap();
+    let (bb_min, bb_max) = sample.bounding_box();
+    assert!(bb_max.x > bb_min.x);
+}
+
+pub fn run_quantized_anim_tests() {
+    let q = Quat::from_rotation_y(0.5);
+    let qq = QuantizedQuat::from_quat(q);
+    let recovered = qq.to_quat();
+    let dot = (q.x * recovered.x + q.y * recovered.y + q.z * recovered.z + q.w * recovered.w).abs();
+    assert!(dot > 0.99, "dot={}", dot);
+
+    let mut stream = QuantizedAnimStream::new(3, 24.0);
+    for _ in 0..24 {
+        let bones = vec![
+            QuantizedBoneFrame::new(Quat::IDENTITY, Vec3::ZERO, 1.0, Vec3::splat(-5.0), Vec3::splat(5.0)),
+            QuantizedBoneFrame::new(Quat::from_rotation_x(0.1), Vec3::new(0.0, 1.0, 0.0), 1.0, Vec3::splat(-5.0), Vec3::splat(5.0)),
+            QuantizedBoneFrame::new(Quat::from_rotation_z(0.2), Vec3::ZERO, 1.0, Vec3::splat(-5.0), Vec3::splat(5.0)),
+        ];
+        stream.add_frame(bones);
+    }
+    assert_eq!(stream.frame_count, 24);
+    assert!((stream.duration_s() - 1.0).abs() < 0.001);
+    let ratio = stream.compression_ratio_vs_f32();
+    assert!(ratio > 1.0, "compression ratio should be > 1: {}", ratio);
+}
+
+pub fn run_vfx_tests() {
+    let mut layer = VfxLayer::new();
+    layer.add_binding(VfxBinding::new(1, VfxEffectType::ExplosionRing, "root", 0.5));
+    layer.add_binding(VfxBinding::new(2, VfxEffectType::SmokeColumn, "root", 0.5));
+    layer.add_binding(VfxBinding::new(3, VfxEffectType::ParticleEmitter, "Spine", 0.0));
+
+    let active = layer.active_at(0.7);
+    assert!(!active.is_empty());
+    let explosions = layer.bindings_of_type(&VfxEffectType::ExplosionRing);
+    assert_eq!(explosions.len(), 1);
+}
+
+pub fn run_sound_cue_tests() {
+    let mut track = SoundTrack::new("sfx_track");
+    track.add_cue(SoundCue::new(1, "footstep", SoundCueType::Foley, 0.0, 0.3));
+    track.add_cue(SoundCue::new(2, "explosion", SoundCueType::OneShot, 1.5, 2.0));
+    track.add_cue(SoundCue::new(3, "ambient_wind", SoundCueType::Looping, 0.0, 10.0));
+
+    let active_at_0 = track.cues_at_time(0.1);
+    assert!(!active_at_0.is_empty());
+    let active_at_2 = track.cues_at_time(2.0);
+    assert!(active_at_2.iter().any(|c| c.name == "explosion"));
+    assert!((track.duration_s() - 10.0).abs() < 0.01);
+}
+
+pub fn run_render_export_tests() {
+    let mut export = RenderSequenceExport::new("/renders/shot01", 1920, 1080, 24.0);
+    export.start_frame = 1;
+    export.end_frame = 240;
+    export.add_aov("beauty");
+    export.add_aov("normal");
+    export.add_aov("depth");
+
+    assert_eq!(export.frame_count(), 240);
+    assert!((export.duration_s() - 10.0).abs() < 0.01);
+    assert!(export.total_bytes() > 0);
+    let filename = export.frame_filename(1);
+    assert!(filename.contains("000001"));
+    assert_eq!(export.aov_outputs.len(), 3);
+}
+
+pub fn run_facial_capture_tests() {
+    let mut take = FacialCaptureTake::new("take_001", "John", 30.0);
+
+    for i in 0..30 {
+        let mut frame = FacialCaptureFrame::new(i as f64 / 30.0);
+        frame.set_blend_shape("mouthSmileLeft", if i > 15 { 0.8 } else { 0.1 });
+        frame.set_blend_shape("mouthSmileRight", if i > 15 { 0.7 } else { 0.1 });
+        frame.confidence = if i == 5 { 0.3 } else { 0.95 };
+        take.add_frame(frame);
+    }
+
+    assert_eq!(take.frame_count(), 30);
+    let low_conf = take.low_confidence_frames(0.5);
+    assert_eq!(low_conf.len(), 1);
+    let hist = take.dominant_expression_histogram();
+    assert!(!hist.is_empty());
+    take.smooth_blend_shapes(3);
+}
+
+pub fn run_light_anim_tests() {
+    let mut track = LightAnimTrack::new("sun_light");
+    track.add_keyframe(LightKeyframe::new(0.0, Vec3::new(1.0, 0.8, 0.6), 100000.0));
+    track.add_keyframe(LightKeyframe::new(5.0, Vec3::new(0.8, 0.4, 0.2), 50000.0));
+    track.add_keyframe(LightKeyframe::new(10.0, Vec3::new(0.1, 0.1, 0.2), 10000.0));
+
+    assert_eq!(track.keyframe_count(), 3);
+    let sample = track.sample(2.5).unwrap();
+    assert!((sample.intensity - 75000.0).abs() < 1000.0);
+    assert!((track.duration_s() - 10.0).abs() < 0.01);
+}
+
+pub fn run_director_tests() {
+    let mut director = CutsceneDirector::new("cutscene_01", 30.0);
+    director.add_marker(5.0, "action_start");
+    director.add_marker(20.0, "climax");
+    director.add_marker(28.0, "fade_out");
+
+    let mut sound_track = SoundTrack::new("music");
+    sound_track.add_cue(SoundCue::new(1, "music_main", SoundCueType::Music, 0.0, 30.0));
+    director.add_sound_track(sound_track);
+
+    director.vfx_layer.add_binding(VfxBinding::new(1, VfxEffectType::FirePlume, "root", 10.0));
+
+    director.play();
+    director.advance(5.0);
+    assert!((director.current_time_s - 5.0).abs() < 0.01);
+    assert!((director.progress_pct() - 16.67).abs() < 0.1);
+
+    let markers = director.markers_in_range(0.0, 10.0);
+    assert_eq!(markers.len(), 1);
+
+    director.seek(0.0);
+    assert!((director.current_time_s - 0.0).abs() < 0.01);
+    assert!(director.render_pass_count() >= 8);
+}
+
+pub fn run_retarget_tests() {
+    let profile = RetargetProfile::humanoid_biped();
+    assert!(profile.mapping_count() >= 20);
+    let mapping = profile.find_mapping("Hips");
+    assert!(mapping.is_some());
+    assert_eq!(mapping.unwrap().target_bone, "pelvis");
+}
+
+pub fn run_all_cutscene_post_tests() {
+    run_post_process_tests();
+    run_usd_stage_tests();
+    run_alembic_tests();
+    run_quantized_anim_tests();
+    run_vfx_tests();
+    run_sound_cue_tests();
+    run_render_export_tests();
+    run_facial_capture_tests();
+    run_light_anim_tests();
+    run_director_tests();
+    run_retarget_tests();
+}
+
+pub const CUTSCENE_MAX_TRACKS: usize = 64;
+pub const CUTSCENE_MAX_SOUND_CUES: usize = 256;
+pub const FACIAL_CAPTURE_BLEND_SHAPES: usize = 52;
+pub const USD_MAX_PRIMS: usize = 100_000;
+pub const ALEMBIC_MAX_SAMPLES_PER_OBJECT: usize = 10_000;
+pub const RENDER_MAX_AOVS: usize = 32;
+
+pub fn cutscene_importer_info_extended() -> HashMap<String, String> {
+    let mut info = HashMap::new();
+    info.insert("module".to_string(), "cutscene_importer".to_string());
+    info.insert("version".to_string(), "2.0.0".to_string());
+    info.insert("blend_shapes".to_string(), FACIAL_CAPTURE_BLEND_SHAPES.to_string());
+    info.insert("max_tracks".to_string(), CUTSCENE_MAX_TRACKS.to_string());
+    info.insert("usd_support".to_string(), "USDA 1.0".to_string());
+    info.insert("alembic_support".to_string(), "Alembic 1.7+".to_string());
+    info.insert("quantization".to_string(), "16-bit quaternion/translation".to_string());
+    info
+}

@@ -1,0 +1,71 @@
+
+impl DestructibleObject {
+    pub fn new(id: u32, position: (i32, i32), object_type: impl Into<String>, max_hp: i32) -> Self {
+        Self { id, position, object_type: object_type.into(), hp: max_hp, max_hp, destroyed: false, blocking: true, drops: Vec::new(), destruction_effect: "explosion".into(), respawn_time: None }
+    }
+}
+
+impl Default for DestructibleObject {
+    fn default() -> Self { Self::new(0, (0,0), "barrel", 20) }
+}
+
+impl WaterBody {
+    pub fn new(id: u32, water_type: impl Into<String>) -> Self {
+        Self { id, tiles: HashSet::new(), depth: 1.0, current_dir: (0.0, 0.0), water_type: water_type.into(), is_swimmable: true }
+    }
+    pub fn add_tile(&mut self, x: i32, y: i32) { self.tiles.insert((x, y)); }
+    pub fn area(&self) -> usize { self.tiles.len() }
+    pub fn contains(&self, x: i32, y: i32) -> bool { self.tiles.contains(&(x, y)) }
+}
+
+impl MapAnnotationLayer {
+    pub fn new() -> Self { Self { annotations: Vec::new() } }
+    pub fn add(&mut self, ann: MapAnnotation) { self.annotations.push(ann); }
+    pub fn count(&self) -> usize { self.annotations.len() }
+}
+
+impl TileEffectMap {
+    pub fn new(width: i32, height: i32) -> Self { Self { width, height, effects: vec![TileEffect::None; (width * height) as usize], effect_params: vec![0.0; (width * height) as usize] } }
+    pub fn set_effect(&mut self, x: i32, y: i32, effect: TileEffect, param: f32) {
+        if x >= 0 && x < self.width && y >= 0 && y < self.height {
+            let idx = (y * self.width + x) as usize;
+            self.effects[idx] = effect;
+            self.effect_params[idx] = param;
+        }
+    }
+    pub fn effect_at(&self, x: i32, y: i32) -> TileEffect {
+        if x >= 0 && x < self.width && y >= 0 && y < self.height {
+            self.effects[(y * self.width + x) as usize].clone()
+        } else { TileEffect::None }
+    }
+    pub fn apply_to_entity(&self, _x: i32, _y: i32) {}
+}
+
+impl MapUndoHistory {
+    pub fn new(max: usize) -> Self { Self { actions: VecDeque::new(), redo_stack: Vec::new(), max_history: max } }
+    pub fn push(&mut self, action: MapUndoAction) {
+        if self.actions.len() >= self.max_history { self.actions.pop_front(); }
+        self.actions.push_back(action);
+        self.redo_stack.clear();
+    }
+    pub fn can_undo(&self) -> bool { !self.actions.is_empty() }
+    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+    pub fn undo_count(&self) -> usize { self.actions.len() }
+}
+
+impl PatrolPath {
+    pub fn add_waypoint(&mut self, wp: (usize, usize)) { self.waypoints.push(wp); }
+    pub fn current_target(&self) -> Option<(usize, usize)> { self.waypoints.get(self.current_idx).copied() }
+    pub fn advance(&mut self) {
+        if self.waypoints.is_empty() { return; }
+        match self.loop_type {
+            PatrolLoopType::Loop => { self.current_idx = (self.current_idx + 1) % self.waypoints.len(); }
+            PatrolLoopType::PingPong => {
+                let next = self.current_idx as i32 + self.direction;
+                if next < 0 || next >= self.waypoints.len() as i32 { self.direction = -self.direction; }
+                self.current_idx = (self.current_idx as i32 + self.direction).clamp(0, self.waypoints.len() as i32 - 1) as usize;
+            }
+            PatrolLoopType::OneShot => { if self.current_idx + 1 < self.waypoints.len() { self.current_idx += 1; } }
+        }
+    }
+}

@@ -1,0 +1,90 @@
+
+impl HorizontalCurve {
+    pub fn new(radius_m: f32, delta_angle_deg: f32, design_speed_kph: f32) -> Self {
+        Self { radius_m, delta_angle_deg, design_speed_kph, lane_width_m: 3.7, number_of_lanes: 2 }
+    }
+    pub fn arc_length_m(&self) -> f32 { self.radius_m * self.delta_angle_deg.to_radians() }
+    pub fn tangent_length_m(&self) -> f32 { self.radius_m * (self.delta_angle_deg.to_radians() / 2.0).tan() }
+    pub fn long_chord_m(&self) -> f32 { 2.0 * self.radius_m * (self.delta_angle_deg.to_radians() / 2.0).sin() }
+    pub fn min_radius_m(&self) -> f32 { self.design_speed_kph * self.design_speed_kph / (127.0 * (0.16)) }
+    pub fn design_speed_ok(&self) -> bool { self.radius_m >= self.min_radius_m() }
+    pub fn sight_clearance_m(&self) -> f32 { self.radius_m * (1.0 - (28.0 / (2.0 * self.radius_m)).acos().cos()) }
+}
+
+impl VerticalCurve {
+    pub fn new(curve_type: VerticalCurveType, g1: f32, g2: f32, length_m: f32, pvi_station_m: f32, pvi_elevation_m: f32, design_speed_kph: f32) -> Self {
+        Self { curve_type, g1_percent: g1, g2_percent: g2, length_m, pvi_station_m, pvi_elevation_m, design_speed_kph }
+    }
+    pub fn elevation_at_station(&self, station_m: f32) -> f32 {
+        let x = station_m - (self.pvi_station_m - self.length_m / 2.0);
+        let x = x.clamp(0.0, self.length_m);
+        let a = (self.g2_percent - self.g1_percent) / (2.0 * self.length_m);
+        self.pvi_elevation_m - self.g1_percent / 100.0 * self.length_m / 2.0 + self.g1_percent / 100.0 * x + a * x * x
+    }
+    pub fn high_low_point_station(&self) -> Option<f32> {
+        let a = (self.g2_percent - self.g1_percent) / self.length_m;
+        if a.abs() < 1e-6 { return None; }
+        let x = -self.g1_percent / a;
+        if x >= 0.0 && x <= self.length_m { Some(self.pvi_station_m - self.length_m / 2.0 + x) } else { None }
+    }
+    pub fn min_length_m(&self) -> f32 {
+        let a = (self.g2_percent - self.g1_percent).abs();
+        match self.curve_type {
+            VerticalCurveType::Crest => a * self.design_speed_kph * self.design_speed_kph / 658.0,
+            VerticalCurveType::Sag => a * self.design_speed_kph * self.design_speed_kph / 385.0,
+        }
+    }
+    pub fn is_adequate(&self) -> bool { self.length_m >= self.min_length_m() }
+}
+
+impl NetworkLink {
+    pub fn new(id: u32, from: u32, to: u32, fft: f32, cap: f32) -> Self {
+        Self { id, from_node: from, to_node: to, free_flow_time_min: fft, capacity_veh_per_hour: cap, alpha: 0.15, beta: 4.0, current_flow: 0.0 }
+    }
+    pub fn travel_time_bpr(&self) -> f32 {
+        self.free_flow_time_min * (1.0 + self.alpha * (self.current_flow / self.capacity_veh_per_hour.max(1.0)).powf(self.beta))
+    }
+}
+
+impl SkidResistanceMeasurement {
+    pub fn new(station_m: f32, skid_number: f32) -> Self {
+        Self { station_m, skid_number, international_friction_index: skid_number / 100.0, texture_depth_mm: 0.7, surface_type: "asphalt".into() }
+    }
+}
+
+impl FrictionInventory {
+    pub fn new() -> Self { Self { measurements: Vec::new(), minimum_acceptable_sn: 40.0 } }
+    pub fn add(&mut self, m: SkidResistanceMeasurement) { self.measurements.push(m); }
+    pub fn average_skid_number(&self) -> f32 {
+        if self.measurements.is_empty() { return 0.0; }
+        self.measurements.iter().map(|m| m.skid_number).sum::<f32>() / self.measurements.len() as f32
+    }
+    pub fn length_m(&self) -> f32 { self.measurements.last().map(|m| m.station_m).unwrap_or(0.0) }
+    pub fn segments_below_threshold(&self) -> Vec<f32> {
+        self.measurements.iter().filter(|m| m.skid_number < self.minimum_acceptable_sn).map(|m| m.station_m).collect()
+    }
+}
+
+impl AirQualityMonitor {
+    pub fn new(station_id: u32, location_m: f32) -> Self {
+        Self { station_id, location_station_m: location_m, co_ppb: 0.0, nox_ppb: 0.0, pm25_ug_m3: 0.0, pm10_ug_m3: 0.0, measurement_year: 2024 }
+    }
+    pub fn exceeds_naaqs_pm25(&self) -> bool { self.pm25_ug_m3 > 35.0 }
+    pub fn exceeds_naaqs_pm10(&self) -> bool { self.pm10_ug_m3 > 150.0 }
+    pub fn air_quality_index(&self) -> f32 { (self.pm25_ug_m3 / 35.0 * 100.0).max(self.co_ppb / 35000.0 * 100.0) }
+}
+
+impl TerrainRoadTool {
+    pub fn add_road_point(&mut self, pos: Vec3) {
+        if let Some(id) = self.state.active_segment_id {
+            if let Some(seg) = self.segments.get_mut(&id) {
+                seg.spline.add_point(pos);
+            }
+        }
+    }
+    pub fn add_city_node(&mut self, pos: Vec3, node_type: RoadNodeType) -> u32 {
+        let id = self.city_nodes.len() as u32 + 1;
+        self.city_nodes.push(CityNode { id, position: pos, node_type, population: 1000 });
+        self.network.add_node(pos, node_type)
+    }
+}

@@ -62,6 +62,12 @@ pub mod audio_mixer_editor;
 pub mod modeling_editor;
 pub mod animation_compression;
 pub mod voxel_editor;
+pub mod terrain_road_tool;
+pub mod cutscene_importer;
+pub mod map_editor;
+pub mod particle_system_editor;
+pub mod shader_compiler;
+pub mod loot_editor;
 
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::HashMap;

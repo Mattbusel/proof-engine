@@ -1,0 +1,193 @@
+
+// ============================================================
+// RESOURCE GATHERING AND NODE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceNodeType {
+    IronOre, GoldOre, MithrilOre, Coal, Stone, Marble,
+    OakWood, PineWood, ElmWood, MagicCrystal, HerbalPatch,
+    FishingSpot, Farm, Quarry, Well,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceNode {
+    pub id: u32,
+    pub node_type: ResourceNodeType,
+    pub position: Vec2,
+    pub current_resource: f32,
+    pub max_resource: f32,
+    pub regen_rate_per_hour: f32,
+    pub skill_required: u32,
+    pub tool_required: Option<String>,
+    pub respawn_after_empty_hours: f32,
+    pub depleted: bool,
+}
+
+impl ResourceNode {
+    pub fn new(id: u32, node_type: ResourceNodeType, pos: Vec2, max_res: f32) -> Self {
+        ResourceNode {
+            id, node_type, position: pos,
+            current_resource: max_res, max_resource: max_res,
+            regen_rate_per_hour: max_res * 0.05,
+            skill_required: 1,
+            tool_required: None,
+            respawn_after_empty_hours: 24.0,
+            depleted: false,
+        }
+    }
+
+    pub fn harvest(&mut self, amount: f32) -> f32 {
+        let harvested = amount.min(self.current_resource);
+        self.current_resource -= harvested;
+        if self.current_resource <= 0.0 {
+            self.current_resource = 0.0;
+            self.depleted = true;
+        }
+        harvested
+    }
+
+    pub fn regenerate(&mut self, hours: f32) {
+        if self.depleted { return; }
+        self.current_resource = (self.current_resource + self.regen_rate_per_hour * hours).min(self.max_resource);
+    }
+
+    pub fn fill_fraction(&self) -> f32 {
+        self.current_resource / self.max_resource.max(0.001)
+    }
+}
+
+// ============================================================
+// SKILL TREE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SkillNode {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub cost_skill_points: u32,
+    pub prerequisites: Vec<u32>,
+    pub unlocked: bool,
+    pub max_rank: u32,
+    pub current_rank: u32,
+    pub bonus_description: String,
+}
+
+impl SkillNode {
+    pub fn new(id: u32, name: &str, cost: u32, max_rank: u32) -> Self {
+        SkillNode {
+            id, name: name.to_string(), description: String::new(),
+            cost_skill_points: cost, prerequisites: Vec::new(),
+            unlocked: false, max_rank, current_rank: 0, bonus_description: String::new(),
+        }
+    }
+
+    pub fn can_unlock(&self, available_points: u32, unlocked_ids: &HashSet<u32>) -> bool {
+        !self.unlocked
+            && available_points >= self.cost_skill_points
+            && self.prerequisites.iter().all(|p| unlocked_ids.contains(p))
+    }
+
+    pub fn at_max_rank(&self) -> bool { self.current_rank >= self.max_rank }
+
+    pub fn rank_up(&mut self) -> bool {
+        if self.at_max_rank() { return false; }
+        self.current_rank += 1;
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillTree {
+    pub name: String,
+    pub nodes: HashMap<u32, SkillNode>,
+    pub available_points: u32,
+    pub spent_points: u32,
+}
+
+impl SkillTree {
+    pub fn new(name: &str) -> Self {
+        SkillTree { name: name.to_string(), nodes: HashMap::new(), available_points: 0, spent_points: 0 }
+    }
+
+    pub fn add_node(&mut self, node: SkillNode) {
+        self.nodes.insert(node.id, node);
+    }
+
+    pub fn unlocked_ids(&self) -> HashSet<u32> {
+        self.nodes.values().filter(|n| n.unlocked).map(|n| n.id).collect()
+    }
+
+    pub fn unlock_node(&mut self, id: u32) -> bool {
+        let unlocked = self.unlocked_ids();
+        if let Some(node) = self.nodes.get_mut(&id) {
+            if node.can_unlock(self.available_points, &unlocked) {
+                let cost = node.cost_skill_points;
+                node.unlocked = true;
+                node.current_rank = 1;
+                self.available_points -= cost;
+                self.spent_points += cost;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+// ============================================================
+// FINAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_resource {
+    use super::*;
+
+    #[test]
+    fn test_resource_node_harvest() {
+        let mut node = ResourceNode::new(1, ResourceNodeType::IronOre, Vec2::ZERO, 100.0);
+        let got = node.harvest(30.0);
+        assert!((got - 30.0).abs() < 0.001);
+        assert!((node.current_resource - 70.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_resource_node_depletion() {
+        let mut node = ResourceNode::new(1, ResourceNodeType::Coal, Vec2::ZERO, 50.0);
+        node.harvest(60.0);
+        assert!(node.depleted);
+        assert_eq!(node.current_resource, 0.0);
+    }
+
+    #[test]
+    fn test_skill_tree_unlock() {
+        let mut tree = SkillTree::new("Warrior");
+        tree.available_points = 10;
+        let node = SkillNode::new(1, "Shield Bash", 3, 3);
+        tree.add_node(node);
+        let result = tree.unlock_node(1);
+        assert!(result);
+        assert_eq!(tree.available_points, 7);
+        assert_eq!(tree.spent_points, 3);
+    }
+
+    #[test]
+    fn test_skill_tree_prerequisite_check() {
+        let mut tree = SkillTree::new("Mage");
+        tree.available_points = 10;
+        let mut node2 = SkillNode::new(2, "Fireball", 3, 5);
+        node2.prerequisites.push(1);
+        tree.add_node(node2);
+        let result = tree.unlock_node(2);
+        assert!(!result); // can't unlock without prereq 1
+    }
+}
+
+pub const MAP_EDITOR_FEATURE_LIST: &[&str] = &[
+    "dungeon_generator", "world_map", "factions", "settlements", "quests",
+    "encounters", "navmesh", "lighting", "tiles", "fog_of_war",
+    "resource_nodes", "skill_trees", "combat_system", "spell_system",
+    "inventory", "crafting", "pois", "puzzles", "traps", "weather",
+    "time_of_day", "economy", "loot_tables", "behavior_trees",
+    "chunk_streaming", "ai_pathing",
+];

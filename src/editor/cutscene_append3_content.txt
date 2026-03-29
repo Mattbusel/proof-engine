@@ -1,0 +1,923 @@
+
+// ============================================================
+// MULTI-CAMERA DIRECTOR SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DirectorCutType {
+    HardCut,
+    Dissolve,
+    FadeToBlack,
+    FadeFromBlack,
+    Wipe,
+    CrossFade,
+    Morph,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectorCut {
+    pub time: f32,
+    pub from_camera_id: u32,
+    pub to_camera_id: u32,
+    pub cut_type: DirectorCutType,
+    pub transition_duration: f32,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiCameraDirector {
+    pub cameras: Vec<u32>,
+    pub cuts: Vec<DirectorCut>,
+    pub active_camera_id: u32,
+    pub cut_rules: HashMap<String, f32>,
+}
+
+impl MultiCameraDirector {
+    pub fn new() -> Self {
+        MultiCameraDirector {
+            cameras: Vec::new(),
+            cuts: Vec::new(),
+            active_camera_id: 0,
+            cut_rules: HashMap::new(),
+        }
+    }
+
+    pub fn add_cut(&mut self, cut: DirectorCut) {
+        self.cuts.push(cut);
+        self.cuts.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+    }
+
+    pub fn active_at(&self, t: f32) -> u32 {
+        let mut active = self.active_camera_id;
+        for cut in &self.cuts {
+            if cut.time <= t {
+                active = cut.to_camera_id;
+            }
+        }
+        active
+    }
+
+    pub fn next_cut(&self, t: f32) -> Option<&DirectorCut> {
+        self.cuts.iter().find(|c| c.time > t)
+    }
+
+    pub fn cuts_in_range(&self, start: f32, end: f32) -> Vec<&DirectorCut> {
+        self.cuts.iter().filter(|c| c.time >= start && c.time < end).collect()
+    }
+}
+
+// ============================================================
+// KEYFRAME INTERPOLATION UTILITIES
+// ============================================================
+
+pub fn lerp_f32(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+pub fn smoothstep(a: f32, b: f32, t: f32) -> f32 {
+    let x = ((t - a) / (b - a)).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+pub fn smootherstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+pub fn ease_in_quad(t: f32) -> f32 { t * t }
+pub fn ease_out_quad(t: f32) -> f32 { t * (2.0 - t) }
+pub fn ease_in_out_quad(t: f32) -> f32 {
+    if t < 0.5 { 2.0 * t * t } else { -1.0 + (4.0 - 2.0 * t) * t }
+}
+pub fn ease_in_cubic(t: f32) -> f32 { t * t * t }
+pub fn ease_out_cubic(t: f32) -> f32 { let t = t - 1.0; t * t * t + 1.0 }
+pub fn ease_in_out_cubic(t: f32) -> f32 {
+    if t < 0.5 { 4.0 * t * t * t } else { (t - 1.0) * (2.0 * t - 2.0) * (2.0 * t - 2.0) + 1.0 }
+}
+pub fn ease_in_expo(t: f32) -> f32 {
+    if t == 0.0 { 0.0 } else { (2.0f32).powf(10.0 * t - 10.0) }
+}
+pub fn ease_out_expo(t: f32) -> f32 {
+    if t == 1.0 { 1.0 } else { 1.0 - (2.0f32).powf(-10.0 * t) }
+}
+pub fn ease_in_back(t: f32) -> f32 {
+    let c1 = 1.70158_f32;
+    let c3 = c1 + 1.0;
+    c3 * t * t * t - c1 * t * t
+}
+pub fn ease_out_back(t: f32) -> f32 {
+    let c1 = 1.70158_f32;
+    let c3 = c1 + 1.0;
+    1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+}
+pub fn ease_out_bounce(t: f32) -> f32 {
+    let n1 = 7.5625_f32;
+    let d1 = 2.75_f32;
+    let t = if t < 1.0 / d1 {
+        n1 * t * t
+    } else if t < 2.0 / d1 {
+        let t = t - 1.5 / d1;
+        n1 * t * t + 0.75
+    } else if t < 2.5 / d1 {
+        let t = t - 2.25 / d1;
+        n1 * t * t + 0.9375
+    } else {
+        let t = t - 2.625 / d1;
+        n1 * t * t + 0.984375
+    };
+    t
+}
+pub fn ease_in_elastic(t: f32) -> f32 {
+    if t == 0.0 || t == 1.0 { return t; }
+    let c4 = std::f32::consts::TAU / 3.0;
+    -(2.0f32.powf(10.0 * t - 10.0)) * ((10.0 * t - 10.75) * c4).sin()
+}
+
+// ============================================================
+// PERFORMANCE CAPTURE SESSION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct MocapMarker {
+    pub id: u32,
+    pub label: String,
+    pub position: Vec3,
+    pub occluded: bool,
+    pub residual: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MocapFrame {
+    pub frame_number: u32,
+    pub timestamp: f32,
+    pub markers: Vec<MocapMarker>,
+}
+
+impl MocapFrame {
+    pub fn visible_marker_count(&self) -> usize {
+        self.markers.iter().filter(|m| !m.occluded).count()
+    }
+
+    pub fn marker_by_label(&self, label: &str) -> Option<&MocapMarker> {
+        self.markers.iter().find(|m| m.label == label)
+    }
+
+    pub fn centroid(&self) -> Vec3 {
+        let visible: Vec<&MocapMarker> = self.markers.iter().filter(|m| !m.occluded).collect();
+        if visible.is_empty() { return Vec3::ZERO; }
+        let sum: Vec3 = visible.iter().map(|m| m.position).fold(Vec3::ZERO, |a, b| a + b);
+        sum / visible.len() as f32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MocapSession {
+    pub session_id: String,
+    pub actor_name: String,
+    pub capture_fps: f32,
+    pub frames: Vec<MocapFrame>,
+    pub marker_labels: Vec<String>,
+    pub calibration_residual: f32,
+}
+
+impl MocapSession {
+    pub fn new(session_id: &str, actor: &str, fps: f32) -> Self {
+        MocapSession {
+            session_id: session_id.to_string(),
+            actor_name: actor.to_string(),
+            capture_fps: fps,
+            frames: Vec::new(),
+            marker_labels: Vec::new(),
+            calibration_residual: 0.0,
+        }
+    }
+
+    pub fn duration(&self) -> f32 {
+        self.frames.last().map(|f| f.timestamp).unwrap_or(0.0)
+    }
+
+    pub fn frame_at(&self, t: f32) -> Option<&MocapFrame> {
+        let frame_num = (t * self.capture_fps) as u32;
+        self.frames.iter().find(|f| f.frame_number == frame_num)
+    }
+
+    pub fn avg_marker_visibility(&self) -> f32 {
+        if self.frames.is_empty() { return 0.0; }
+        let total: usize = self.frames.iter().map(|f| f.visible_marker_count()).sum();
+        let max_per_frame = self.marker_labels.len().max(1);
+        total as f32 / (self.frames.len() * max_per_frame) as f32
+    }
+}
+
+// ============================================================
+// SPLINE PATH SYSTEM FOR CAMERA DOLLY
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SplineControlPoint {
+    pub position: Vec3,
+    pub tangent_in: Vec3,
+    pub tangent_out: Vec3,
+    pub roll_deg: f32,
+    pub speed_multiplier: f32,
+}
+
+impl SplineControlPoint {
+    pub fn new(pos: Vec3) -> Self {
+        SplineControlPoint {
+            position: pos,
+            tangent_in: Vec3::ZERO,
+            tangent_out: Vec3::ZERO,
+            roll_deg: 0.0,
+            speed_multiplier: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraSplinePath {
+    pub control_points: Vec<SplineControlPoint>,
+    pub closed: bool,
+    pub tension: f32,
+}
+
+impl CameraSplinePath {
+    pub fn new() -> Self {
+        CameraSplinePath { control_points: Vec::new(), closed: false, tension: 0.5 }
+    }
+
+    pub fn add_point(&mut self, p: SplineControlPoint) {
+        self.control_points.push(p);
+        self.recompute_tangents();
+    }
+
+    fn recompute_tangents(&mut self) {
+        let n = self.control_points.len();
+        if n < 2 { return; }
+        for i in 0..n {
+            let prev = if i == 0 { if self.closed { n - 1 } else { 0 } } else { i - 1 };
+            let next = if i == n - 1 { if self.closed { 0 } else { n - 1 } } else { i + 1 };
+            let dp = self.control_points[next].position - self.control_points[prev].position;
+            self.control_points[i].tangent_out = dp * self.tension;
+            self.control_points[i].tangent_in = -dp * self.tension;
+        }
+    }
+
+    pub fn evaluate(&self, t: f32) -> Vec3 {
+        let n = self.control_points.len();
+        if n == 0 { return Vec3::ZERO; }
+        if n == 1 { return self.control_points[0].position; }
+        let total_segments = if self.closed { n } else { n - 1 };
+        let segment_t = (t * total_segments as f32).clamp(0.0, total_segments as f32 - 0.0001);
+        let seg = segment_t as usize;
+        let s = segment_t - seg as f32;
+        let i0 = seg;
+        let i1 = if self.closed { (seg + 1) % n } else { (seg + 1).min(n - 1) };
+        let p0 = self.control_points[i0].position;
+        let p1 = self.control_points[i1].position;
+        let m0 = self.control_points[i0].tangent_out;
+        let m1 = self.control_points[i1].tangent_in;
+        let s2 = s * s;
+        let s3 = s2 * s;
+        let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+        let h10 = s3 - 2.0 * s2 + s;
+        let h01 = -2.0 * s3 + 3.0 * s2;
+        let h11 = s3 - s2;
+        h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
+    }
+
+    pub fn arc_length_approximate(&self, samples: u32) -> f32 {
+        if samples < 2 { return 0.0; }
+        let mut total = 0.0;
+        let mut prev = self.evaluate(0.0);
+        for i in 1..samples {
+            let t = i as f32 / (samples - 1) as f32;
+            let curr = self.evaluate(t);
+            total += (curr - prev).length();
+            prev = curr;
+        }
+        total
+    }
+}
+
+// ============================================================
+// SCENE GRAPH OVERVIEW
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneNodeKind {
+    Root,
+    Group,
+    Camera,
+    Light,
+    Mesh,
+    SkinnedMesh,
+    ParticleSystem,
+    AudioSource,
+    VfxInstance,
+    Trigger,
+    Locator,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneGraphNode {
+    pub id: u32,
+    pub name: String,
+    pub kind: SceneNodeKind,
+    pub parent_id: Option<u32>,
+    pub children: Vec<u32>,
+    pub local_position: Vec3,
+    pub local_rotation: Quat,
+    pub local_scale: Vec3,
+    pub visible: bool,
+    pub static_flag: bool,
+    pub asset_ref: Option<String>,
+    pub tags: HashSet<String>,
+}
+
+impl SceneGraphNode {
+    pub fn new(id: u32, name: &str, kind: SceneNodeKind) -> Self {
+        SceneGraphNode {
+            id, name: name.to_string(), kind,
+            parent_id: None, children: Vec::new(),
+            local_position: Vec3::ZERO,
+            local_rotation: Quat::IDENTITY,
+            local_scale: Vec3::ONE,
+            visible: true, static_flag: false,
+            asset_ref: None, tags: HashSet::new(),
+        }
+    }
+
+    pub fn local_matrix(&self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(self.local_scale, self.local_rotation, self.local_position)
+    }
+
+    pub fn add_tag(&mut self, tag: &str) {
+        self.tags.insert(tag.to_string());
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.contains(tag)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneSceneGraph {
+    pub nodes: HashMap<u32, SceneGraphNode>,
+    pub root_id: u32,
+    pub next_id: u32,
+}
+
+impl CutsceneSceneGraph {
+    pub fn new() -> Self {
+        let mut g = CutsceneSceneGraph { nodes: HashMap::new(), root_id: 0, next_id: 1 };
+        g.nodes.insert(0, SceneGraphNode::new(0, "Root", SceneNodeKind::Root));
+        g
+    }
+
+    pub fn alloc_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    pub fn add_node(&mut self, mut node: SceneGraphNode, parent_id: u32) {
+        node.parent_id = Some(parent_id);
+        let node_id = node.id;
+        self.nodes.insert(node_id, node);
+        if let Some(parent) = self.nodes.get_mut(&parent_id) {
+            parent.children.push(node_id);
+        }
+    }
+
+    pub fn world_matrix(&self, id: u32) -> Mat4 {
+        let node = match self.nodes.get(&id) { Some(n) => n, None => return Mat4::IDENTITY };
+        let local = node.local_matrix();
+        match node.parent_id {
+            Some(pid) => self.world_matrix(pid) * local,
+            None => local,
+        }
+    }
+
+    pub fn find_by_tag(&self, tag: &str) -> Vec<u32> {
+        self.nodes.values().filter(|n| n.has_tag(tag)).map(|n| n.id).collect()
+    }
+
+    pub fn visible_nodes(&self) -> Vec<u32> {
+        self.nodes.values().filter(|n| n.visible).map(|n| n.id).collect()
+    }
+
+    pub fn node_depth(&self, id: u32) -> u32 {
+        let mut depth = 0;
+        let mut current_id = id;
+        while let Some(node) = self.nodes.get(&current_id) {
+            if let Some(pid) = node.parent_id {
+                depth += 1;
+                current_id = pid;
+            } else {
+                break;
+            }
+        }
+        depth
+    }
+}
+
+// ============================================================
+// RENDER QUALITY PRESETS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenderQualityPreset {
+    Preview,
+    Medium,
+    High,
+    Ultra,
+    CinematicMaster,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderQualitySettings {
+    pub preset: RenderQualityPreset,
+    pub resolution_scale: f32,
+    pub samples_per_pixel: u32,
+    pub max_ray_depth: u32,
+    pub shadow_map_size: u32,
+    pub ao_radius: f32,
+    pub ao_samples: u32,
+    pub reflection_quality: u32,
+    pub motion_blur_samples: u32,
+    pub dof_bokeh_quality: u32,
+    pub gi_enabled: bool,
+    pub gi_bounces: u32,
+}
+
+impl RenderQualitySettings {
+    pub fn preview() -> Self {
+        RenderQualitySettings {
+            preset: RenderQualityPreset::Preview,
+            resolution_scale: 0.5,
+            samples_per_pixel: 1,
+            max_ray_depth: 2,
+            shadow_map_size: 1024,
+            ao_radius: 0.5,
+            ao_samples: 8,
+            reflection_quality: 1,
+            motion_blur_samples: 4,
+            dof_bokeh_quality: 4,
+            gi_enabled: false,
+            gi_bounces: 1,
+        }
+    }
+
+    pub fn cinematic_master() -> Self {
+        RenderQualitySettings {
+            preset: RenderQualityPreset::CinematicMaster,
+            resolution_scale: 1.0,
+            samples_per_pixel: 64,
+            max_ray_depth: 16,
+            shadow_map_size: 8192,
+            ao_radius: 2.0,
+            ao_samples: 64,
+            reflection_quality: 4,
+            motion_blur_samples: 32,
+            dof_bokeh_quality: 32,
+            gi_enabled: true,
+            gi_bounces: 8,
+        }
+    }
+
+    pub fn estimated_render_time_factor(&self) -> f32 {
+        (self.samples_per_pixel as f32)
+            * (self.ao_samples as f32 / 8.0)
+            * (self.motion_blur_samples as f32 / 4.0)
+            * (self.resolution_scale * self.resolution_scale)
+            * (self.max_ray_depth as f32 / 2.0)
+    }
+}
+
+// ============================================================
+// ADDITIONAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_director {
+    use super::*;
+
+    #[test]
+    fn test_multi_camera_director_active_at() {
+        let mut dir = MultiCameraDirector::new();
+        dir.active_camera_id = 1;
+        dir.add_cut(DirectorCut {
+            time: 5.0, from_camera_id: 1, to_camera_id: 2,
+            cut_type: DirectorCutType::HardCut, transition_duration: 0.0,
+            notes: String::new(),
+        });
+        assert_eq!(dir.active_at(3.0), 1);
+        assert_eq!(dir.active_at(7.0), 2);
+    }
+
+    #[test]
+    fn test_spline_path_evaluate() {
+        let mut path = CameraSplinePath::new();
+        path.add_point(SplineControlPoint::new(Vec3::ZERO));
+        path.add_point(SplineControlPoint::new(Vec3::new(10.0, 0.0, 0.0)));
+        let mid = path.evaluate(0.5);
+        assert!(mid.x > 0.0 && mid.x < 10.0);
+    }
+
+    #[test]
+    fn test_mocap_session_visibility() {
+        let mut session = MocapSession::new("S001", "ActorA", 120.0);
+        session.marker_labels = vec!["Head".to_string(), "Hip".to_string()];
+        session.frames.push(MocapFrame {
+            frame_number: 0, timestamp: 0.0,
+            markers: vec![
+                MocapMarker { id: 0, label: "Head".to_string(), position: Vec3::new(0.0, 1.8, 0.0), occluded: false, residual: 0.1 },
+                MocapMarker { id: 1, label: "Hip".to_string(), position: Vec3::new(0.0, 1.0, 0.0), occluded: true, residual: 0.5 },
+            ],
+        });
+        assert_eq!(session.frames[0].visible_marker_count(), 1);
+    }
+
+    #[test]
+    fn test_scene_graph_world_matrix() {
+        let mut graph = CutsceneSceneGraph::new();
+        let mut child = SceneGraphNode::new(1, "Child", SceneNodeKind::Mesh);
+        child.local_position = Vec3::new(5.0, 0.0, 0.0);
+        graph.add_node(child, 0);
+        let world = graph.world_matrix(1);
+        let pos = world.col(3).truncate();
+        assert!((pos.x - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_render_quality_time_factor() {
+        let preview = RenderQualitySettings::preview();
+        let master = RenderQualitySettings::cinematic_master();
+        assert!(master.estimated_render_time_factor() > preview.estimated_render_time_factor() * 10.0);
+    }
+
+    #[test]
+    fn test_ease_functions() {
+        assert!((ease_in_quad(0.0)).abs() < 0.001);
+        assert!((ease_in_quad(1.0) - 1.0).abs() < 0.001);
+        assert!((ease_out_quad(0.5) - 0.75).abs() < 0.01);
+        assert!((ease_out_bounce(1.0) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_audio_mixer_default() {
+        let mixer = AudioMixer::default_setup();
+        assert_eq!(mixer.buses.len(), 5);
+        assert_eq!(mixer.sample_rate, 48000);
+    }
+
+    #[test]
+    fn test_cutscene_project_summary() {
+        let mut proj = CutsceneProjectFile::new(120.0, 24.0);
+        proj.add_camera(CinematicCamera::new(1, "MainCam"));
+        let summary = proj.summary();
+        assert!(summary.contains("120.00s"));
+        assert!(summary.contains("24fps"));
+    }
+
+    #[test]
+    fn test_lens_library_lookup() {
+        let lib = LensLibrary::default_library();
+        let lenses = lib.find_by_focal_length(35.0);
+        assert!(!lenses.is_empty());
+    }
+}
+
+// ============================================================
+// INTERPOLATION TABLE FOR KEYFRAME CURVES
+// ============================================================
+
+pub const EASE_TABLE_SIZE: usize = 512;
+
+pub struct EaseTable {
+    pub values: Vec<f32>,
+    pub ease_fn_name: String,
+}
+
+impl EaseTable {
+    pub fn build(name: &str, f: fn(f32) -> f32) -> Self {
+        let values = (0..=EASE_TABLE_SIZE)
+            .map(|i| f(i as f32 / EASE_TABLE_SIZE as f32))
+            .collect();
+        EaseTable { values, ease_fn_name: name.to_string() }
+    }
+
+    pub fn sample(&self, t: f32) -> f32 {
+        let idx = (t * EASE_TABLE_SIZE as f32).clamp(0.0, EASE_TABLE_SIZE as f32) as usize;
+        let idx = idx.min(EASE_TABLE_SIZE);
+        self.values[idx]
+    }
+}
+
+// ============================================================
+// ASSET PIPELINE INTEGRATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssetImportStatus {
+    Pending,
+    Importing,
+    Complete,
+    Failed,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneAssetRef {
+    pub asset_id: String,
+    pub asset_type: String,
+    pub source_path: String,
+    pub import_status: AssetImportStatus,
+    pub size_bytes: u64,
+    pub last_modified: u64,
+    pub dependencies: Vec<String>,
+}
+
+impl CutsceneAssetRef {
+    pub fn new(asset_id: &str, asset_type: &str, source_path: &str) -> Self {
+        CutsceneAssetRef {
+            asset_id: asset_id.to_string(),
+            asset_type: asset_type.to_string(),
+            source_path: source_path.to_string(),
+            import_status: AssetImportStatus::Pending,
+            size_bytes: 0,
+            last_modified: 0,
+            dependencies: Vec::new(),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.import_status == AssetImportStatus::Complete
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneAssetRegistry {
+    pub assets: HashMap<String, CutsceneAssetRef>,
+    pub failed_imports: Vec<String>,
+}
+
+impl CutsceneAssetRegistry {
+    pub fn new() -> Self {
+        CutsceneAssetRegistry { assets: HashMap::new(), failed_imports: Vec::new() }
+    }
+
+    pub fn register(&mut self, asset: CutsceneAssetRef) {
+        self.assets.insert(asset.asset_id.clone(), asset);
+    }
+
+    pub fn mark_complete(&mut self, id: &str) {
+        if let Some(a) = self.assets.get_mut(id) {
+            a.import_status = AssetImportStatus::Complete;
+        }
+    }
+
+    pub fn mark_failed(&mut self, id: &str) {
+        if let Some(a) = self.assets.get_mut(id) {
+            a.import_status = AssetImportStatus::Failed;
+        }
+        self.failed_imports.push(id.to_string());
+    }
+
+    pub fn ready_asset_ids(&self) -> Vec<&str> {
+        self.assets.values()
+            .filter(|a| a.is_ready())
+            .map(|a| a.asset_id.as_str())
+            .collect()
+    }
+
+    pub fn total_size_bytes(&self) -> u64 {
+        self.assets.values().map(|a| a.size_bytes).sum()
+    }
+}
+
+// ============================================================
+// PLAYBACK ENGINE STATE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackState {
+    Stopped,
+    Playing,
+    Paused,
+    Scrubbing,
+    Rendering,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaybackEngine {
+    pub state: PlaybackState,
+    pub current_time: f32,
+    pub duration: f32,
+    pub playback_rate: f32,
+    pub loop_enabled: bool,
+    pub loop_start: f32,
+    pub loop_end: f32,
+    pub frame_rate: f32,
+    pub audio_sync: bool,
+}
+
+impl PlaybackEngine {
+    pub fn new(duration: f32, fps: f32) -> Self {
+        PlaybackEngine {
+            state: PlaybackState::Stopped,
+            current_time: 0.0,
+            duration,
+            playback_rate: 1.0,
+            loop_enabled: false,
+            loop_start: 0.0,
+            loop_end: duration,
+            frame_rate: fps,
+            audio_sync: true,
+        }
+    }
+
+    pub fn play(&mut self) {
+        self.state = PlaybackState::Playing;
+    }
+
+    pub fn pause(&mut self) {
+        if self.state == PlaybackState::Playing {
+            self.state = PlaybackState::Paused;
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.state = PlaybackState::Stopped;
+        self.current_time = 0.0;
+    }
+
+    pub fn seek(&mut self, t: f32) {
+        self.current_time = t.clamp(0.0, self.duration);
+    }
+
+    pub fn advance(&mut self, dt: f32) {
+        if self.state != PlaybackState::Playing { return; }
+        self.current_time += dt * self.playback_rate;
+        if self.loop_enabled && self.current_time >= self.loop_end {
+            self.current_time = self.loop_start;
+        } else if self.current_time >= self.duration {
+            self.current_time = self.duration;
+            self.state = PlaybackState::Stopped;
+        }
+    }
+
+    pub fn current_frame(&self) -> u32 {
+        (self.current_time * self.frame_rate) as u32
+    }
+
+    pub fn progress(&self) -> f32 {
+        if self.duration <= 0.0 { return 0.0; }
+        self.current_time / self.duration
+    }
+
+    pub fn time_remaining(&self) -> f32 {
+        (self.duration - self.current_time).max(0.0)
+    }
+}
+
+// ============================================================
+// FINAL EXPORT PIPELINE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VideoCodec {
+    H264,
+    H265,
+    ProRes422,
+    ProRes4444,
+    DNxHD,
+    DNxHR,
+    AV1,
+    VP9,
+    Uncompressed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioCodec {
+    AAC,
+    PCM24,
+    PCM32F,
+    OPUS,
+    FLAC,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportPipelineConfig {
+    pub output_path: String,
+    pub video_codec: VideoCodec,
+    pub audio_codec: AudioCodec,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: f32,
+    pub video_bitrate_kbps: u32,
+    pub audio_bitrate_kbps: u32,
+    pub audio_sample_rate: u32,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub include_alpha: bool,
+    pub hdr_enabled: bool,
+    pub color_space: String,
+    pub lut_path: Option<String>,
+}
+
+impl ExportPipelineConfig {
+    pub fn web_preview() -> Self {
+        ExportPipelineConfig {
+            output_path: "preview.mp4".to_string(),
+            video_codec: VideoCodec::H264,
+            audio_codec: AudioCodec::AAC,
+            width: 1280, height: 720,
+            frame_rate: 30.0,
+            video_bitrate_kbps: 4000,
+            audio_bitrate_kbps: 192,
+            audio_sample_rate: 48000,
+            start_frame: 0, end_frame: u32::MAX,
+            include_alpha: false,
+            hdr_enabled: false,
+            color_space: "sRGB".to_string(),
+            lut_path: None,
+        }
+    }
+
+    pub fn broadcast_master() -> Self {
+        ExportPipelineConfig {
+            output_path: "master.mov".to_string(),
+            video_codec: VideoCodec::ProRes4444,
+            audio_codec: AudioCodec::PCM24,
+            width: 3840, height: 2160,
+            frame_rate: 24.0,
+            video_bitrate_kbps: 800000,
+            audio_bitrate_kbps: 2304,
+            audio_sample_rate: 48000,
+            start_frame: 0, end_frame: u32::MAX,
+            include_alpha: true,
+            hdr_enabled: true,
+            color_space: "ACEScg".to_string(),
+            lut_path: Some("aces_rrt.cube".to_string()),
+        }
+    }
+
+    pub fn total_frames(&self, fps: f32) -> u32 {
+        self.end_frame.saturating_sub(self.start_frame)
+    }
+
+    pub fn estimated_file_size_mb(&self, duration_s: f32) -> f32 {
+        (self.video_bitrate_kbps as f32 + self.audio_bitrate_kbps as f32)
+            * duration_s / 8.0 / 1024.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportJob {
+    pub job_id: String,
+    pub config: ExportPipelineConfig,
+    pub progress: f32,
+    pub frames_rendered: u32,
+    pub total_frames: u32,
+    pub elapsed_seconds: f32,
+    pub errors: Vec<String>,
+    pub complete: bool,
+}
+
+impl ExportJob {
+    pub fn new(job_id: &str, config: ExportPipelineConfig, total_frames: u32) -> Self {
+        ExportJob {
+            job_id: job_id.to_string(),
+            config,
+            progress: 0.0,
+            frames_rendered: 0,
+            total_frames,
+            elapsed_seconds: 0.0,
+            errors: Vec::new(),
+            complete: false,
+        }
+    }
+
+    pub fn advance_frame(&mut self) {
+        self.frames_rendered += 1;
+        self.progress = self.frames_rendered as f32 / self.total_frames.max(1) as f32;
+        if self.frames_rendered >= self.total_frames {
+            self.complete = true;
+        }
+    }
+
+    pub fn fps_current(&self) -> f32 {
+        if self.elapsed_seconds <= 0.0 { return 0.0; }
+        self.frames_rendered as f32 / self.elapsed_seconds
+    }
+
+    pub fn eta_seconds(&self) -> f32 {
+        let fps = self.fps_current();
+        if fps <= 0.0 { return f32::INFINITY; }
+        let remaining = self.total_frames - self.frames_rendered;
+        remaining as f32 / fps
+    }
+}
+
+pub fn cutscene_module_version() -> &'static str { "3.1.0" }
+pub fn cutscene_feature_flags() -> &'static [&'static str] {
+    &["camera_anim", "subtitles", "narrative", "blend_tree", "audio_mix",
+      "mocap", "spline_dolly", "scene_graph", "export_pipeline", "retargeting"]
+}

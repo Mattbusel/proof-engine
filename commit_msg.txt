@@ -1,0 +1,43 @@
+feat(apotheosis): eight-kit pipeline, full SDF body, 23 post-processing techniques
+
+Eight-kit rendering pipeline:
+- BoneKit: 26-bone skeleton with per-bone weight, aspect ratio, axis range
+- ModelKit: piecewise-cosine radius_at() profiles with joint continuity enforcement
+- MaterialKit: six material tags (Skin/Hair/Jacket/Boot/Metal/Eye) + Schlick Fresnel
+- LightingKit: key + 3 fills + rim + hemisphere ambient + ACES filmic tonemap
+- ClothingKit: radial garment push, seam darkening, contact shadow at skin/fabric edge
+- HairKit: 500-strand curtain-cut, five scalp zones, Kajiya-Kay anisotropic specular
+- PhysicsKit: per-particle inertial lag cache with per-material smoothing weights
+- RenderKit: DoF jitter, n_copies scatter, alpha/emission scaling per copy
+
+SDF body geometry (replaces bone-capsule system):
+- sdf_torso: superellipsoid cross-section with plerp ax/az profiles along Y
+- sdf_arm_r, sdf_forearm_r, sdf_leg_r: tapered elliptic capsules per limb segment
+- sdf_body: consolidated smooth union of all limbs
+- smin (Inigo Quilez polynomial): smooth minimum joint blending at all joints
+- Analytical normals from SDF gradient — no finite differences, no faceting
+- SDF AO: IQ 5-step geometric-decay normal-march, exact to SDF precision
+- SDF thickness probe: inward -n march for subsurface scattering from SDF thickness
+- Importance sampling: particles placed on surface shell, ~100% acceptance rate
+
+Post-processing — 23 techniques across CPU/compute/fragment stages:
+  2. SDF analytical reflection trace     3. Atmospheric depth scattering
+  4. TAA Halton sub-pixel jitter         5. Spectral bloom dispersion
+  6. Chromatic depth separation          7. SSR via SDF surface normal
+  8. Volumetric light shafts/god rays    9. Cross-material GI color bleed
+ 10. Luminance-based film grain         11. Vignette + edge desaturation
+ 12. ACES filmic tonemapping            13. Eye adaptation / auto-exposure
+ 14. Edge sharpen                       15. Heat haze emission ripple
+ 16. Kajiya-Kay anisotropic specular    17. SDF micro-displacement pore shadow
+ 18. DoF bokeh ring                     19. Iridescent thin-film (leather)
+ 20. SDF-curvature Fresnel rim          21. Thickness-modulated SSS
+ 22. SDF-analytical AO                  23. Eye spectral refraction (IOR)
+
+Full body SDF with face topology: sdf_face covers eyes (iris/sclera/cornea),
+nose bridge, lips, and stubble zone with separate material classification.
+Clothing layers rendered as SDF shell offset from body surface.
+
+Ceiling audit: lifted validate() clamps — bloom ceiling 20.0, render_scale ceiling 8.0.
+
+README: added Kit System table, SDF Architecture section, Post-Processing Pipeline table.
+apotheosis.rs: full pipeline summary header; comment blocks at top of all 8 kit sections.

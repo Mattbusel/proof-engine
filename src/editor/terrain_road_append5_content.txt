@@ -1,0 +1,613 @@
+
+// ============================================================
+// ROAD ASSET CONDITION TRACKING
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssetConditionGrade {
+    VeryGood, Good, Fair, Poor, VeryPoor, Failed,
+}
+
+impl AssetConditionGrade {
+    pub fn from_score(score: f32) -> Self {
+        if score >= 85.0 { AssetConditionGrade::VeryGood }
+        else if score >= 70.0 { AssetConditionGrade::Good }
+        else if score >= 55.0 { AssetConditionGrade::Fair }
+        else if score >= 40.0 { AssetConditionGrade::Poor }
+        else if score >= 20.0 { AssetConditionGrade::VeryPoor }
+        else { AssetConditionGrade::Failed }
+    }
+
+    pub fn score_midpoint(&self) -> f32 {
+        match self {
+            AssetConditionGrade::VeryGood => 92.5,
+            AssetConditionGrade::Good => 77.5,
+            AssetConditionGrade::Fair => 62.5,
+            AssetConditionGrade::Poor => 47.5,
+            AssetConditionGrade::VeryPoor => 30.0,
+            AssetConditionGrade::Failed => 10.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InfrastructureAsset {
+    pub asset_id: String,
+    pub asset_type: String,
+    pub location_chainage: f32,
+    pub road_id: u32,
+    pub condition_score: f32,
+    pub installation_year: u32,
+    pub expected_life_years: u32,
+    pub replacement_cost: f64,
+    pub maintenance_cost_annual: f64,
+    pub last_inspection_year: u32,
+}
+
+impl InfrastructureAsset {
+    pub fn new(asset_id: &str, asset_type: &str, road_id: u32, location: f32) -> Self {
+        InfrastructureAsset {
+            asset_id: asset_id.to_string(),
+            asset_type: asset_type.to_string(),
+            location_chainage: location, road_id,
+            condition_score: 100.0,
+            installation_year: 2000,
+            expected_life_years: 20,
+            replacement_cost: 0.0,
+            maintenance_cost_annual: 0.0,
+            last_inspection_year: 2000,
+        }
+    }
+
+    pub fn age(&self, current_year: u32) -> u32 {
+        current_year.saturating_sub(self.installation_year)
+    }
+
+    pub fn remaining_life(&self, current_year: u32) -> i32 {
+        let age = self.age(current_year) as i32;
+        self.expected_life_years as i32 - age
+    }
+
+    pub fn condition_grade(&self) -> AssetConditionGrade {
+        AssetConditionGrade::from_score(self.condition_score)
+    }
+
+    pub fn lifecycle_cost(&self) -> f64 {
+        let periods = (self.expected_life_years as f64 / 20.0).ceil();
+        self.replacement_cost * periods + self.maintenance_cost_annual * self.expected_life_years as f64
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AssetManagementPlan {
+    pub plan_id: String,
+    pub year: u32,
+    pub assets: Vec<InfrastructureAsset>,
+    pub budget: f64,
+    pub priority_threshold_score: f32,
+}
+
+impl AssetManagementPlan {
+    pub fn new(plan_id: &str, year: u32, budget: f64) -> Self {
+        AssetManagementPlan {
+            plan_id: plan_id.to_string(), year, assets: Vec::new(), budget, priority_threshold_score: 60.0,
+        }
+    }
+
+    pub fn add_asset(&mut self, asset: InfrastructureAsset) {
+        self.assets.push(asset);
+    }
+
+    pub fn priority_assets(&self) -> Vec<&InfrastructureAsset> {
+        self.assets.iter()
+            .filter(|a| a.condition_score < self.priority_threshold_score)
+            .collect()
+    }
+
+    pub fn total_replacement_cost(&self) -> f64 {
+        self.assets.iter().map(|a| a.replacement_cost).sum()
+    }
+
+    pub fn funded_assets(&self) -> Vec<&InfrastructureAsset> {
+        let mut sorted: Vec<&InfrastructureAsset> = self.priority_assets();
+        sorted.sort_by(|a, b| a.condition_score.partial_cmp(&b.condition_score).unwrap());
+        let mut budget_remaining = self.budget;
+        let mut funded = Vec::new();
+        for asset in sorted {
+            if asset.replacement_cost <= budget_remaining {
+                budget_remaining -= asset.replacement_cost;
+                funded.push(asset);
+            }
+        }
+        funded
+    }
+}
+
+// ============================================================
+// SNOW REMOVAL PLANNING
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SnowRemovalPriority {
+    P1_Emergency, P2_Primary, P3_Secondary, P4_Residential, P5_Low,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnowRoute {
+    pub route_id: u32,
+    pub priority: SnowRemovalPriority,
+    pub road_segments: Vec<u32>,
+    pub total_km: f32,
+    pub truck_id: Option<u32>,
+    pub salt_rate_kg_km: f32,
+    pub plow_passes_required: u32,
+    pub estimated_cycle_time_hr: f32,
+}
+
+impl SnowRoute {
+    pub fn new(route_id: u32, priority: SnowRemovalPriority) -> Self {
+        let salt_rate = match priority {
+            SnowRemovalPriority::P1_Emergency => 30.0,
+            SnowRemovalPriority::P2_Primary => 25.0,
+            SnowRemovalPriority::P3_Secondary => 20.0,
+            _ => 15.0,
+        };
+        SnowRoute {
+            route_id, priority, road_segments: Vec::new(),
+            total_km: 0.0, truck_id: None, salt_rate_kg_km: salt_rate,
+            plow_passes_required: 1, estimated_cycle_time_hr: 4.0,
+        }
+    }
+
+    pub fn total_salt_kg(&self) -> f32 {
+        self.total_km * self.salt_rate_kg_km * self.plow_passes_required as f32
+    }
+
+    pub fn add_segment(&mut self, segment_id: u32, length_km: f32) {
+        self.road_segments.push(segment_id);
+        self.total_km += length_km;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SnowControlPlan {
+    pub routes: Vec<SnowRoute>,
+    pub salt_stockpile_tonnes: f32,
+    pub truck_count: u32,
+    pub depot_locations: Vec<Vec2>,
+}
+
+impl SnowControlPlan {
+    pub fn new(truck_count: u32) -> Self {
+        SnowControlPlan {
+            routes: Vec::new(),
+            salt_stockpile_tonnes: 0.0,
+            truck_count,
+            depot_locations: Vec::new(),
+        }
+    }
+
+    pub fn total_salt_required_kg(&self) -> f32 {
+        self.routes.iter().map(|r| r.total_salt_kg()).sum()
+    }
+
+    pub fn has_sufficient_salt(&self) -> bool {
+        self.total_salt_required_kg() / 1000.0 <= self.salt_stockpile_tonnes
+    }
+
+    pub fn routes_by_priority(&self, priority: &SnowRemovalPriority) -> Vec<&SnowRoute> {
+        self.routes.iter().filter(|r| &r.priority == priority).collect()
+    }
+}
+
+// ============================================================
+// UTILITY CORRIDOR MANAGEMENT
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UtilityType {
+    PowerLine, WaterMain, SewerMain, GasMain, TelecomCable,
+    FiberOptic, StormDrain, HotWaterPipe, TrafficControl, Irrigation,
+}
+
+#[derive(Debug, Clone)]
+pub struct UtilityRecord {
+    pub utility_id: String,
+    pub utility_type: UtilityType,
+    pub owner: String,
+    pub horizontal_offset_m: f32,
+    pub depth_m: f32,
+    pub diameter_mm: f32,
+    pub material: String,
+    pub installation_year: u32,
+    pub start_chainage: f32,
+    pub end_chainage: f32,
+    pub active: bool,
+}
+
+impl UtilityRecord {
+    pub fn new(utility_id: &str, utility_type: UtilityType, owner: &str) -> Self {
+        UtilityRecord {
+            utility_id: utility_id.to_string(), utility_type, owner: owner.to_string(),
+            horizontal_offset_m: 0.0, depth_m: 1.0,
+            diameter_mm: 200.0, material: "PVC".to_string(),
+            installation_year: 2000,
+            start_chainage: 0.0, end_chainage: 100.0,
+            active: true,
+        }
+    }
+
+    pub fn length_m(&self) -> f32 {
+        (self.end_chainage - self.start_chainage).abs()
+    }
+
+    pub fn conflicts_with(&self, other: &UtilityRecord) -> bool {
+        let horizontal_sep = (self.horizontal_offset_m - other.horizontal_offset_m).abs();
+        let vertical_sep = (self.depth_m - other.depth_m).abs();
+        horizontal_sep < 0.5 && vertical_sep < 0.3
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UtilityCorridorManager {
+    pub road_id: u32,
+    pub utilities: Vec<UtilityRecord>,
+}
+
+impl UtilityCorridorManager {
+    pub fn new(road_id: u32) -> Self {
+        UtilityCorridorManager { road_id, utilities: Vec::new() }
+    }
+
+    pub fn add_utility(&mut self, utility: UtilityRecord) {
+        self.utilities.push(utility);
+    }
+
+    pub fn find_conflicts(&self) -> Vec<(usize, usize)> {
+        let mut conflicts = Vec::new();
+        for i in 0..self.utilities.len() {
+            for j in (i + 1)..self.utilities.len() {
+                if self.utilities[i].conflicts_with(&self.utilities[j]) {
+                    conflicts.push((i, j));
+                }
+            }
+        }
+        conflicts
+    }
+
+    pub fn utilities_of_type(&self, ut: &UtilityType) -> Vec<&UtilityRecord> {
+        self.utilities.iter().filter(|u| &u.utility_type == ut).collect()
+    }
+}
+
+// ============================================================
+// ROAD SAFETY RATING SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SafetyRatingFactor {
+    pub factor_name: String,
+    pub score: f32,
+    pub max_score: f32,
+    pub weight: f32,
+}
+
+impl SafetyRatingFactor {
+    pub fn weighted_score(&self) -> f32 {
+        (self.score / self.max_score.max(0.001)) * self.weight
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadSafetyRating {
+    pub section_id: u32,
+    pub factors: Vec<SafetyRatingFactor>,
+    pub star_rating: u32,
+    pub total_score: f32,
+}
+
+impl RoadSafetyRating {
+    pub fn new(section_id: u32) -> Self {
+        RoadSafetyRating { section_id, factors: Vec::new(), star_rating: 0, total_score: 0.0 }
+    }
+
+    pub fn add_factor(&mut self, factor: SafetyRatingFactor) {
+        self.factors.push(factor);
+    }
+
+    pub fn compute_rating(&mut self) {
+        let total_weight: f32 = self.factors.iter().map(|f| f.weight).sum();
+        let weighted_sum: f32 = self.factors.iter().map(|f| f.weighted_score()).sum();
+        self.total_score = if total_weight > 0.0 { weighted_sum / total_weight * 100.0 } else { 0.0 };
+        self.star_rating = if self.total_score >= 80.0 { 5 }
+            else if self.total_score >= 65.0 { 4 }
+            else if self.total_score >= 50.0 { 3 }
+            else if self.total_score >= 35.0 { 2 }
+            else { 1 };
+    }
+}
+
+// ============================================================
+// LEVEL OF SERVICE ANALYSIS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoS {
+    A, B, C, D, E, F,
+}
+
+impl LoS {
+    pub fn from_density(density_veh_km_lane: f32) -> Self {
+        if density_veh_km_lane <= 7.0 { LoS::A }
+        else if density_veh_km_lane <= 11.0 { LoS::B }
+        else if density_veh_km_lane <= 16.0 { LoS::C }
+        else if density_veh_km_lane <= 22.0 { LoS::D }
+        else if density_veh_km_lane <= 28.0 { LoS::E }
+        else { LoS::F }
+    }
+
+    pub fn from_vc_ratio(vc: f32) -> Self {
+        if vc <= 0.35 { LoS::A }
+        else if vc <= 0.54 { LoS::B }
+        else if vc <= 0.77 { LoS::C }
+        else if vc <= 0.93 { LoS::D }
+        else if vc <= 1.0 { LoS::E }
+        else { LoS::F }
+    }
+
+    pub fn acceptable(&self) -> bool {
+        matches!(self, LoS::A | LoS::B | LoS::C)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FreewaySegmentAnalysis {
+    pub segment_id: u32,
+    pub length_km: f32,
+    pub lane_count: u32,
+    pub free_flow_speed_kph: f32,
+    pub peak_hour_volume: u32,
+    pub peak_hour_factor: f32,
+    pub truck_pct: f32,
+    pub terrain_type: String,
+}
+
+impl FreewaySegmentAnalysis {
+    pub fn new(segment_id: u32, lanes: u32, ffs: f32, volume: u32) -> Self {
+        FreewaySegmentAnalysis {
+            segment_id, length_km: 1.0, lane_count: lanes,
+            free_flow_speed_kph: ffs, peak_hour_volume: volume,
+            peak_hour_factor: 0.92, truck_pct: 10.0,
+            terrain_type: "Level".to_string(),
+        }
+    }
+
+    pub fn et_factor(&self) -> f32 {
+        match self.terrain_type.as_str() {
+            "Level" => 1.5,
+            "Rolling" => 2.5,
+            "Mountainous" => 4.5,
+            _ => 2.0,
+        }
+    }
+
+    pub fn pce_flow_rate(&self) -> f32 {
+        let et = self.et_factor();
+        let ft = 1.0 / (1.0 + self.truck_pct / 100.0 * (et - 1.0));
+        let demand = self.peak_hour_volume as f32 / self.peak_hour_factor;
+        demand * (1.0 / ft)
+    }
+
+    pub fn flow_per_lane(&self) -> f32 {
+        self.pce_flow_rate() / self.lane_count.max(1) as f32
+    }
+
+    pub fn speed_flow_model(&self) -> f32 {
+        let bp = 1400.0;
+        let cap = 2200.0;
+        let q = self.flow_per_lane();
+        if q <= bp {
+            self.free_flow_speed_kph
+        } else {
+            let t1 = (q - bp) / (cap - bp);
+            self.free_flow_speed_kph - (self.free_flow_speed_kph - 53.0) * t1
+        }
+    }
+
+    pub fn density_veh_km_lane(&self) -> f32 {
+        let speed = self.speed_flow_model();
+        if speed <= 0.0 { return f32::INFINITY; }
+        self.flow_per_lane() / speed
+    }
+
+    pub fn level_of_service(&self) -> LoS {
+        LoS::from_density(self.density_veh_km_lane())
+    }
+}
+
+// ============================================================
+// TRAFFIC IMPACT ASSESSMENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TripGeneration {
+    pub land_use_code: String,
+    pub land_use_area: f32,
+    pub rate_am_peak_in: f32,
+    pub rate_am_peak_out: f32,
+    pub rate_pm_peak_in: f32,
+    pub rate_pm_peak_out: f32,
+    pub rate_daily: f32,
+}
+
+impl TripGeneration {
+    pub fn am_peak_trips(&self) -> (f32, f32) {
+        (self.land_use_area * self.rate_am_peak_in, self.land_use_area * self.rate_am_peak_out)
+    }
+
+    pub fn pm_peak_trips(&self) -> (f32, f32) {
+        (self.land_use_area * self.rate_pm_peak_in, self.land_use_area * self.rate_pm_peak_out)
+    }
+
+    pub fn daily_trips(&self) -> f32 {
+        self.land_use_area * self.rate_daily
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TiaIntersection {
+    pub intersection_id: u32,
+    pub name: String,
+    pub existing_vc: f32,
+    pub background_growth_rate: f32,
+    pub project_added_volume: u32,
+    pub capacity: u32,
+}
+
+impl TiaIntersection {
+    pub fn with_project_vc(&self) -> f32 {
+        let existing_vol = self.existing_vc * self.capacity as f32;
+        let background = existing_vol * self.background_growth_rate;
+        (existing_vol + background + self.project_added_volume as f32) / self.capacity as f32
+    }
+
+    pub fn los_without_project(&self) -> LoS {
+        LoS::from_vc_ratio(self.existing_vc)
+    }
+
+    pub fn los_with_project(&self) -> LoS {
+        LoS::from_vc_ratio(self.with_project_vc())
+    }
+
+    pub fn significant_impact(&self) -> bool {
+        let with_vc = self.with_project_vc();
+        with_vc > self.existing_vc + 0.05 && with_vc > 0.85
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrafficImpactAssessment {
+    pub project_name: String,
+    pub trip_gen: Vec<TripGeneration>,
+    pub intersections: Vec<TiaIntersection>,
+    pub mitigation_required: bool,
+    pub mitigation_measures: Vec<String>,
+}
+
+impl TrafficImpactAssessment {
+    pub fn new(project_name: &str) -> Self {
+        TrafficImpactAssessment {
+            project_name: project_name.to_string(),
+            trip_gen: Vec::new(),
+            intersections: Vec::new(),
+            mitigation_required: false,
+            mitigation_measures: Vec::new(),
+        }
+    }
+
+    pub fn total_pm_peak_trips(&self) -> f32 {
+        self.trip_gen.iter().map(|tg| { let (i, o) = tg.pm_peak_trips(); i + o }).sum()
+    }
+
+    pub fn impacted_intersections(&self) -> Vec<&TiaIntersection> {
+        self.intersections.iter().filter(|i| i.significant_impact()).collect()
+    }
+
+    pub fn assess(&mut self) {
+        self.mitigation_required = !self.impacted_intersections().is_empty();
+        if self.mitigation_required {
+            self.mitigation_measures.push("Signal timing optimization".to_string());
+            self.mitigation_measures.push("Turn lane addition".to_string());
+        }
+    }
+}
+
+// ============================================================
+// MORE TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_terrain_road_extra {
+    use super::*;
+
+    #[test]
+    fn test_asset_condition_grade() {
+        assert!(matches!(AssetConditionGrade::from_score(90.0), AssetConditionGrade::VeryGood));
+        assert!(matches!(AssetConditionGrade::from_score(45.0), AssetConditionGrade::Poor));
+        assert!(matches!(AssetConditionGrade::from_score(10.0), AssetConditionGrade::Failed));
+    }
+
+    #[test]
+    fn test_asset_management_funded() {
+        let mut plan = AssetManagementPlan::new("AMP2024", 2024, 100_000.0);
+        let mut asset = InfrastructureAsset::new("SWD-001", "Culvert", 1, 500.0);
+        asset.condition_score = 30.0;
+        asset.replacement_cost = 50_000.0;
+        plan.add_asset(asset);
+        let funded = plan.funded_assets();
+        assert_eq!(funded.len(), 1);
+    }
+
+    #[test]
+    fn test_snow_route_salt() {
+        let mut route = SnowRoute::new(1, SnowRemovalPriority::P1_Emergency);
+        route.add_segment(1, 10.0);
+        let salt = route.total_salt_kg();
+        assert!(salt > 0.0);
+    }
+
+    #[test]
+    fn test_utility_conflict_detection() {
+        let mut mgr = UtilityCorridorManager::new(1);
+        let mut u1 = UtilityRecord::new("PWR-001", UtilityType::PowerLine, "ElecCo");
+        u1.horizontal_offset_m = 2.0;
+        u1.depth_m = 0.8;
+        let mut u2 = UtilityRecord::new("WAT-001", UtilityType::WaterMain, "WaterCo");
+        u2.horizontal_offset_m = 2.2;
+        u2.depth_m = 0.9;
+        mgr.add_utility(u1);
+        mgr.add_utility(u2);
+        let conflicts = mgr.find_conflicts();
+        assert_eq!(conflicts.len(), 1);
+    }
+
+    #[test]
+    fn test_los_from_vc() {
+        assert!(LoS::from_vc_ratio(0.3).acceptable());
+        assert!(!LoS::from_vc_ratio(1.1).acceptable());
+    }
+
+    #[test]
+    fn test_freeway_segment_los() {
+        let seg = FreewaySegmentAnalysis::new(1, 3, 110.0, 3000);
+        let los = seg.level_of_service();
+        assert!(matches!(los, LoS::A | LoS::B | LoS::C));
+    }
+
+    #[test]
+    fn test_tia_significant_impact() {
+        let mut ti = TiaIntersection {
+            intersection_id: 1, name: "Main/Oak".to_string(),
+            existing_vc: 0.88, background_growth_rate: 0.02,
+            project_added_volume: 200, capacity: 1000,
+        };
+        assert!(ti.significant_impact());
+    }
+
+    #[test]
+    fn test_safety_rating() {
+        let mut rating = RoadSafetyRating::new(1);
+        rating.add_factor(SafetyRatingFactor { factor_name: "Alignment".to_string(), score: 80.0, max_score: 100.0, weight: 1.0 });
+        rating.add_factor(SafetyRatingFactor { factor_name: "Markings".to_string(), score: 70.0, max_score: 100.0, weight: 0.5 });
+        rating.compute_rating();
+        assert!(rating.star_rating >= 3);
+    }
+}
+
+pub const ROAD_ASSET_LIFE_CULVERT: u32 = 50;
+pub const ROAD_ASSET_LIFE_SIGN: u32 = 15;
+pub const ROAD_ASSET_LIFE_GUARDRAIL: u32 = 20;
+pub const ROAD_ASSET_LIFE_PAVEMENT: u32 = 20;
+pub const ROAD_ASSET_LIFE_BRIDGE: u32 = 100;
+pub const ROAD_ASSET_LIFE_SIGNAL: u32 = 20;
+pub const ROAD_ASSET_LIFE_LIGHTING: u32 = 25;

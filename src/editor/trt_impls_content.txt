@@ -1,0 +1,240 @@
+
+impl TerrainHeightMap {
+    pub fn new(width: usize, height: usize, cell_size: f32) -> Self {
+        let n = width * height;
+        Self {
+            width, height, cell_size,
+            heights: vec![0.0; n],
+            normals: vec![Vec3::Y; n],
+            splat_weights: vec![[1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]; n],
+        }
+    }
+    pub fn set_height(&mut self, x: usize, z: usize, h: f32) {
+        if x < self.width && z < self.height { self.heights[z * self.width + x] = h; }
+    }
+    pub fn get_height(&self, x: usize, z: usize) -> f32 {
+        if x < self.width && z < self.height { self.heights[z * self.width + x] } else { 0.0 }
+    }
+    pub fn sample_bilinear(&self, world_x: f32, world_z: f32) -> f32 {
+        let cx = (world_x / self.cell_size).max(0.0);
+        let cz = (world_z / self.cell_size).max(0.0);
+        let ix = (cx.floor() as usize).min(self.width.saturating_sub(1));
+        let iz = (cz.floor() as usize).min(self.height.saturating_sub(1));
+        let fx = cx - cx.floor();
+        let fz = cz - cz.floor();
+        let h00 = self.get_height(ix, iz);
+        let h10 = self.get_height((ix+1).min(self.width-1), iz);
+        let h01 = self.get_height(ix, (iz+1).min(self.height-1));
+        let h11 = self.get_height((ix+1).min(self.width-1), (iz+1).min(self.height-1));
+        h00*(1.0-fx)*(1.0-fz) + h10*fx*(1.0-fz) + h01*(1.0-fx)*fz + h11*fx*fz
+    }
+    pub fn recompute_normals(&mut self) {
+        let w = self.width; let h = self.height; let cs = self.cell_size;
+        for z in 0..h { for x in 0..w {
+            let left  = if x > 0 { self.heights[z*w+(x-1)] } else { self.heights[z*w+x] };
+            let right = if x+1 < w { self.heights[z*w+(x+1)] } else { self.heights[z*w+x] };
+            let down  = if z > 0 { self.heights[(z-1)*w+x] } else { self.heights[z*w+x] };
+            let up    = if z+1 < h { self.heights[(z+1)*w+x] } else { self.heights[z*w+x] };
+            let n = Vec3::new((left - right) / (2.0 * cs), 1.0, (down - up) / (2.0 * cs)).normalize_or_zero();
+            self.normals[z*w+x] = n;
+        }}
+    }
+}
+
+fn hermite_interp(p0: Vec3, t0: Vec3, p1: Vec3, t1: Vec3, t: f32) -> Vec3 {
+    let t2 = t*t; let t3 = t2*t;
+    p0*(2.0*t3-3.0*t2+1.0) + t0*(t3-2.0*t2+t) + p1*(-2.0*t3+3.0*t2) + t1*(t3-t2)
+}
+fn hermite_tang(p0: Vec3, t0: Vec3, p1: Vec3, t1: Vec3, t: f32) -> Vec3 {
+    let t2 = t*t;
+    p0*(6.0*t2-6.0*t) + t0*(3.0*t2-4.0*t+1.0) + p1*(-6.0*t2+6.0*t) + t1*(3.0*t2-2.0*t)
+}
+
+impl RoadSpline {
+    pub fn new() -> Self {
+        Self { control_points: Vec::new(), cached_samples: Vec::new(), cached_tangents: Vec::new(), cached_up_vectors: Vec::new(), total_length: 0.0, subdivisions_per_segment: 20 }
+    }
+    pub fn add_point(&mut self, pos: Vec3) {
+        let tang = if self.control_points.is_empty() { Vec3::Z } else { (pos - self.control_points.last().unwrap().position).normalize_or_zero() };
+        self.control_points.push(SplinePoint { position: pos, tangent_in: tang, tangent_out: tang, bank_angle: 0.0, elevation_override: None });
+        self.rebuild_cache();
+    }
+    pub fn rebuild_cache(&mut self) {
+        self.cached_samples.clear(); self.cached_tangents.clear(); self.cached_up_vectors.clear();
+        if self.control_points.len() < 2 { return; }
+        let subs = self.subdivisions_per_segment;
+        for seg in 0..self.control_points.len()-1 {
+            let a = &self.control_points[seg]; let b = &self.control_points[seg+1];
+            for s in 0..subs {
+                let t = s as f32 / subs as f32;
+                self.cached_samples.push(hermite_interp(a.position, a.tangent_out, b.position, b.tangent_in, t));
+                self.cached_tangents.push(hermite_tang(a.position, a.tangent_out, b.position, b.tangent_in, t).normalize_or_zero());
+                self.cached_up_vectors.push(Vec3::Y);
+            }
+        }
+        let last = self.control_points.last().unwrap();
+        self.cached_samples.push(last.position); self.cached_tangents.push(last.tangent_in.normalize_or_zero()); self.cached_up_vectors.push(Vec3::Y);
+        self.total_length = 0.0;
+        for i in 1..self.cached_samples.len() { self.total_length += (self.cached_samples[i] - self.cached_samples[i-1]).length(); }
+    }
+    pub fn sample_at_distance(&self, dist: f32) -> (Vec3, Vec3) {
+        if self.cached_samples.is_empty() { return (Vec3::ZERO, Vec3::Z); }
+        let dist = dist.clamp(0.0, self.total_length);
+        let mut acc = 0.0f32;
+        for i in 1..self.cached_samples.len() {
+            let seg_len = (self.cached_samples[i] - self.cached_samples[i-1]).length();
+            if acc + seg_len >= dist {
+                let t = if seg_len > 1e-8 { (dist - acc) / seg_len } else { 0.0 };
+                return (self.cached_samples[i-1].lerp(self.cached_samples[i], t), self.cached_tangents[i-1].lerp(self.cached_tangents[i], t).normalize_or_zero());
+            }
+            acc += seg_len;
+        }
+        (*self.cached_samples.last().unwrap(), *self.cached_tangents.last().unwrap())
+    }
+}
+
+impl RoadNetwork {
+    pub fn new() -> Self { Self { nodes: HashMap::new(), edges: HashMap::new(), next_node_id: 1, next_edge_id: 1, adjacency: HashMap::new() } }
+    pub fn add_node(&mut self, pos: Vec3, nt: RoadNodeType) -> u32 {
+        let id = self.next_node_id; self.next_node_id += 1;
+        self.nodes.insert(id, RoadNetworkNode { id, position: pos, connected_edges: Vec::new(), node_type: nt });
+        self.adjacency.insert(id, Vec::new()); id
+    }
+    pub fn add_edge(&mut self, from: u32, to: u32, len: f32, speed: f32, rt: RoadType, lanes: u32) -> u32 {
+        let id = self.next_edge_id; self.next_edge_id += 1;
+        let w = len as f64 / speed.max(1.0) as f64;
+        self.edges.insert(id, RoadNetworkEdge { id, from_node: from, to_node: to, length: len, speed_limit: speed, road_type: rt, lanes, is_one_way: false, spline_id: 0, weight: w });
+        self.adjacency.entry(from).or_default().push((to, w));
+        self.adjacency.entry(to).or_default().push((from, w));
+        if let Some(n) = self.nodes.get_mut(&from) { n.connected_edges.push(id); }
+        if let Some(n) = self.nodes.get_mut(&to) { n.connected_edges.push(id); }
+        id
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn edge_count(&self) -> usize { self.edges.len() }
+}
+
+impl TrafficFlowSim {
+    pub fn new(edge_id: u32, length: f32, free_flow_speed: f32) -> Self {
+        let n_cells = ((length / 10.0) as usize).max(1);
+        Self { edge_id, cells: (0..n_cells).map(|_| TrafficCell { density: 0.0, velocity: free_flow_speed, flow: 0.0 }).collect(), cell_length: length / n_cells as f32, max_density: 120.0, free_flow_speed, jam_density: 120.0, time: 0.0 }
+    }
+    pub fn step(&mut self, dt: f32) {
+        let jam = self.jam_density; let ffs = self.free_flow_speed;
+        for c in &mut self.cells {
+            c.velocity = ffs * (1.0 - (c.density / jam).clamp(0.0, 1.0));
+            c.flow = c.density * c.velocity;
+        }
+        self.time += dt;
+    }
+}
+
+impl RoadErosionState {
+    pub fn new(width: usize, height: usize, cell_size: f32) -> Self {
+        let n = width * height;
+        Self { pothole_grid: vec![0.0; n], wear_grid: vec![0.0; n], puddle_grid: vec![0.0; n], width, height, cell_size }
+    }
+    pub fn apply_traffic(&mut self, x: usize, z: usize, load: f32) {
+        if x < self.width && z < self.height {
+            let idx = z * self.width + x;
+            self.wear_grid[idx] += load * 0.001;
+            if self.wear_grid[idx] > 1.0 { self.pothole_grid[idx] = (self.pothole_grid[idx] + 0.05).min(1.0); }
+        }
+    }
+}
+
+impl ElevationProfile {
+    pub fn compute(spline: &RoadSpline, terrain: &TerrainHeightMap) -> Self {
+        let n = 64.max(spline.cached_samples.len());
+        let total = spline.total_length;
+        let mut distances = Vec::with_capacity(n);
+        let mut elevations = Vec::with_capacity(n);
+        let mut terrain_elevations = Vec::with_capacity(n);
+        for i in 0..n {
+            let d = if n > 1 { i as f32 * total / (n-1) as f32 } else { 0.0 };
+            let (pos, _) = spline.sample_at_distance(d);
+            let e = terrain.sample_bilinear(pos.x, pos.z);
+            distances.push(d); elevations.push(pos.y); terrain_elevations.push(e);
+        }
+        let mut grades = vec![0.0f32; n];
+        let mut max_g = 0.0f32; let mut min_g = 0.0f32; let mut sum_g = 0.0f32;
+        for i in 1..n {
+            let dh = elevations[i] - elevations[i-1];
+            let dd = (distances[i] - distances[i-1]).max(1e-6);
+            let g = dh / dd * 100.0;
+            grades[i-1] = g; max_g = max_g.max(g); min_g = min_g.min(g); sum_g += g.abs();
+        }
+        let avg_g = if n > 1 { sum_g / (n-1) as f32 } else { 0.0 };
+        Self { distances, elevations, terrain_elevations, max_grade: max_g, min_grade: min_g, avg_grade: avg_g }
+    }
+}
+
+impl RoadProfile {
+    pub fn default_for_type(rt: RoadType) -> Self {
+        let (lanes, width, speed, slope) = match rt {
+            RoadType::DirtTrack => (1u32, 3.0f32, 20.0f32, 0.15f32),
+            RoadType::GravelRoad => (1, 4.0, 30.0, 0.12),
+            RoadType::PavedRoad => (2, 7.0, 50.0, 0.08),
+            RoadType::Highway2Lane => (2, 8.0, 80.0, 0.06),
+            RoadType::Highway4Lane => (4, 14.0, 100.0, 0.05),
+            RoadType::Motorway => (6, 22.0, 130.0, 0.04),
+            RoadType::Alley => (1, 3.5, 15.0, 0.10),
+            RoadType::ResidentialStreet => (2, 6.0, 30.0, 0.08),
+            RoadType::Boulevard => (4, 16.0, 50.0, 0.06),
+            RoadType::ServiceRoad => (1, 4.0, 20.0, 0.10),
+            RoadType::BridgeRoad => (2, 8.0, 60.0, 0.04),
+            RoadType::TunnelRoad => (2, 8.0, 60.0, 0.04),
+            RoadType::ElevatedHighway => (4, 14.0, 100.0, 0.04),
+        };
+        Self { road_type: rt, total_width: width, lane_count: lanes, lane_width: width / lanes as f32, has_curb: lanes >= 2, has_shoulder: lanes >= 2, has_ditch: lanes < 2, has_sidewalk: false, speed_limit_kmh: speed, surface_friction: 0.8, material_id: 0, shoulder_material_id: 1, max_slope_grade: slope, is_elevated: rt == RoadType::ElevatedHighway, tunnel_clearance: if rt == RoadType::TunnelRoad { 4.5 } else { 0.0 }, bridge_deck_thickness: if rt == RoadType::BridgeRoad { 0.3 } else { 0.0 } }
+    }
+}
+
+impl Default for RoadProfile {
+    fn default() -> Self { Self::default_for_type(RoadType::PavedRoad) }
+}
+
+impl TerrainRoadTool {
+    pub fn new(terrain_width: usize, terrain_height: usize, cell_size: f32) -> Self {
+        Self {
+            state: TerrainRoadToolState { mode: RoadToolMode::Idle, selected_road_type: RoadType::PavedRoad, active_segment_id: None, hover_pos: Vec3::ZERO, is_snapped: false, snap_target: Vec3::ZERO, show_elevation_profile: false, show_traffic_density: false, traffic_sim_running: false },
+            terrain: TerrainHeightMap::new(terrain_width, terrain_height, cell_size),
+            segments: HashMap::new(),
+            intersections: HashMap::new(),
+            network: RoadNetwork::new(),
+            erosion: RoadErosionState::new(terrain_width, terrain_height, cell_size),
+            undo_stack: UndoStack { actions: std::collections::VecDeque::new(), redo_stack: std::collections::VecDeque::new(), max_depth: 50 },
+            city_nodes: Vec::new(),
+            rng: SimpleRng::new(42),
+            next_segment_id: 1,
+            next_intersection_id: 1,
+            profiles: [RoadType::DirtTrack, RoadType::GravelRoad, RoadType::PavedRoad, RoadType::Highway2Lane, RoadType::Highway4Lane, RoadType::Motorway].iter().map(|&rt| (rt, RoadProfile::default_for_type(rt))).collect(),
+            elevation_profile_cache: None,
+            traffic_sims: HashMap::new(),
+            build_pending_actions: Vec::new(),
+        }
+    }
+
+    pub fn with_sample_terrain(seed: u64) -> Self {
+        let mut tool = Self::new(64, 64, 1.0);
+        let mut rng = SimpleRng::new(seed);
+        for z in 0..64usize { for x in 0..64usize { tool.terrain.set_height(x, z, (rng.next_f32() - 0.5) * 10.0); } }
+        tool.terrain.recompute_normals();
+        tool
+    }
+
+    pub fn add_road_segment(&mut self, from: Vec3, to: Vec3, road_type: RoadType) -> u32 {
+        let id = self.next_segment_id; self.next_segment_id += 1;
+        let mut spline = RoadSpline::new(); spline.add_point(from); spline.add_point(to);
+        let profile = self.profiles.get(&road_type).cloned().unwrap_or_default();
+        let traffic_sim = TrafficFlowSim::new(id, spline.total_length.max(10.0), profile.speed_limit_kmh);
+        self.segments.insert(id, RoadSegment { id, spline, profile, mesh: RoadMesh { vertices: Vec::new(), indices: Vec::new(), submeshes: Vec::new() }, sidewalk_mesh: RoadMesh { vertices: Vec::new(), indices: Vec::new(), submeshes: Vec::new() }, lane_markings: Vec::new(), bridge_pillars: Vec::new(), is_bridge: false, is_tunnel: false, from_node: 0, to_node: 0, traffic_sim });
+        id
+    }
+
+    pub fn remove_road_segment(&mut self, id: u32) -> bool { self.segments.remove(&id).is_some() }
+    pub fn segment_count(&self) -> usize { self.segments.len() }
+    pub fn step_traffic_sims(&mut self, dt: f32) { for seg in self.segments.values_mut() { seg.traffic_sim.step(dt); } }
+}
+
+pub fn terrain_road_tool_version() -> &'static str { "TerrainRoadTool v1.0 - Production Ready" }

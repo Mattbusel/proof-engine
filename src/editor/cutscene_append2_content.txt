@@ -1,0 +1,1851 @@
+
+// ============================================================
+// CINEMATIC CAMERA SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CameraAperture {
+    pub f_stop: f32,
+    pub focal_length_mm: f32,
+    pub sensor_width_mm: f32,
+    pub sensor_height_mm: f32,
+    pub focus_distance: f32,
+    pub dof_enabled: bool,
+    pub bokeh_shape_sides: u32,
+}
+
+impl CameraAperture {
+    pub fn new_cinema() -> Self {
+        CameraAperture {
+            f_stop: 2.8,
+            focal_length_mm: 35.0,
+            sensor_width_mm: 36.0,
+            sensor_height_mm: 24.0,
+            focus_distance: 5.0,
+            dof_enabled: true,
+            bokeh_shape_sides: 6,
+        }
+    }
+
+    pub fn field_of_view_horizontal(&self) -> f32 {
+        2.0 * ((self.sensor_width_mm / (2.0 * self.focal_length_mm)).atan())
+    }
+
+    pub fn field_of_view_vertical(&self) -> f32 {
+        2.0 * ((self.sensor_height_mm / (2.0 * self.focal_length_mm)).atan())
+    }
+
+    pub fn circle_of_confusion(&self, subject_distance: f32) -> f32 {
+        let magnification = self.focal_length_mm / (subject_distance * 1000.0 - self.focal_length_mm);
+        magnification * self.focal_length_mm / self.f_stop
+    }
+
+    pub fn depth_of_field_near(&self) -> f32 {
+        let fd = self.focus_distance * 1000.0;
+        let coc = 0.03;
+        let hyperfocal = (self.focal_length_mm * self.focal_length_mm) / (self.f_stop * coc) + self.focal_length_mm;
+        let near = fd * (hyperfocal - self.focal_length_mm) / (hyperfocal + fd - 2.0 * self.focal_length_mm);
+        near / 1000.0
+    }
+
+    pub fn depth_of_field_far(&self) -> f32 {
+        let fd = self.focus_distance * 1000.0;
+        let coc = 0.03;
+        let hyperfocal = (self.focal_length_mm * self.focal_length_mm) / (self.f_stop * coc) + self.focal_length_mm;
+        let far = fd * (hyperfocal - self.focal_length_mm) / (hyperfocal - fd);
+        if far < 0.0 { f32::INFINITY } else { far / 1000.0 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraMotionBlur {
+    pub shutter_angle_degrees: f32,
+    pub sample_count: u32,
+    pub enabled: bool,
+}
+
+impl CameraMotionBlur {
+    pub fn new() -> Self {
+        CameraMotionBlur { shutter_angle_degrees: 180.0, sample_count: 16, enabled: true }
+    }
+
+    pub fn shutter_speed_fraction(&self, fps: f32) -> f32 {
+        fps / (360.0 / self.shutter_angle_degrees)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraLensFlare {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub streak_count: u32,
+    pub streak_rotation_deg: f32,
+    pub ghost_count: u32,
+    pub halo_radius: f32,
+    pub dirt_texture_intensity: f32,
+}
+
+impl Default for CameraLensFlare {
+    fn default() -> Self {
+        CameraLensFlare {
+            enabled: false,
+            intensity: 0.5,
+            streak_count: 8,
+            streak_rotation_deg: 45.0,
+            ghost_count: 4,
+            halo_radius: 0.15,
+            dirt_texture_intensity: 0.2,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraVignette {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub smoothness: f32,
+    pub roundness: f32,
+    pub center: Vec2,
+}
+
+impl Default for CameraVignette {
+    fn default() -> Self {
+        CameraVignette {
+            enabled: false,
+            intensity: 0.4,
+            smoothness: 0.4,
+            roundness: 1.0,
+            center: Vec2::new(0.5, 0.5),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChromaticAberration {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub fast_mode: bool,
+}
+
+impl Default for ChromaticAberration {
+    fn default() -> Self {
+        ChromaticAberration { enabled: false, intensity: 0.05, fast_mode: false }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CinematicCamera {
+    pub id: u32,
+    pub name: String,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub aperture: CameraAperture,
+    pub motion_blur: CameraMotionBlur,
+    pub lens_flare: CameraLensFlare,
+    pub vignette: CameraVignette,
+    pub chromatic_aberration: ChromaticAberration,
+    pub near_clip: f32,
+    pub far_clip: f32,
+    pub aspect_ratio: f32,
+}
+
+impl CinematicCamera {
+    pub fn new(id: u32, name: &str) -> Self {
+        CinematicCamera {
+            id,
+            name: name.to_string(),
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            aperture: CameraAperture::new_cinema(),
+            motion_blur: CameraMotionBlur::new(),
+            lens_flare: CameraLensFlare::default(),
+            vignette: CameraVignette::default(),
+            chromatic_aberration: ChromaticAberration::default(),
+            near_clip: 0.1,
+            far_clip: 10000.0,
+            aspect_ratio: 16.0 / 9.0,
+        }
+    }
+
+    pub fn view_matrix(&self) -> Mat4 {
+        let rot = Mat4::from_quat(self.rotation);
+        let trans = Mat4::from_translation(-self.position);
+        rot.transpose() * trans
+    }
+
+    pub fn projection_matrix(&self) -> Mat4 {
+        let fov_y = self.aperture.field_of_view_vertical();
+        Mat4::perspective_rh(fov_y, self.aspect_ratio, self.near_clip, self.far_clip)
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        self.rotation * Vec3::NEG_Z
+    }
+
+    pub fn right(&self) -> Vec3 {
+        self.rotation * Vec3::X
+    }
+
+    pub fn up(&self) -> Vec3 {
+        self.rotation * Vec3::Y
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraKeyframe {
+    pub time: f32,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub focal_length: f32,
+    pub f_stop: f32,
+    pub focus_distance: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraAnimTrack {
+    pub camera_id: u32,
+    pub keyframes: Vec<CameraKeyframe>,
+}
+
+impl CameraAnimTrack {
+    pub fn new(camera_id: u32) -> Self {
+        CameraAnimTrack { camera_id, keyframes: Vec::new() }
+    }
+
+    pub fn add_keyframe(&mut self, kf: CameraKeyframe) {
+        let idx = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(idx, kf);
+    }
+
+    pub fn sample(&self, t: f32) -> Option<CameraKeyframe> {
+        if self.keyframes.is_empty() { return None; }
+        if t <= self.keyframes[0].time {
+            return Some(self.keyframes[0].clone());
+        }
+        let last = self.keyframes.last().unwrap();
+        if t >= last.time {
+            return Some(last.clone());
+        }
+        let idx = self.keyframes.partition_point(|k| k.time <= t) - 1;
+        let a = &self.keyframes[idx];
+        let b = &self.keyframes[idx + 1];
+        let s = (t - a.time) / (b.time - a.time);
+        Some(CameraKeyframe {
+            time: t,
+            position: a.position.lerp(b.position, s),
+            rotation: a.rotation.slerp(b.rotation, s),
+            focal_length: a.focal_length + (b.focal_length - a.focal_length) * s,
+            f_stop: a.f_stop + (b.f_stop - a.f_stop) * s,
+            focus_distance: a.focus_distance + (b.focus_distance - a.focus_distance) * s,
+        })
+    }
+
+    pub fn duration(&self) -> f32 {
+        self.keyframes.last().map(|k| k.time).unwrap_or(0.0)
+    }
+}
+
+// ============================================================
+// DOLLY / CRANE / STEADICAM RIG SIMULATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CameraRigType {
+    Handheld,
+    Steadicam,
+    Dolly,
+    Crane,
+    Drone,
+    MotionControlRig,
+}
+
+#[derive(Debug, Clone)]
+pub struct DollyTrackSegment {
+    pub start: Vec3,
+    pub end: Vec3,
+    pub speed: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CameraRig {
+    pub rig_type: CameraRigType,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub arm_length: f32,
+    pub tilt_angle: f32,
+    pub pan_angle: f32,
+    pub noise_seed: u32,
+    pub noise_intensity: f32,
+    pub noise_frequency: f32,
+    pub dolly_segments: Vec<DollyTrackSegment>,
+    pub dolly_position_t: f32,
+}
+
+impl CameraRig {
+    pub fn new(rig_type: CameraRigType) -> Self {
+        CameraRig {
+            rig_type,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            arm_length: 1.0,
+            tilt_angle: 0.0,
+            pan_angle: 0.0,
+            noise_seed: 42,
+            noise_intensity: 0.01,
+            noise_frequency: 2.0,
+            dolly_segments: Vec::new(),
+            dolly_position_t: 0.0,
+        }
+    }
+
+    pub fn handhold_noise(&self, t: f32) -> Vec3 {
+        let s = self.noise_seed as f32 * 0.001;
+        let x = (t * self.noise_frequency + s).sin() * self.noise_intensity;
+        let y = (t * self.noise_frequency * 1.3 + s + 1.0).sin() * self.noise_intensity * 0.5;
+        let z = (t * self.noise_frequency * 0.7 + s + 2.0).sin() * self.noise_intensity * 0.3;
+        Vec3::new(x, y, z)
+    }
+
+    pub fn crane_tip_position(&self) -> Vec3 {
+        let arm_dir = self.rotation * Vec3::new(self.pan_angle.sin(), self.tilt_angle.sin(), self.pan_angle.cos());
+        self.position + arm_dir * self.arm_length
+    }
+
+    pub fn add_dolly_segment(&mut self, seg: DollyTrackSegment) {
+        self.dolly_segments.push(seg);
+    }
+
+    pub fn dolly_total_length(&self) -> f32 {
+        self.dolly_segments.iter().map(|s| (s.end - s.start).length()).sum()
+    }
+}
+
+// ============================================================
+// SUBTITLE AND LOCALIZATION SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubtitleAlignment {
+    BottomCenter,
+    BottomLeft,
+    BottomRight,
+    TopCenter,
+    MiddleCenter,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleStyle {
+    pub font_size: f32,
+    pub color: Vec4,
+    pub outline_color: Vec4,
+    pub outline_width: f32,
+    pub background_color: Vec4,
+    pub background_enabled: bool,
+    pub alignment: SubtitleAlignment,
+    pub vertical_position: f32,
+}
+
+impl Default for SubtitleStyle {
+    fn default() -> Self {
+        SubtitleStyle {
+            font_size: 24.0,
+            color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            outline_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+            outline_width: 1.5,
+            background_color: Vec4::new(0.0, 0.0, 0.0, 0.5),
+            background_enabled: false,
+            alignment: SubtitleAlignment::BottomCenter,
+            vertical_position: 0.1,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleCue {
+    pub id: u32,
+    pub start_time: f32,
+    pub end_time: f32,
+    pub text: String,
+    pub speaker: Option<String>,
+    pub style_override: Option<SubtitleStyle>,
+}
+
+impl SubtitleCue {
+    pub fn duration(&self) -> f32 {
+        self.end_time - self.start_time
+    }
+
+    pub fn is_active_at(&self, t: f32) -> bool {
+        t >= self.start_time && t < self.end_time
+    }
+
+    pub fn fade_alpha(&self, t: f32, fade_in: f32, fade_out: f32) -> f32 {
+        if t < self.start_time + fade_in {
+            (t - self.start_time) / fade_in.max(0.001)
+        } else if t > self.end_time - fade_out {
+            (self.end_time - t) / fade_out.max(0.001)
+        } else {
+            1.0
+        }
+        .clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalizedSubtitles {
+    pub language_code: String,
+    pub cues: Vec<SubtitleCue>,
+    pub default_style: SubtitleStyle,
+    pub metadata: HashMap<String, String>,
+}
+
+impl LocalizedSubtitles {
+    pub fn new(language_code: &str) -> Self {
+        LocalizedSubtitles {
+            language_code: language_code.to_string(),
+            cues: Vec::new(),
+            default_style: SubtitleStyle::default(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_cue(&mut self, cue: SubtitleCue) {
+        self.cues.push(cue);
+        self.cues.sort_by(|a, b| a.start_time.partial_cmp(&b.start_time).unwrap());
+    }
+
+    pub fn cues_at(&self, t: f32) -> Vec<&SubtitleCue> {
+        self.cues.iter().filter(|c| c.is_active_at(t)).collect()
+    }
+
+    pub fn export_srt(&self) -> String {
+        let mut out = String::new();
+        for (i, cue) in self.cues.iter().enumerate() {
+            let fmt_time = |s: f32| -> String {
+                let h = (s / 3600.0) as u32;
+                let m = ((s % 3600.0) / 60.0) as u32;
+                let sec = (s % 60.0) as u32;
+                let ms = ((s % 1.0) * 1000.0) as u32;
+                format!("{:02}:{:02}:{:02},{:03}", h, m, sec, ms)
+            };
+            out.push_str(&format!("{}\n{} --> {}\n{}\n\n",
+                i + 1,
+                fmt_time(cue.start_time),
+                fmt_time(cue.end_time),
+                cue.text));
+        }
+        out
+    }
+
+    pub fn export_vtt(&self) -> String {
+        let mut out = String::from("WEBVTT\n\n");
+        for cue in &self.cues {
+            let fmt_time = |s: f32| -> String {
+                let h = (s / 3600.0) as u32;
+                let m = ((s % 3600.0) / 60.0) as u32;
+                let sec = (s % 60.0) as u32;
+                let ms = ((s % 1.0) * 1000.0) as u32;
+                format!("{:02}:{:02}:{:02}.{:03}", h, m, sec, ms)
+            };
+            out.push_str(&format!("{} --> {}\n{}\n\n",
+                fmt_time(cue.start_time),
+                fmt_time(cue.end_time),
+                cue.text));
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleManager {
+    pub tracks: HashMap<String, LocalizedSubtitles>,
+    pub active_language: String,
+    pub fade_in_duration: f32,
+    pub fade_out_duration: f32,
+}
+
+impl SubtitleManager {
+    pub fn new(default_lang: &str) -> Self {
+        SubtitleManager {
+            tracks: HashMap::new(),
+            active_language: default_lang.to_string(),
+            fade_in_duration: 0.1,
+            fade_out_duration: 0.1,
+        }
+    }
+
+    pub fn add_language(&mut self, lang: LocalizedSubtitles) {
+        self.tracks.insert(lang.language_code.clone(), lang);
+    }
+
+    pub fn active_cues(&self, t: f32) -> Vec<&SubtitleCue> {
+        self.tracks.get(&self.active_language)
+            .map(|l| l.cues_at(t))
+            .unwrap_or_default()
+    }
+}
+
+// ============================================================
+// NARRATIVE EVENT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NarrativeEventType {
+    DialogueLine,
+    CharacterEnter,
+    CharacterExit,
+    EnvironmentChange,
+    MusicChange,
+    SfxTrigger,
+    CameraChange,
+    FlagSet,
+    QuestUpdate,
+    ItemGrant,
+    SceneTransition,
+}
+
+#[derive(Debug, Clone)]
+pub struct NarrativeEvent {
+    pub id: u32,
+    pub event_type: NarrativeEventType,
+    pub trigger_time: f32,
+    pub payload: HashMap<String, String>,
+    pub conditions: Vec<String>,
+    pub fired: bool,
+}
+
+impl NarrativeEvent {
+    pub fn new(id: u32, event_type: NarrativeEventType, trigger_time: f32) -> Self {
+        NarrativeEvent {
+            id,
+            event_type,
+            trigger_time,
+            payload: HashMap::new(),
+            conditions: Vec::new(),
+            fired: false,
+        }
+    }
+
+    pub fn with_payload(mut self, key: &str, value: &str) -> Self {
+        self.payload.insert(key.to_string(), value.to_string());
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NarrativeSequencer {
+    pub events: Vec<NarrativeEvent>,
+    pub global_flags: HashMap<String, bool>,
+    pub event_log: VecDeque<(f32, u32)>,
+    pub max_log_entries: usize,
+}
+
+impl NarrativeSequencer {
+    pub fn new() -> Self {
+        NarrativeSequencer {
+            events: Vec::new(),
+            global_flags: HashMap::new(),
+            event_log: VecDeque::new(),
+            max_log_entries: 256,
+        }
+    }
+
+    pub fn add_event(&mut self, ev: NarrativeEvent) {
+        self.events.push(ev);
+        self.events.sort_by(|a, b| a.trigger_time.partial_cmp(&b.trigger_time).unwrap());
+    }
+
+    pub fn tick(&mut self, t: f32) -> Vec<u32> {
+        let mut fired_ids = Vec::new();
+        for ev in self.events.iter_mut() {
+            if !ev.fired && t >= ev.trigger_time {
+                let conds_met = ev.conditions.iter().all(|c| {
+                    self.global_flags.get(c).copied().unwrap_or(false)
+                });
+                if conds_met {
+                    ev.fired = true;
+                    fired_ids.push(ev.id);
+                    if self.event_log.len() >= self.max_log_entries {
+                        self.event_log.pop_front();
+                    }
+                    self.event_log.push_back((t, ev.id));
+                }
+            }
+        }
+        fired_ids
+    }
+
+    pub fn set_flag(&mut self, flag: &str, value: bool) {
+        self.global_flags.insert(flag.to_string(), value);
+    }
+
+    pub fn reset(&mut self) {
+        for ev in self.events.iter_mut() {
+            ev.fired = false;
+        }
+    }
+
+    pub fn unfired_count(&self) -> usize {
+        self.events.iter().filter(|e| !e.fired).count()
+    }
+}
+
+// ============================================================
+// CHARACTER DIALOGUE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DialogueLine {
+    pub id: u32,
+    pub speaker_id: String,
+    pub text: String,
+    pub emotion: String,
+    pub audio_asset: Option<String>,
+    pub duration_hint: f32,
+    pub lip_sync_asset: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogueChoice {
+    pub id: u32,
+    pub text: String,
+    pub next_node_id: u32,
+    pub conditions: Vec<String>,
+    pub consequences: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DialogueNodeContent {
+    Line(DialogueLine),
+    Choice(Vec<DialogueChoice>),
+    Branch { condition: String, true_node: u32, false_node: u32 },
+    End,
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogueNode {
+    pub id: u32,
+    pub content: DialogueNodeContent,
+    pub next_id: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogueGraph {
+    pub id: u32,
+    pub name: String,
+    pub nodes: HashMap<u32, DialogueNode>,
+    pub start_node_id: u32,
+}
+
+impl DialogueGraph {
+    pub fn new(id: u32, name: &str, start_node_id: u32) -> Self {
+        DialogueGraph { id, name: name.to_string(), nodes: HashMap::new(), start_node_id }
+    }
+
+    pub fn add_node(&mut self, node: DialogueNode) {
+        self.nodes.insert(node.id, node);
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if !self.nodes.contains_key(&self.start_node_id) {
+            errors.push(format!("Start node {} not found", self.start_node_id));
+        }
+        for (id, node) in &self.nodes {
+            if let Some(next) = node.next_id {
+                if !self.nodes.contains_key(&next) {
+                    errors.push(format!("Node {} references missing next {}", id, next));
+                }
+            }
+        }
+        errors
+    }
+}
+
+// ============================================================
+// ANIMATION RETARGETING EXTENDED
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct IkChain {
+    pub name: String,
+    pub root_bone: String,
+    pub end_effector_bone: String,
+    pub intermediate_bones: Vec<String>,
+    pub pole_vector: Vec3,
+    pub weight: f32,
+    pub iterations: u32,
+}
+
+impl IkChain {
+    pub fn new_arm_left() -> Self {
+        IkChain {
+            name: "LeftArm".to_string(),
+            root_bone: "LeftShoulder".to_string(),
+            end_effector_bone: "LeftHand".to_string(),
+            intermediate_bones: vec!["LeftUpperArm".to_string(), "LeftForeArm".to_string()],
+            pole_vector: Vec3::new(-1.0, 0.0, -1.0),
+            weight: 1.0,
+            iterations: 10,
+        }
+    }
+
+    pub fn new_leg_right() -> Self {
+        IkChain {
+            name: "RightLeg".to_string(),
+            root_bone: "RightUpperLeg".to_string(),
+            end_effector_bone: "RightFoot".to_string(),
+            intermediate_bones: vec!["RightLowerLeg".to_string()],
+            pole_vector: Vec3::new(0.0, 0.0, 1.0),
+            weight: 1.0,
+            iterations: 10,
+        }
+    }
+
+    pub fn chain_length(&self) -> usize {
+        2 + self.intermediate_bones.len()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RetargetingConstraint {
+    pub source_bone: String,
+    pub target_bone: String,
+    pub rotation_only: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub flip_z: bool,
+    pub local_offset_rotation: Quat,
+}
+
+impl RetargetingConstraint {
+    pub fn new(source: &str, target: &str) -> Self {
+        RetargetingConstraint {
+            source_bone: source.to_string(),
+            target_bone: target.to_string(),
+            rotation_only: false,
+            flip_x: false, flip_y: false, flip_z: false,
+            local_offset_rotation: Quat::IDENTITY,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RetargetSession {
+    pub source_skeleton: String,
+    pub target_skeleton: String,
+    pub constraints: Vec<RetargetingConstraint>,
+    pub ik_chains: Vec<IkChain>,
+    pub global_scale: f32,
+    pub hip_height_correction: f32,
+}
+
+impl RetargetSession {
+    pub fn new(source: &str, target: &str) -> Self {
+        RetargetSession {
+            source_skeleton: source.to_string(),
+            target_skeleton: target.to_string(),
+            constraints: Vec::new(),
+            ik_chains: Vec::new(),
+            global_scale: 1.0,
+            hip_height_correction: 0.0,
+        }
+    }
+
+    pub fn add_constraint(&mut self, c: RetargetingConstraint) {
+        self.constraints.push(c);
+    }
+
+    pub fn add_ik_chain(&mut self, chain: IkChain) {
+        self.ik_chains.push(chain);
+    }
+
+    pub fn humanoid_default(source: &str, target: &str) -> Self {
+        let mut session = RetargetSession::new(source, target);
+        let bone_pairs = [
+            ("Hips", "Hips"), ("Spine", "Spine"), ("Chest", "Chest"),
+            ("UpperChest", "UpperChest"), ("Neck", "Neck"), ("Head", "Head"),
+            ("LeftShoulder", "LeftShoulder"), ("LeftUpperArm", "LeftUpperArm"),
+            ("LeftForeArm", "LeftForeArm"), ("LeftHand", "LeftHand"),
+            ("RightShoulder", "RightShoulder"), ("RightUpperArm", "RightUpperArm"),
+            ("RightForeArm", "RightForeArm"), ("RightHand", "RightHand"),
+            ("LeftUpperLeg", "LeftUpperLeg"), ("LeftLowerLeg", "LeftLowerLeg"),
+            ("LeftFoot", "LeftFoot"), ("RightUpperLeg", "RightUpperLeg"),
+            ("RightLowerLeg", "RightLowerLeg"), ("RightFoot", "RightFoot"),
+        ];
+        for (src, tgt) in &bone_pairs {
+            session.add_constraint(RetargetingConstraint::new(src, tgt));
+        }
+        session.add_ik_chain(IkChain::new_arm_left());
+        session.add_ik_chain(IkChain::new_leg_right());
+        session
+    }
+}
+
+// ============================================================
+// TIMELINE CLIP OPERATIONS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClipEditOperation {
+    Trim,
+    Split,
+    Merge,
+    SpeedChange,
+    Reverse,
+    Slip,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClipEditHistory {
+    pub clip_id: u32,
+    pub operation: ClipEditOperation,
+    pub before_start: f32,
+    pub before_end: f32,
+    pub after_start: f32,
+    pub after_end: f32,
+    pub timestamp: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimelineClipEditor {
+    pub selected_clip_ids: HashSet<u32>,
+    pub edit_history: VecDeque<ClipEditHistory>,
+    pub max_history: usize,
+    pub snapping_enabled: bool,
+    pub snap_threshold: f32,
+    pub ripple_edit_enabled: bool,
+}
+
+impl TimelineClipEditor {
+    pub fn new() -> Self {
+        TimelineClipEditor {
+            selected_clip_ids: HashSet::new(),
+            edit_history: VecDeque::new(),
+            max_history: 100,
+            snapping_enabled: true,
+            snap_threshold: 0.05,
+            ripple_edit_enabled: false,
+        }
+    }
+
+    pub fn select_clip(&mut self, clip_id: u32) {
+        self.selected_clip_ids.insert(clip_id);
+    }
+
+    pub fn deselect_all(&mut self) {
+        self.selected_clip_ids.clear();
+    }
+
+    pub fn record_edit(&mut self, history: ClipEditHistory) {
+        if self.edit_history.len() >= self.max_history {
+            self.edit_history.pop_front();
+        }
+        self.edit_history.push_back(history);
+    }
+
+    pub fn snap_to_nearest(&self, time: f32, snap_points: &[f32]) -> f32 {
+        if !self.snapping_enabled { return time; }
+        snap_points.iter()
+            .min_by(|&&a, &&b| (a - time).abs().partial_cmp(&(b - time).abs()).unwrap())
+            .copied()
+            .filter(|&s| (s - time).abs() <= self.snap_threshold)
+            .unwrap_or(time)
+    }
+
+    pub fn undo_last(&mut self) -> Option<ClipEditHistory> {
+        self.edit_history.pop_back()
+    }
+}
+
+// ============================================================
+// SCENE COMPOSITION AND LAYERING
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayerBlendMode {
+    Normal,
+    Additive,
+    Multiply,
+    Screen,
+    Overlay,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneLayer {
+    pub id: u32,
+    pub name: String,
+    pub visible: bool,
+    pub locked: bool,
+    pub opacity: f32,
+    pub blend_mode: LayerBlendMode,
+    pub clip_ids: Vec<u32>,
+    pub color_tag: Vec4,
+}
+
+impl SceneLayer {
+    pub fn new(id: u32, name: &str) -> Self {
+        SceneLayer {
+            id,
+            name: name.to_string(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: LayerBlendMode::Normal,
+            clip_ids: Vec::new(),
+            color_tag: Vec4::new(0.5, 0.5, 0.5, 1.0),
+        }
+    }
+
+    pub fn add_clip(&mut self, clip_id: u32) {
+        if !self.clip_ids.contains(&clip_id) {
+            self.clip_ids.push(clip_id);
+        }
+    }
+
+    pub fn remove_clip(&mut self, clip_id: u32) {
+        self.clip_ids.retain(|&id| id != clip_id);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerStack {
+    pub layers: Vec<SceneLayer>,
+    pub active_layer_id: u32,
+}
+
+impl LayerStack {
+    pub fn new() -> Self {
+        LayerStack { layers: Vec::new(), active_layer_id: 0 }
+    }
+
+    pub fn add_layer(&mut self, layer: SceneLayer) {
+        self.layers.push(layer);
+    }
+
+    pub fn get_layer_mut(&mut self, id: u32) -> Option<&mut SceneLayer> {
+        self.layers.iter_mut().find(|l| l.id == id)
+    }
+
+    pub fn visible_layers(&self) -> Vec<&SceneLayer> {
+        self.layers.iter().filter(|l| l.visible).collect()
+    }
+
+    pub fn move_layer_up(&mut self, id: u32) {
+        if let Some(idx) = self.layers.iter().position(|l| l.id == id) {
+            if idx + 1 < self.layers.len() {
+                self.layers.swap(idx, idx + 1);
+            }
+        }
+    }
+
+    pub fn move_layer_down(&mut self, id: u32) {
+        if let Some(idx) = self.layers.iter().position(|l| l.id == id) {
+            if idx > 0 {
+                self.layers.swap(idx, idx - 1);
+            }
+        }
+    }
+}
+
+// ============================================================
+// EXPRESSION SOLVER FOR PROCEDURAL ANIMATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub enum ExprToken {
+    Number(f32),
+    Variable(String),
+    Plus, Minus, Multiply, Divide,
+    LParen, RParen,
+    Sin, Cos, Abs, Floor, Ceil, Sqrt,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpressionSolver {
+    pub variables: HashMap<String, f32>,
+}
+
+impl ExpressionSolver {
+    pub fn new() -> Self {
+        ExpressionSolver { variables: HashMap::new() }
+    }
+
+    pub fn set_var(&mut self, name: &str, value: f32) {
+        self.variables.insert(name.to_string(), value);
+    }
+
+    pub fn evaluate_simple(&self, tokens: &[ExprToken]) -> f32 {
+        // Simple left-to-right evaluation without precedence for demonstration
+        if tokens.is_empty() { return 0.0; }
+        let mut result = self.eval_primary(tokens, &mut 0);
+        result
+    }
+
+    fn eval_primary(&self, tokens: &[ExprToken], pos: &mut usize) -> f32 {
+        if *pos >= tokens.len() { return 0.0; }
+        match &tokens[*pos] {
+            ExprToken::Number(n) => { *pos += 1; *n },
+            ExprToken::Variable(v) => {
+                *pos += 1;
+                self.variables.get(v).copied().unwrap_or(0.0)
+            },
+            ExprToken::Sin => {
+                *pos += 1;
+                let arg = self.eval_primary(tokens, pos);
+                arg.sin()
+            },
+            ExprToken::Cos => {
+                *pos += 1;
+                let arg = self.eval_primary(tokens, pos);
+                arg.cos()
+            },
+            ExprToken::Abs => {
+                *pos += 1;
+                let arg = self.eval_primary(tokens, pos);
+                arg.abs()
+            },
+            ExprToken::Sqrt => {
+                *pos += 1;
+                let arg = self.eval_primary(tokens, pos);
+                arg.sqrt()
+            },
+            _ => 0.0,
+        }
+    }
+}
+
+// ============================================================
+// CUTSCENE COMPRESSION AND STREAMING
+// ============================================================
+
+pub const CUTSCENE_STREAM_CHUNK_BYTES: usize = 65536;
+pub const CUTSCENE_KEYFRAME_INTERVAL: u32 = 30;
+pub const CUTSCENE_MAX_AUDIO_CHANNELS: u32 = 8;
+pub const CUTSCENE_PREVIEW_WIDTH: u32 = 1280;
+pub const CUTSCENE_PREVIEW_HEIGHT: u32 = 720;
+pub const CUTSCENE_MASTER_WIDTH: u32 = 3840;
+pub const CUTSCENE_MASTER_HEIGHT: u32 = 2160;
+
+#[derive(Debug, Clone)]
+pub struct CutsceneStreamChunk {
+    pub chunk_index: u32,
+    pub byte_offset: u64,
+    pub compressed_size: u32,
+    pub uncompressed_size: u32,
+    pub is_keyframe_chunk: bool,
+    pub timestamp_start: f32,
+    pub timestamp_end: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneStreamIndex {
+    pub total_chunks: u32,
+    pub total_duration: f32,
+    pub chunks: Vec<CutsceneStreamChunk>,
+}
+
+impl CutsceneStreamIndex {
+    pub fn new() -> Self {
+        CutsceneStreamIndex { total_chunks: 0, total_duration: 0.0, chunks: Vec::new() }
+    }
+
+    pub fn add_chunk(&mut self, chunk: CutsceneStreamChunk) {
+        self.total_chunks += 1;
+        if chunk.timestamp_end > self.total_duration {
+            self.total_duration = chunk.timestamp_end;
+        }
+        self.chunks.push(chunk);
+    }
+
+    pub fn chunk_for_time(&self, t: f32) -> Option<&CutsceneStreamChunk> {
+        self.chunks.iter().find(|c| t >= c.timestamp_start && t < c.timestamp_end)
+    }
+
+    pub fn total_compressed_bytes(&self) -> u64 {
+        self.chunks.iter().map(|c| c.compressed_size as u64).sum()
+    }
+
+    pub fn compression_ratio(&self) -> f32 {
+        let compressed: u64 = self.chunks.iter().map(|c| c.compressed_size as u64).sum();
+        let uncompressed: u64 = self.chunks.iter().map(|c| c.uncompressed_size as u64).sum();
+        if uncompressed == 0 { return 1.0; }
+        compressed as f32 / uncompressed as f32
+    }
+}
+
+// ============================================================
+// SHOT LIST AND PRE-VISUALIZATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShotType {
+    ExtremeLongShot,
+    LongShot,
+    MediumLongShot,
+    MediumShot,
+    MediumCloseUp,
+    CloseUp,
+    ExtremeCloseUp,
+    CutawayShot,
+    InsertShot,
+    CutInShot,
+    PointOfViewShot,
+    OverTheShoulderShot,
+    TwoShot,
+    EnsembleShot,
+    AerialShot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CameraAngle {
+    EyeLevel,
+    HighAngle,
+    LowAngle,
+    BirdsEye,
+    WormsEye,
+    DutchAngle,
+    SubjectivePov,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CameraMovement {
+    Static,
+    Pan,
+    Tilt,
+    Dolly,
+    Truck,
+    Pedestal,
+    Arc,
+    Zoom,
+    Crane,
+    Handheld,
+    Steadicam,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShotListEntry {
+    pub shot_number: String,
+    pub scene_number: String,
+    pub description: String,
+    pub shot_type: ShotType,
+    pub camera_angle: CameraAngle,
+    pub camera_movement: CameraMovement,
+    pub focal_length: f32,
+    pub estimated_duration: f32,
+    pub rig_notes: String,
+    pub lighting_notes: String,
+    pub priority: u32,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShotList {
+    pub title: String,
+    pub director: String,
+    pub dop: String,
+    pub date: String,
+    pub entries: Vec<ShotListEntry>,
+}
+
+impl ShotList {
+    pub fn new(title: &str) -> Self {
+        ShotList {
+            title: title.to_string(),
+            director: String::new(),
+            dop: String::new(),
+            date: String::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn add_shot(&mut self, shot: ShotListEntry) {
+        self.entries.push(shot);
+    }
+
+    pub fn total_duration(&self) -> f32 {
+        self.entries.iter().map(|e| e.estimated_duration).sum()
+    }
+
+    pub fn incomplete_shots(&self) -> Vec<&ShotListEntry> {
+        self.entries.iter().filter(|e| !e.complete).collect()
+    }
+
+    pub fn shots_by_scene(&self, scene: &str) -> Vec<&ShotListEntry> {
+        self.entries.iter().filter(|e| e.scene_number == scene).collect()
+    }
+
+    pub fn export_csv(&self) -> String {
+        let mut out = String::from("Shot,Scene,Description,Type,Duration,Complete\n");
+        for e in &self.entries {
+            out.push_str(&format!("{},{},{},{:?},{:.1},{}\n",
+                e.shot_number, e.scene_number, e.description,
+                e.shot_type, e.estimated_duration, e.complete));
+        }
+        out
+    }
+}
+
+// ============================================================
+// ADVANCED BLEND TREE / STATE MACHINE FOR ANIMATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlendNodeType {
+    Clip,
+    Blend1D,
+    Blend2D,
+    Override,
+    LayeredBlend,
+    StateMachine,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlendNode {
+    pub id: u32,
+    pub node_type: BlendNodeType,
+    pub name: String,
+    pub child_ids: Vec<u32>,
+    pub blend_param: String,
+    pub blend_value: f32,
+    pub clip_asset: Option<String>,
+    pub loop_clip: bool,
+    pub play_rate: f32,
+}
+
+impl BlendNode {
+    pub fn new_clip(id: u32, name: &str, asset: &str) -> Self {
+        BlendNode {
+            id,
+            node_type: BlendNodeType::Clip,
+            name: name.to_string(),
+            child_ids: Vec::new(),
+            blend_param: String::new(),
+            blend_value: 0.0,
+            clip_asset: Some(asset.to_string()),
+            loop_clip: true,
+            play_rate: 1.0,
+        }
+    }
+
+    pub fn new_blend1d(id: u32, name: &str, param: &str) -> Self {
+        BlendNode {
+            id,
+            node_type: BlendNodeType::Blend1D,
+            name: name.to_string(),
+            child_ids: Vec::new(),
+            blend_param: param.to_string(),
+            blend_value: 0.0,
+            clip_asset: None,
+            loop_clip: false,
+            play_rate: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimationState {
+    pub id: u32,
+    pub name: String,
+    pub root_node_id: u32,
+    pub speed: f32,
+    pub loop_state: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimationTransition {
+    pub from_state_id: u32,
+    pub to_state_id: u32,
+    pub condition: String,
+    pub blend_duration: f32,
+    pub interrupt_current: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimationStateMachine {
+    pub name: String,
+    pub states: HashMap<u32, AnimationState>,
+    pub transitions: Vec<AnimationTransition>,
+    pub blend_nodes: HashMap<u32, BlendNode>,
+    pub current_state_id: u32,
+    pub parameters: HashMap<String, f32>,
+    pub bool_parameters: HashMap<String, bool>,
+}
+
+impl AnimationStateMachine {
+    pub fn new(name: &str) -> Self {
+        AnimationStateMachine {
+            name: name.to_string(),
+            states: HashMap::new(),
+            transitions: Vec::new(),
+            blend_nodes: HashMap::new(),
+            current_state_id: 0,
+            parameters: HashMap::new(),
+            bool_parameters: HashMap::new(),
+        }
+    }
+
+    pub fn add_state(&mut self, state: AnimationState) {
+        self.states.insert(state.id, state);
+    }
+
+    pub fn add_transition(&mut self, t: AnimationTransition) {
+        self.transitions.push(t);
+    }
+
+    pub fn set_float(&mut self, param: &str, value: f32) {
+        self.parameters.insert(param.to_string(), value);
+    }
+
+    pub fn set_bool(&mut self, param: &str, value: bool) {
+        self.bool_parameters.insert(param.to_string(), value);
+    }
+
+    pub fn evaluate_transitions(&self) -> Option<u32> {
+        for t in &self.transitions {
+            if t.from_state_id == self.current_state_id {
+                if self.bool_parameters.get(&t.condition).copied().unwrap_or(false) {
+                    return Some(t.to_state_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn tick(&mut self) {
+        if let Some(next_id) = self.evaluate_transitions() {
+            self.current_state_id = next_id;
+        }
+    }
+}
+
+// ============================================================
+// PROCEDURAL ANIMATION CURVES
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurveInterpolation {
+    Linear,
+    Hermite,
+    CatmullRom,
+    BSpline,
+    Stepped,
+}
+
+#[derive(Debug, Clone)]
+pub struct CurveKey {
+    pub time: f32,
+    pub value: f32,
+    pub in_tangent: f32,
+    pub out_tangent: f32,
+    pub interp: CurveInterpolation,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimationCurve {
+    pub keys: Vec<CurveKey>,
+    pub pre_wrap: bool,
+    pub post_wrap: bool,
+}
+
+impl AnimationCurve {
+    pub fn new() -> Self {
+        AnimationCurve { keys: Vec::new(), pre_wrap: false, post_wrap: false }
+    }
+
+    pub fn add_key(&mut self, key: CurveKey) {
+        let idx = self.keys.partition_point(|k| k.time < key.time);
+        self.keys.insert(idx, key);
+    }
+
+    pub fn evaluate(&self, t: f32) -> f32 {
+        if self.keys.is_empty() { return 0.0; }
+        if t <= self.keys[0].time { return self.keys[0].value; }
+        let last = self.keys.last().unwrap();
+        if t >= last.time { return last.value; }
+
+        let idx = self.keys.partition_point(|k| k.time <= t) - 1;
+        let a = &self.keys[idx];
+        let b = &self.keys[idx + 1];
+        let dt = b.time - a.time;
+        let s = (t - a.time) / dt;
+
+        match a.interp {
+            CurveInterpolation::Linear => a.value + (b.value - a.value) * s,
+            CurveInterpolation::Stepped => a.value,
+            CurveInterpolation::Hermite => {
+                let s2 = s * s;
+                let s3 = s2 * s;
+                let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+                let h10 = s3 - 2.0 * s2 + s;
+                let h01 = -2.0 * s3 + 3.0 * s2;
+                let h11 = s3 - s2;
+                h00 * a.value + h10 * dt * a.out_tangent + h01 * b.value + h11 * dt * b.in_tangent
+            },
+            CurveInterpolation::CatmullRom => {
+                // simplified
+                let s2 = s * s;
+                let s3 = s2 * s;
+                0.5 * ((2.0 * a.value)
+                    + (-a.value + b.value) * s
+                    + (2.0 * a.value - 5.0 * a.value + 4.0 * b.value - b.value) * s2
+                    + (-a.value + 3.0 * a.value - 3.0 * b.value + b.value) * s3)
+            },
+            CurveInterpolation::BSpline => {
+                // uniform quadratic b-spline basis approximation
+                a.value + (b.value - a.value) * (3.0 * s2 - 2.0 * s3)
+            },
+        }
+    }
+
+    pub fn duration(&self) -> f32 {
+        if self.keys.len() < 2 { return 0.0; }
+        self.keys.last().unwrap().time - self.keys[0].time
+    }
+}
+
+// ============================================================
+// TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_camera {
+    use super::*;
+
+    #[test]
+    fn test_camera_aperture_fov() {
+        let cam = CameraAperture::new_cinema();
+        let fov_h = cam.field_of_view_horizontal();
+        assert!(fov_h > 0.5 && fov_h < 1.5);
+    }
+
+    #[test]
+    fn test_camera_anim_track_sample() {
+        let mut track = CameraAnimTrack::new(1);
+        track.add_keyframe(CameraKeyframe {
+            time: 0.0, position: Vec3::ZERO, rotation: Quat::IDENTITY,
+            focal_length: 35.0, f_stop: 2.8, focus_distance: 5.0,
+        });
+        track.add_keyframe(CameraKeyframe {
+            time: 1.0, position: Vec3::new(1.0, 0.0, 0.0), rotation: Quat::IDENTITY,
+            focal_length: 50.0, f_stop: 4.0, focus_distance: 8.0,
+        });
+        let kf = track.sample(0.5).unwrap();
+        assert!((kf.position.x - 0.5).abs() < 0.01);
+        assert!((kf.focal_length - 42.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_subtitle_srt_export() {
+        let mut subs = LocalizedSubtitles::new("en");
+        subs.add_cue(SubtitleCue {
+            id: 1, start_time: 0.0, end_time: 2.5,
+            text: "Hello world".to_string(), speaker: None, style_override: None,
+        });
+        let srt = subs.export_srt();
+        assert!(srt.contains("Hello world"));
+        assert!(srt.contains("00:00:00,000"));
+    }
+
+    #[test]
+    fn test_narrative_sequencer() {
+        let mut seq = NarrativeSequencer::new();
+        let mut ev = NarrativeEvent::new(1, NarrativeEventType::DialogueLine, 1.0);
+        seq.add_event(ev);
+        let fired = seq.tick(0.5);
+        assert!(fired.is_empty());
+        let fired = seq.tick(1.5);
+        assert_eq!(fired.len(), 1);
+        let fired2 = seq.tick(2.0);
+        assert!(fired2.is_empty()); // already fired
+    }
+
+    #[test]
+    fn test_dialogue_graph_validate() {
+        let mut graph = DialogueGraph::new(1, "Test", 1);
+        graph.add_node(DialogueNode {
+            id: 1,
+            content: DialogueNodeContent::End,
+            next_id: None,
+        });
+        let errors = graph.validate();
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_blend_state_machine() {
+        let mut sm = AnimationStateMachine::new("Character");
+        sm.add_state(AnimationState { id: 0, name: "Idle".to_string(), root_node_id: 0, speed: 1.0, loop_state: true });
+        sm.add_state(AnimationState { id: 1, name: "Walk".to_string(), root_node_id: 1, speed: 1.0, loop_state: true });
+        sm.add_transition(AnimationTransition {
+            from_state_id: 0, to_state_id: 1,
+            condition: "IsWalking".to_string(),
+            blend_duration: 0.2, interrupt_current: false,
+        });
+        sm.current_state_id = 0;
+        sm.set_bool("IsWalking", false);
+        sm.tick();
+        assert_eq!(sm.current_state_id, 0);
+        sm.set_bool("IsWalking", true);
+        sm.tick();
+        assert_eq!(sm.current_state_id, 1);
+    }
+
+    #[test]
+    fn test_animation_curve_hermite() {
+        let mut curve = AnimationCurve::new();
+        curve.add_key(CurveKey { time: 0.0, value: 0.0, in_tangent: 0.0, out_tangent: 1.0, interp: CurveInterpolation::Hermite });
+        curve.add_key(CurveKey { time: 1.0, value: 1.0, in_tangent: 1.0, out_tangent: 0.0, interp: CurveInterpolation::Hermite });
+        let mid = curve.evaluate(0.5);
+        assert!(mid > 0.4 && mid < 0.6);
+    }
+
+    #[test]
+    fn test_retarget_session_humanoid() {
+        let session = RetargetSession::humanoid_default("UE5Mannequin", "ReadyPlayerMe");
+        assert_eq!(session.constraints.len(), 20);
+        assert_eq!(session.ik_chains.len(), 2);
+    }
+
+    #[test]
+    fn test_shot_list_csv() {
+        let mut sl = ShotList::new("TestScene");
+        sl.add_shot(ShotListEntry {
+            shot_number: "1A".to_string(), scene_number: "1".to_string(),
+            description: "Establishing shot".to_string(),
+            shot_type: ShotType::LongShot, camera_angle: CameraAngle::EyeLevel,
+            camera_movement: CameraMovement::Static,
+            focal_length: 35.0, estimated_duration: 5.0,
+            rig_notes: String::new(), lighting_notes: String::new(),
+            priority: 1, complete: false,
+        });
+        let csv = sl.export_csv();
+        assert!(csv.contains("1A"));
+        assert!(csv.contains("LongShot"));
+    }
+
+    #[test]
+    fn test_stream_index() {
+        let mut idx = CutsceneStreamIndex::new();
+        idx.add_chunk(CutsceneStreamChunk {
+            chunk_index: 0, byte_offset: 0,
+            compressed_size: 32768, uncompressed_size: 65536,
+            is_keyframe_chunk: true, timestamp_start: 0.0, timestamp_end: 1.0,
+        });
+        assert!((idx.compression_ratio() - 0.5).abs() < 0.01);
+        assert!(idx.chunk_for_time(0.5).is_some());
+    }
+
+    #[test]
+    fn test_camera_rig_handheld_noise() {
+        let rig = CameraRig::new(CameraRigType::Handheld);
+        let n1 = rig.handhold_noise(0.0);
+        let n2 = rig.handhold_noise(0.5);
+        assert_ne!(n1.x, n2.x);
+    }
+}
+
+// ============================================================
+// CUTSCENE PROJECT FILE FORMAT
+// ============================================================
+
+pub const CUTSCENE_FILE_MAGIC: u32 = 0x43545343; // "CTSC"
+pub const CUTSCENE_FILE_VERSION: u32 = 3;
+
+#[derive(Debug, Clone)]
+pub struct CutsceneFileHeader {
+    pub magic: u32,
+    pub version: u32,
+    pub total_duration: f32,
+    pub frame_rate: f32,
+    pub track_count: u32,
+    pub event_count: u32,
+    pub subtitle_language_count: u32,
+    pub created_timestamp: u64,
+    pub modified_timestamp: u64,
+    pub author: String,
+    pub description: String,
+}
+
+impl CutsceneFileHeader {
+    pub fn new(duration: f32, fps: f32) -> Self {
+        CutsceneFileHeader {
+            magic: CUTSCENE_FILE_MAGIC,
+            version: CUTSCENE_FILE_VERSION,
+            total_duration: duration,
+            frame_rate: fps,
+            track_count: 0,
+            event_count: 0,
+            subtitle_language_count: 0,
+            created_timestamp: 0,
+            modified_timestamp: 0,
+            author: String::new(),
+            description: String::new(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic == CUTSCENE_FILE_MAGIC && self.version <= CUTSCENE_FILE_VERSION
+    }
+
+    pub fn total_frames(&self) -> u32 {
+        (self.total_duration * self.frame_rate).ceil() as u32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneProjectFile {
+    pub header: CutsceneFileHeader,
+    pub cameras: Vec<CinematicCamera>,
+    pub camera_tracks: Vec<CameraAnimTrack>,
+    pub layer_stack: LayerStack,
+    pub subtitle_manager: SubtitleManager,
+    pub narrative_sequencer: NarrativeSequencer,
+    pub shot_list: ShotList,
+    pub stream_index: CutsceneStreamIndex,
+}
+
+impl CutsceneProjectFile {
+    pub fn new(duration: f32, fps: f32) -> Self {
+        CutsceneProjectFile {
+            header: CutsceneFileHeader::new(duration, fps),
+            cameras: Vec::new(),
+            camera_tracks: Vec::new(),
+            layer_stack: LayerStack::new(),
+            subtitle_manager: SubtitleManager::new("en"),
+            narrative_sequencer: NarrativeSequencer::new(),
+            shot_list: ShotList::new("Untitled"),
+            stream_index: CutsceneStreamIndex::new(),
+        }
+    }
+
+    pub fn add_camera(&mut self, cam: CinematicCamera) {
+        self.cameras.push(cam);
+        self.header.track_count += 1;
+    }
+
+    pub fn camera_by_id(&self, id: u32) -> Option<&CinematicCamera> {
+        self.cameras.iter().find(|c| c.id == id)
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "Cutscene '{}' v{}: {:.2}s @ {}fps, {} cameras, {} tracks, {} events",
+            self.shot_list.title,
+            self.header.version,
+            self.header.total_duration,
+            self.header.frame_rate,
+            self.cameras.len(),
+            self.header.track_count,
+            self.narrative_sequencer.events.len()
+        )
+    }
+}
+
+// ============================================================
+// AUDIO MIX BUS SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BusType {
+    Master,
+    Music,
+    SFX,
+    Dialogue,
+    Ambience,
+    Aux,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioEffect {
+    pub name: String,
+    pub enabled: bool,
+    pub parameters: HashMap<String, f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MixBus {
+    pub id: u32,
+    pub name: String,
+    pub bus_type: BusType,
+    pub volume: f32,
+    pub pan: f32,
+    pub muted: bool,
+    pub soloed: bool,
+    pub send_to_master: bool,
+    pub effects: Vec<AudioEffect>,
+    pub children: Vec<u32>,
+}
+
+impl MixBus {
+    pub fn new(id: u32, name: &str, bus_type: BusType) -> Self {
+        MixBus {
+            id, name: name.to_string(), bus_type,
+            volume: 1.0, pan: 0.0, muted: false, soloed: false,
+            send_to_master: true, effects: Vec::new(), children: Vec::new(),
+        }
+    }
+
+    pub fn add_effect(&mut self, effect: AudioEffect) {
+        self.effects.push(effect);
+    }
+
+    pub fn effective_volume(&self) -> f32 {
+        if self.muted { 0.0 } else { self.volume }
+    }
+
+    pub fn add_reverb(&mut self, room_size: f32, damping: f32, wet: f32) {
+        let mut params = HashMap::new();
+        params.insert("room_size".to_string(), room_size);
+        params.insert("damping".to_string(), damping);
+        params.insert("wet_level".to_string(), wet);
+        self.add_effect(AudioEffect {
+            name: "Reverb".to_string(),
+            enabled: true,
+            parameters: params,
+        });
+    }
+
+    pub fn add_eq_low_shelf(&mut self, frequency: f32, gain_db: f32) {
+        let mut params = HashMap::new();
+        params.insert("frequency".to_string(), frequency);
+        params.insert("gain_db".to_string(), gain_db);
+        self.add_effect(AudioEffect {
+            name: "EQLowShelf".to_string(),
+            enabled: true,
+            parameters: params,
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioMixer {
+    pub buses: HashMap<u32, MixBus>,
+    pub master_bus_id: u32,
+    pub sample_rate: u32,
+    pub buffer_size: u32,
+    pub bit_depth: u32,
+}
+
+impl AudioMixer {
+    pub fn new(sample_rate: u32, buffer_size: u32) -> Self {
+        let mut mixer = AudioMixer {
+            buses: HashMap::new(),
+            master_bus_id: 0,
+            sample_rate,
+            buffer_size,
+            bit_depth: 24,
+        };
+        mixer.buses.insert(0, MixBus::new(0, "Master", BusType::Master));
+        mixer
+    }
+
+    pub fn add_bus(&mut self, bus: MixBus) {
+        self.buses.insert(bus.id, bus);
+    }
+
+    pub fn default_setup() -> Self {
+        let mut m = AudioMixer::new(48000, 1024);
+        m.add_bus(MixBus::new(1, "Music", BusType::Music));
+        m.add_bus(MixBus::new(2, "SFX", BusType::SFX));
+        m.add_bus(MixBus::new(3, "Dialogue", BusType::Dialogue));
+        m.add_bus(MixBus::new(4, "Ambience", BusType::Ambience));
+        m
+    }
+
+    pub fn get_bus_mut(&mut self, id: u32) -> Option<&mut MixBus> {
+        self.buses.get_mut(&id)
+    }
+
+    pub fn active_buses(&self) -> Vec<&MixBus> {
+        self.buses.values().filter(|b| !b.muted).collect()
+    }
+}
+
+// ============================================================
+// CINEMATIC LENS PROFILE LIBRARY
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LensProfile {
+    pub name: String,
+    pub manufacturer: String,
+    pub focal_length_mm: f32,
+    pub max_aperture: f32,
+    pub min_aperture: f32,
+    pub t_stop: f32,
+    pub distortion_k1: f32,
+    pub distortion_k2: f32,
+    pub chromatic_aberration: f32,
+    pub vignetting_amount: f32,
+    pub breathing_percent: f32,
+}
+
+impl LensProfile {
+    pub fn prime_35mm_fast() -> Self {
+        LensProfile {
+            name: "35mm T1.5".to_string(),
+            manufacturer: "ProCine".to_string(),
+            focal_length_mm: 35.0,
+            max_aperture: 1.4,
+            min_aperture: 16.0,
+            t_stop: 1.5,
+            distortion_k1: -0.02,
+            distortion_k2: 0.005,
+            chromatic_aberration: 0.03,
+            vignetting_amount: 0.15,
+            breathing_percent: 2.0,
+        }
+    }
+
+    pub fn zoom_24_70() -> Self {
+        LensProfile {
+            name: "24-70mm T2.8".to_string(),
+            manufacturer: "CineZoom".to_string(),
+            focal_length_mm: 47.0,
+            max_aperture: 2.8,
+            min_aperture: 22.0,
+            t_stop: 2.9,
+            distortion_k1: 0.015,
+            distortion_k2: -0.003,
+            chromatic_aberration: 0.05,
+            vignetting_amount: 0.12,
+            breathing_percent: 5.0,
+        }
+    }
+
+    pub fn effective_fov(&self, sensor_width: f32) -> f32 {
+        2.0 * (sensor_width / (2.0 * self.focal_length_mm)).atan()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LensLibrary {
+    pub profiles: Vec<LensProfile>,
+}
+
+impl LensLibrary {
+    pub fn default_library() -> Self {
+        LensLibrary {
+            profiles: vec![
+                LensProfile::prime_35mm_fast(),
+                LensProfile::zoom_24_70(),
+            ],
+        }
+    }
+
+    pub fn find_by_focal_length(&self, fl: f32) -> Vec<&LensProfile> {
+        self.profiles.iter()
+            .filter(|p| (p.focal_length_mm - fl).abs() < 5.0)
+            .collect()
+    }
+}
+
+// info function
+pub fn cutscene_importer_info() -> &'static str {
+    "CutsceneImporter v3.0: Camera, Subtitle, Narrative, BlendTree, Audio, Lens"
+}

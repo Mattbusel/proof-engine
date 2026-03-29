@@ -1,0 +1,116 @@
+
+// ============================================================
+// ROAD REHABILITATION ANALYSIS (terrain_road_tool additions)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RehabOption {
+    pub option_id: u32,
+    pub description: String,
+    pub treatment_type: String,
+    pub cost_per_m2: f64,
+    pub expected_life_years: u32,
+    pub iri_improvement: f32,
+    pub pci_improvement: f32,
+}
+
+impl RehabOption {
+    pub fn crack_seal() -> Self {
+        RehabOption { option_id: 1, description: "Crack Sealing".to_string(), treatment_type: "Preventive".to_string(), cost_per_m2: 3.0, expected_life_years: 5, iri_improvement: 0.2, pci_improvement: 5.0 }
+    }
+    pub fn fog_seal() -> Self {
+        RehabOption { option_id: 2, description: "Fog Seal".to_string(), treatment_type: "Preventive".to_string(), cost_per_m2: 2.5, expected_life_years: 4, iri_improvement: 0.1, pci_improvement: 3.0 }
+    }
+    pub fn microsurfacing() -> Self {
+        RehabOption { option_id: 3, description: "Microsurfacing".to_string(), treatment_type: "Minor Rehab".to_string(), cost_per_m2: 12.0, expected_life_years: 8, iri_improvement: 0.8, pci_improvement: 15.0 }
+    }
+    pub fn overlay_50mm() -> Self {
+        RehabOption { option_id: 4, description: "50mm AC Overlay".to_string(), treatment_type: "Major Rehab".to_string(), cost_per_m2: 28.0, expected_life_years: 12, iri_improvement: 1.5, pci_improvement: 30.0 }
+    }
+    pub fn reconstruction() -> Self {
+        RehabOption { option_id: 5, description: "Full Reconstruction".to_string(), treatment_type: "Reconstruction".to_string(), cost_per_m2: 120.0, expected_life_years: 25, iri_improvement: 3.0, pci_improvement: 70.0 }
+    }
+
+    pub fn benefit_cost_ratio(&self, area_m2: f32, current_condition_score: f32) -> f64 {
+        let annual_benefit = (self.iri_improvement * current_condition_score) as f64 * area_m2 as f64 * 0.1;
+        let total_benefit = annual_benefit * self.expected_life_years as f64;
+        let cost = self.cost_per_m2 * area_m2 as f64;
+        if cost <= 0.0 { return f64::INFINITY; }
+        total_benefit / cost
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RehabProgramEntry {
+    pub section_id: u32,
+    pub area_m2: f32,
+    pub selected_option: RehabOption,
+    pub programmed_year: u32,
+    pub priority_score: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RehabilitationProgram {
+    pub program_name: String,
+    pub analysis_years: u32,
+    pub annual_budget: f64,
+    pub entries: Vec<RehabProgramEntry>,
+}
+
+impl RehabilitationProgram {
+    pub fn new(name: &str, years: u32, budget: f64) -> Self {
+        RehabilitationProgram { program_name: name.to_string(), analysis_years: years, annual_budget: budget, entries: Vec::new() }
+    }
+
+    pub fn add_entry(&mut self, entry: RehabProgramEntry) {
+        self.entries.push(entry);
+        self.entries.sort_by(|a, b| b.priority_score.partial_cmp(&a.priority_score).unwrap());
+    }
+
+    pub fn total_cost(&self) -> f64 {
+        self.entries.iter().map(|e| e.selected_option.cost_per_m2 * e.area_m2 as f64).sum()
+    }
+
+    pub fn entries_by_year(&self, year: u32) -> Vec<&RehabProgramEntry> {
+        self.entries.iter().filter(|e| e.programmed_year == year).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests_terrain_rehab {
+    use super::*;
+
+    #[test]
+    fn test_rehab_bcr() {
+        let overlay = RehabOption::overlay_50mm();
+        let bcr = overlay.benefit_cost_ratio(1000.0, 50.0);
+        assert!(bcr > 0.0);
+    }
+
+    #[test]
+    fn test_rehab_program() {
+        let mut prog = RehabilitationProgram::new("FY2025", 5, 500_000.0);
+        prog.add_entry(RehabProgramEntry { section_id: 1, area_m2: 5000.0, selected_option: RehabOption::overlay_50mm(), programmed_year: 2025, priority_score: 85.0 });
+        prog.add_entry(RehabProgramEntry { section_id: 2, area_m2: 2000.0, selected_option: RehabOption::crack_seal(), programmed_year: 2025, priority_score: 60.0 });
+        assert_eq!(prog.entries_by_year(2025).len(), 2);
+        assert!(prog.total_cost() > 0.0);
+    }
+
+    #[test]
+    fn test_pavement_design_thickness() {
+        let mut design = PavementDesign::new("EXPR-001", 10_000_000.0, 5.0);
+        design.add_layer(PavementMaterialProps::dense_graded_ac());
+        design.add_layer(PavementMaterialProps { layer_thickness_mm: 75.0, ..PavementMaterialProps::dense_graded_ac() });
+        design.add_layer(PavementMaterialProps::crushed_rock_base());
+        assert_eq!(design.total_pavement_thickness_mm(), 325.0);
+    }
+}
+
+pub const TERRAIN_ROAD_REHAB_CONSTANTS: &[(&str, f32)] = &[
+    ("MAX_IRI_ACCEPTABLE", 4.5),
+    ("MIN_PCI_ACCEPTABLE", 40.0),
+    ("CRACKING_THRESHOLD_PCT", 20.0),
+    ("RUTTING_THRESHOLD_MM", 15.0),
+    ("TEXTURE_DEPTH_MIN_MM", 0.6),
+    ("SKID_RESISTANCE_MIN_SFC", 0.45),
+];

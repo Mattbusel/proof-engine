@@ -1,0 +1,257 @@
+
+// ============================================================
+// ROAD LIGHTING DESIGN
+// ============================================================
+
+pub const STREET_LIGHT_MAINTAINED_LUX_ARTERIAL: f32 = 20.0;
+pub const STREET_LIGHT_MAINTAINED_LUX_COLLECTOR: f32 = 15.0;
+pub const STREET_LIGHT_MAINTAINED_LUX_LOCAL: f32 = 10.0;
+pub const STREET_LIGHT_POLE_HEIGHT_DEFAULT_M: f32 = 10.0;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LampType { HPS, MH, LED, CFL, FluorescentT8 }
+
+impl LampType {
+    pub fn efficacy_lm_per_w(&self) -> f32 {
+        match self {
+            LampType::HPS => 100.0, LampType::MH => 90.0, LampType::LED => 140.0,
+            LampType::CFL => 65.0, LampType::FluorescentT8 => 80.0,
+        }
+    }
+    pub fn maintenance_factor(&self) -> f32 {
+        match self {
+            LampType::LED => 0.90, LampType::HPS => 0.70, LampType::MH => 0.72,
+            _ => 0.75,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StreetLightPole {
+    pub pole_id: u32, pub chainage: f32, pub offset_m: f32,
+    pub height_m: f32, pub lamp_type: LampType,
+    pub wattage: f32, pub spacing_m: f32,
+    pub on_median: bool, pub tilt_deg: f32,
+}
+
+impl StreetLightPole {
+    pub fn new_led(pole_id: u32, chainage: f32, spacing: f32) -> Self {
+        StreetLightPole { pole_id, chainage, offset_m: 0.5, height_m: STREET_LIGHT_POLE_HEIGHT_DEFAULT_M,
+            lamp_type: LampType::LED, wattage: 100.0, spacing_m: spacing, on_median: false, tilt_deg: 5.0 }
+    }
+    pub fn luminous_flux(&self) -> f32 {
+        self.wattage * self.lamp_type.efficacy_lm_per_w()
+    }
+    pub fn maintained_average_lux(&self, road_width_m: f32) -> f32 {
+        let area = self.spacing_m * road_width_m;
+        if area <= 0.0 { return 0.0; }
+        self.luminous_flux() * self.lamp_type.maintenance_factor() * 0.5 / area
+    }
+    pub fn annual_energy_kwh(&self, hours_per_night: f32, nights_per_year: f32) -> f32 {
+        self.wattage / 1000.0 * hours_per_night * nights_per_year
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LightingScheme {
+    pub road_id: u32, pub poles: Vec<StreetLightPole>,
+    pub road_width_m: f32, pub target_lux: f32,
+}
+
+impl LightingScheme {
+    pub fn new(road_id: u32, width: f32, target: f32) -> Self {
+        LightingScheme { road_id, poles: Vec::new(), road_width_m: width, target_lux: target }
+    }
+    pub fn add_pole(&mut self, pole: StreetLightPole) { self.poles.push(pole); }
+    pub fn pole_count(&self) -> usize { self.poles.len() }
+    pub fn avg_spacing_m(&self) -> f32 {
+        if self.poles.len() < 2 { return 0.0; }
+        let total_ch = self.poles.last().unwrap().chainage - self.poles.first().unwrap().chainage;
+        total_ch / (self.poles.len() - 1) as f32
+    }
+    pub fn total_annual_kwh(&self) -> f32 {
+        self.poles.iter().map(|p| p.annual_energy_kwh(11.0, 365.0)).sum()
+    }
+    pub fn compliant_illuminance(&self) -> bool {
+        self.poles.iter().all(|p| p.maintained_average_lux(self.road_width_m) >= self.target_lux)
+    }
+}
+
+#[cfg(test)]
+mod tests_lighting {
+    use super::*;
+    #[test]
+    fn test_led_pole_flux() {
+        let pole = StreetLightPole::new_led(1, 0.0, 40.0);
+        assert!((pole.luminous_flux() - 14000.0).abs() < 1.0);
+    }
+    #[test]
+    fn test_lighting_scheme_energy() {
+        let mut scheme = LightingScheme::new(1, 7.0, STREET_LIGHT_MAINTAINED_LUX_COLLECTOR);
+        for i in 0..10 { scheme.add_pole(StreetLightPole::new_led(i, i as f32 * 40.0, 40.0)); }
+        assert!(scheme.total_annual_kwh() > 0.0);
+        assert_eq!(scheme.pole_count(), 10);
+    }
+}
+
+pub const LIGHTING_UNIFORMITY_RATIO_MIN: f32 = 0.35;
+pub const LIGHTING_LUMINANCE_RATIO_MIN: f32 = 0.40;
+
+// ============================================================
+// MAP EDITOR SPAWN SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpawnCondition { Always, DaytimeOnly, NighttimeOnly, OnQuestActive(u32), OnFlagSet(String), }
+
+#[derive(Debug, Clone)]
+pub struct SpawnPoint {
+    pub id: u32, pub position: Vec3, pub radius: f32,
+    pub entity_template: String, pub max_count: u32,
+    pub respawn_interval_s: f32, pub condition: SpawnCondition,
+    pub active: bool, pub current_count: u32,
+}
+
+impl SpawnPoint {
+    pub fn new(id: u32, pos: Vec3, template: &str) -> Self {
+        SpawnPoint { id, position: pos, radius: 1.0, entity_template: template.to_string(),
+            max_count: 1, respawn_interval_s: 300.0, condition: SpawnCondition::Always,
+            active: true, current_count: 0 }
+    }
+    pub fn can_spawn(&self) -> bool { self.active && self.current_count < self.max_count }
+    pub fn spawn(&mut self) -> bool {
+        if self.can_spawn() { self.current_count += 1; true } else { false }
+    }
+    pub fn despawn(&mut self) {
+        if self.current_count > 0 { self.current_count -= 1; }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpawnManager {
+    pub spawns: HashMap<u32, SpawnPoint>, pub global_enabled: bool,
+}
+
+impl SpawnManager {
+    pub fn new() -> Self { SpawnManager { spawns: HashMap::new(), global_enabled: true } }
+    pub fn add_spawn(&mut self, sp: SpawnPoint) { self.spawns.insert(sp.id, sp); }
+    pub fn active_spawns(&self) -> Vec<&SpawnPoint> { self.spawns.values().filter(|s| s.active).collect() }
+    pub fn can_spawn_at(&self, id: u32) -> bool {
+        self.global_enabled && self.spawns.get(&id).map(|s| s.can_spawn()).unwrap_or(false)
+    }
+    pub fn total_entities(&self) -> u32 { self.spawns.values().map(|s| s.current_count).sum() }
+}
+
+#[cfg(test)]
+mod tests_spawn {
+    use super::*;
+    #[test]
+    fn test_spawn_point() {
+        let mut sp = SpawnPoint::new(1, Vec3::ZERO, "Goblin");
+        sp.max_count = 3;
+        assert!(sp.spawn()); assert!(sp.spawn()); assert!(sp.spawn());
+        assert!(!sp.spawn());
+        sp.despawn();
+        assert!(sp.can_spawn());
+    }
+    #[test]
+    fn test_spawn_manager() {
+        let mut mgr = SpawnManager::new();
+        let mut sp = SpawnPoint::new(1, Vec3::ZERO, "Orc");
+        sp.max_count = 2;
+        mgr.add_spawn(sp);
+        assert!(mgr.can_spawn_at(1));
+        mgr.spawns.get_mut(&1).unwrap().spawn();
+        mgr.spawns.get_mut(&1).unwrap().spawn();
+        assert!(!mgr.can_spawn_at(1));
+    }
+}
+
+pub const SPAWN_DEFAULT_RADIUS_M: f32 = 2.0;
+pub const SPAWN_MAX_PER_ZONE: u32 = 100;
+
+// ============================================================
+// CUTSCENE SEQUENCER EVENTS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CutsceneEventSchedule {
+    pub events: Vec<(f32, String)>,
+}
+
+impl CutsceneEventSchedule {
+    pub fn new() -> Self { CutsceneEventSchedule { events: Vec::new() } }
+    pub fn schedule(&mut self, time: f32, event: &str) {
+        self.events.push((time, event.to_string()));
+        self.events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    }
+    pub fn events_before(&self, t: f32) -> Vec<&str> {
+        self.events.iter().filter(|(et, _)| *et <= t).map(|(_, e)| e.as_str()).collect()
+    }
+    pub fn next_event_after(&self, t: f32) -> Option<(f32, &str)> {
+        self.events.iter().find(|(et, _)| *et > t).map(|(et, e)| (*et, e.as_str()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneMarker {
+    pub id: u32, pub time: f32, pub name: String, pub color: Vec4,
+    pub comment: String,
+}
+
+impl CutsceneMarker {
+    pub fn new(id: u32, time: f32, name: &str) -> Self {
+        CutsceneMarker { id, time, name: name.to_string(),
+            color: Vec4::new(1.0, 0.8, 0.0, 1.0), comment: String::new() }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneMarkerTrack {
+    pub markers: Vec<CutsceneMarker>,
+}
+
+impl CutsceneMarkerTrack {
+    pub fn new() -> Self { CutsceneMarkerTrack { markers: Vec::new() } }
+    pub fn add_marker(&mut self, m: CutsceneMarker) {
+        self.markers.push(m);
+        self.markers.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+    }
+    pub fn marker_at(&self, t: f32, tolerance: f32) -> Option<&CutsceneMarker> {
+        self.markers.iter().find(|m| (m.time - t).abs() <= tolerance)
+    }
+    pub fn markers_in_range(&self, start: f32, end: f32) -> Vec<&CutsceneMarker> {
+        self.markers.iter().filter(|m| m.time >= start && m.time <= end).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests_markers {
+    use super::*;
+    #[test]
+    fn test_event_schedule() {
+        let mut sched = CutsceneEventSchedule::new();
+        sched.schedule(5.0, "explosion");
+        sched.schedule(10.0, "music_change");
+        sched.schedule(2.0, "fade_in");
+        let before = sched.events_before(6.0);
+        assert_eq!(before.len(), 2);
+        let next = sched.next_event_after(6.0);
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().1, "music_change");
+    }
+    #[test]
+    fn test_marker_track() {
+        let mut track = CutsceneMarkerTrack::new();
+        track.add_marker(CutsceneMarker::new(1, 10.0, "Act1End"));
+        track.add_marker(CutsceneMarker::new(2, 30.0, "Act2End"));
+        let found = track.marker_at(10.0, 0.1);
+        assert!(found.is_some());
+        let range = track.markers_in_range(5.0, 25.0);
+        assert_eq!(range.len(), 1);
+    }
+}
+
+pub const CUTSCENE_MARKER_MAX: u32 = 256;
+pub const CUTSCENE_EVENT_MAX: u32 = 1024;
+pub const CUTSCENE_FINAL_BUILD: u32 = 311;

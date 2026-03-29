@@ -1,0 +1,946 @@
+
+// ============================================================
+// ROAD SIGN INVENTORY
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignType {
+    Stop, Yield, SpeedLimit, Warning, Guide, Information,
+    Regulatory, Construction, SchoolZone, NoEntry, OneWay,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadSign {
+    pub id: u32,
+    pub sign_type: SignType,
+    pub station_m: f32,
+    pub side: String,
+    pub retroreflectivity: f32,
+    pub age_years: f32,
+    pub height_m: f32,
+    pub posted_speed_kph: Option<u32>,
+}
+
+impl RoadSign {
+    pub fn new(id: u32, sign_type: SignType, station_m: f32, side: &str) -> Self {
+        Self { id, sign_type, station_m, side: side.to_string(),
+            retroreflectivity: 400.0, age_years: 0.0, height_m: 2.1, posted_speed_kph: None }
+    }
+    pub fn min_retroreflectivity(&self) -> f32 {
+        match &self.sign_type {
+            SignType::Stop | SignType::Yield => 250.0,
+            SignType::SpeedLimit | SignType::Regulatory => 200.0,
+            SignType::Warning | SignType::Construction => 150.0,
+            _ => 100.0,
+        }
+    }
+    pub fn is_adequate(&self) -> bool { self.retroreflectivity >= self.min_retroreflectivity() }
+    pub fn sign_type_str(&self) -> &'static str {
+        match &self.sign_type {
+            SignType::Stop => "Stop", SignType::Yield => "Yield",
+            SignType::SpeedLimit => "Speed Limit", SignType::Warning => "Warning",
+            SignType::Guide => "Guide", SignType::Information => "Information",
+            SignType::Regulatory => "Regulatory", SignType::Construction => "Construction",
+            SignType::SchoolZone => "School Zone", SignType::NoEntry => "No Entry",
+            SignType::OneWay => "One Way",
+        }
+    }
+    pub fn replacement_cost_usd(&self) -> f32 {
+        match &self.sign_type {
+            SignType::Stop | SignType::Yield => 150.0,
+            SignType::SpeedLimit => 120.0,
+            SignType::Warning => 200.0,
+            SignType::Guide => 500.0,
+            _ => 100.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SignInventory {
+    pub road_id: String,
+    pub signs: Vec<RoadSign>,
+}
+
+impl SignInventory {
+    pub fn new(road_id: &str) -> Self { Self { road_id: road_id.to_string(), signs: Vec::new() } }
+    pub fn add(&mut self, s: RoadSign) { self.signs.push(s); }
+    pub fn inadequate_signs(&self) -> Vec<&RoadSign> {
+        self.signs.iter().filter(|s| !s.is_adequate()).collect()
+    }
+    pub fn signs_by_type(&self) -> HashMap<String, usize> {
+        let mut map: HashMap<String, usize> = HashMap::new();
+        for s in &self.signs {
+            *map.entry(s.sign_type_str().to_string()).or_insert(0) += 1;
+        }
+        map
+    }
+    pub fn total_replacement_cost(&self) -> f32 {
+        self.signs.iter().map(|s| s.replacement_cost_usd()).sum()
+    }
+    pub fn count(&self) -> usize { self.signs.len() }
+    pub fn report(&self) -> String {
+        let s = format!("SignInventory road={} count={} inadequate={} cost={:.0}",
+            self.road_id, self.count(), self.inadequate_signs().len(), self.total_replacement_cost());
+        s
+    }
+}
+
+// ============================================================
+// ROAD CONDITION SURVEY
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ConditionSurveyRecord {
+    pub section_id: String,
+    pub start_station_m: f32,
+    pub end_station_m: f32,
+    pub pci: f32,
+    pub rutting_mm: f32,
+    pub iri_m_km: f32,
+    pub skid_number: f32,
+    pub survey_date: String,
+}
+
+impl ConditionSurveyRecord {
+    pub fn new(section_id: &str, start_m: f32, end_m: f32, pci: f32, rutting_mm: f32, iri: f32, sn: f32) -> Self {
+        Self { section_id: section_id.to_string(), start_station_m: start_m, end_station_m: end_m,
+            pci, rutting_mm, iri_m_km: iri, skid_number: sn, survey_date: "2024-01-01".to_string() }
+    }
+    pub fn length_m(&self) -> f32 { (self.end_station_m - self.start_station_m).abs() }
+    pub fn needs_rutting_repair(&self) -> bool { self.rutting_mm > 15.0 }
+    pub fn needs_iri_repair(&self) -> bool { self.iri_m_km > IRI_REPLACE_THRESHOLD_M_KM }
+    pub fn needs_friction_repair(&self) -> bool { self.skid_number < SKID_NUMBER_MIN_ADEQUATE }
+    pub fn overall_needs_repair(&self) -> bool {
+        self.pci < PAVEMENT_MIN_PCI_ACCEPT || self.needs_rutting_repair() ||
+        self.needs_iri_repair() || self.needs_friction_repair()
+    }
+    pub fn condition_score(&self) -> f32 {
+        let pci_score = self.pci / 100.0;
+        let rut_score = (1.0 - (self.rutting_mm / 30.0).min(1.0));
+        let iri_score = (1.0 - (self.iri_m_km / 8.0).min(1.0));
+        let sn_score = (self.skid_number / 80.0).min(1.0);
+        (pci_score + rut_score + iri_score + sn_score) / 4.0 * 100.0
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConditionSurveyDatabase {
+    pub surveys: Vec<ConditionSurveyRecord>,
+}
+
+impl ConditionSurveyDatabase {
+    pub fn new() -> Self { Self { surveys: Vec::new() } }
+    pub fn add(&mut self, r: ConditionSurveyRecord) { self.surveys.push(r); }
+    pub fn average_pci(&self) -> f32 {
+        if self.surveys.is_empty() { return 0.0; }
+        self.surveys.iter().map(|r| r.pci).sum::<f32>() / self.surveys.len() as f32
+    }
+    pub fn sections_needing_repair(&self) -> Vec<&ConditionSurveyRecord> {
+        self.surveys.iter().filter(|r| r.overall_needs_repair()).collect()
+    }
+    pub fn total_length_m(&self) -> f32 { self.surveys.iter().map(|r| r.length_m()).sum() }
+    pub fn repair_length_m(&self) -> f32 {
+        self.sections_needing_repair().iter().map(|r| r.length_m()).sum()
+    }
+    pub fn repair_percentage(&self) -> f32 {
+        let total = self.total_length_m();
+        if total < 0.001 { return 0.0; }
+        self.repair_length_m() / total * 100.0
+    }
+    pub fn worst_sections(&self, n: usize) -> Vec<&ConditionSurveyRecord> {
+        let mut sorted: Vec<&ConditionSurveyRecord> = self.surveys.iter().collect();
+        sorted.sort_by(|a, b| a.pci.partial_cmp(&b.pci).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.into_iter().take(n).collect()
+    }
+}
+
+// ============================================================
+// PEDESTRIAN / BICYCLE FACILITY
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FacilityType { Sidewalk, SharedPath, BikeLane, ProtectedBikeLane, PedestrianCrossing, TrafficIsland }
+
+#[derive(Debug, Clone)]
+pub struct ActiveTransportFacility {
+    pub id: u32,
+    pub facility_type: FacilityType,
+    pub start_station_m: f32,
+    pub end_station_m: f32,
+    pub width_m: f32,
+    pub surface_condition: f32,  // 0-10
+    pub has_lighting: bool,
+    pub has_curb_ramps: bool,
+    pub is_ada_compliant: bool,
+}
+
+impl ActiveTransportFacility {
+    pub fn new(id: u32, facility_type: FacilityType, start_m: f32, end_m: f32, width_m: f32) -> Self {
+        Self { id, facility_type, start_station_m: start_m, end_station_m: end_m, width_m,
+            surface_condition: 8.0, has_lighting: false, has_curb_ramps: true, is_ada_compliant: true }
+    }
+    pub fn length_m(&self) -> f32 { (self.end_station_m - self.start_station_m).abs() }
+    pub fn min_width_m(&self) -> f32 {
+        match &self.facility_type {
+            FacilityType::Sidewalk => 1.5,
+            FacilityType::SharedPath => 3.0,
+            FacilityType::BikeLane => 1.5,
+            FacilityType::ProtectedBikeLane => 2.0,
+            FacilityType::PedestrianCrossing => 2.0,
+            FacilityType::TrafficIsland => 1.5,
+        }
+    }
+    pub fn is_width_adequate(&self) -> bool { self.width_m >= self.min_width_m() }
+    pub fn facility_type_str(&self) -> &'static str {
+        match &self.facility_type {
+            FacilityType::Sidewalk => "Sidewalk",
+            FacilityType::SharedPath => "Shared Path",
+            FacilityType::BikeLane => "Bike Lane",
+            FacilityType::ProtectedBikeLane => "Protected Bike Lane",
+            FacilityType::PedestrianCrossing => "Pedestrian Crossing",
+            FacilityType::TrafficIsland => "Traffic Island",
+        }
+    }
+    pub fn level_of_stress(&self) -> u8 {
+        match &self.facility_type {
+            FacilityType::ProtectedBikeLane => 1,
+            FacilityType::SharedPath => 1,
+            FacilityType::BikeLane => 2,
+            FacilityType::Sidewalk => 2,
+            FacilityType::PedestrianCrossing => 3,
+            FacilityType::TrafficIsland => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ActiveTransportNetwork {
+    pub road_id: String,
+    pub facilities: Vec<ActiveTransportFacility>,
+}
+
+impl ActiveTransportNetwork {
+    pub fn new(road_id: &str) -> Self { Self { road_id: road_id.to_string(), facilities: Vec::new() } }
+    pub fn add(&mut self, f: ActiveTransportFacility) { self.facilities.push(f); }
+    pub fn total_length_m(&self) -> f32 { self.facilities.iter().map(|f| f.length_m()).sum() }
+    pub fn sidewalk_coverage_m(&self) -> f32 {
+        self.facilities.iter()
+            .filter(|f| matches!(&f.facility_type, FacilityType::Sidewalk))
+            .map(|f| f.length_m()).sum()
+    }
+    pub fn bike_facility_length_m(&self) -> f32 {
+        self.facilities.iter()
+            .filter(|f| matches!(&f.facility_type, FacilityType::BikeLane | FacilityType::ProtectedBikeLane | FacilityType::SharedPath))
+            .map(|f| f.length_m()).sum()
+    }
+    pub fn ada_compliance_rate(&self) -> f32 {
+        if self.facilities.is_empty() { return 100.0; }
+        let compliant = self.facilities.iter().filter(|f| f.is_ada_compliant).count();
+        compliant as f32 / self.facilities.len() as f32 * 100.0
+    }
+    pub fn inadequate_width(&self) -> Vec<&ActiveTransportFacility> {
+        self.facilities.iter().filter(|f| !f.is_width_adequate()).collect()
+    }
+}
+
+// ============================================================
+// ROAD NETWORK ANALYSIS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RoadNetworkNode {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub node_type: String,
+    pub elevation_m: f32,
+}
+
+impl RoadNetworkNode {
+    pub fn new(id: u32, x: f32, y: f32) -> Self {
+        Self { id, x, y, node_type: "intersection".to_string(), elevation_m: 0.0 }
+    }
+    pub fn distance_to(&self, other: &RoadNetworkNode) -> f32 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadNetworkEdge {
+    pub id: u32,
+    pub from_node: u32,
+    pub to_node: u32,
+    pub length_m: f32,
+    pub lanes: u8,
+    pub speed_limit_kph: f32,
+    pub functional_class: u8,   // 1=freeway, 2=arterial, 3=collector, 4=local
+    pub is_one_way: bool,
+    pub volume_aadt: u32,
+}
+
+impl RoadNetworkEdge {
+    pub fn new(id: u32, from: u32, to: u32, length_m: f32, speed_limit_kph: f32) -> Self {
+        Self { id, from_node: from, to_node: to, length_m, lanes: 2,
+            speed_limit_kph, functional_class: 3, is_one_way: false, volume_aadt: 0 }
+    }
+    pub fn free_flow_time_s(&self) -> f32 { self.length_m / (self.speed_limit_kph / 3.6) }
+    pub fn volume_capacity_ratio(&self) -> f32 {
+        let capacity = match self.functional_class {
+            1 => 2200 * self.lanes as u32,
+            2 => 1800 * self.lanes as u32,
+            3 => 1200 * self.lanes as u32,
+            _ => 800 * self.lanes as u32,
+        };
+        self.volume_aadt as f32 / (capacity as f32 * 250.0)  // annualized
+    }
+    pub fn los_from_vc(&self) -> char {
+        match (self.volume_capacity_ratio() * 10.0) as u32 {
+            0..=5 => 'A', 6 => 'B', 7 => 'C', 8 => 'D', 9 => 'E', _ => 'F',
+        }
+    }
+    pub fn functional_class_str(&self) -> &'static str {
+        match self.functional_class {
+            1 => "Freeway/Expressway", 2 => "Arterial",
+            3 => "Collector", 4 => "Local", _ => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoadNetwork {
+    pub network_id: String,
+    pub nodes: Vec<RoadNetworkNode>,
+    pub edges: Vec<RoadNetworkEdge>,
+}
+
+impl RoadNetwork {
+    pub fn new(network_id: &str) -> Self { Self { network_id: network_id.to_string(), ..Default::default() } }
+    pub fn add_node(&mut self, n: RoadNetworkNode) { self.nodes.push(n); }
+    pub fn add_edge(&mut self, e: RoadNetworkEdge) { self.edges.push(e); }
+    pub fn total_length_km(&self) -> f32 { self.edges.iter().map(|e| e.length_m).sum::<f32>() / 1000.0 }
+    pub fn edges_by_functional_class(&self) -> HashMap<u8, Vec<&RoadNetworkEdge>> {
+        let mut map: HashMap<u8, Vec<&RoadNetworkEdge>> = HashMap::new();
+        for e in &self.edges { map.entry(e.functional_class).or_default().push(e); }
+        map
+    }
+    pub fn congested_edges(&self) -> Vec<&RoadNetworkEdge> {
+        self.edges.iter().filter(|e| e.volume_capacity_ratio() > 0.85).collect()
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn edge_count(&self) -> usize { self.edges.len() }
+    pub fn connectivity_ratio(&self) -> f32 {
+        if self.node_count() < 2 { return 0.0; }
+        self.edge_count() as f32 / self.node_count() as f32
+    }
+    pub fn average_speed_limit(&self) -> f32 {
+        if self.edges.is_empty() { return 0.0; }
+        self.edges.iter().map(|e| e.speed_limit_kph).sum::<f32>() / self.edges.len() as f32
+    }
+    pub fn find_node(&self, id: u32) -> Option<&RoadNetworkNode> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+    pub fn adjacent_edges(&self, node_id: u32) -> Vec<&RoadNetworkEdge> {
+        self.edges.iter().filter(|e| e.from_node == node_id || (!e.is_one_way && e.to_node == node_id)).collect()
+    }
+    pub fn bfs_path(&self, start: u32, goal: u32) -> Option<Vec<u32>> {
+        if start == goal { return Some(vec![start]); }
+        let mut queue: VecDeque<(u32, Vec<u32>)> = VecDeque::new();
+        let mut visited: HashSet<u32> = HashSet::new();
+        queue.push_back((start, vec![start]));
+        visited.insert(start);
+        while let Some((cur, path)) = queue.pop_front() {
+            for edge in self.adjacent_edges(cur) {
+                let next = if edge.from_node == cur { edge.to_node } else { edge.from_node };
+                if !visited.contains(&next) {
+                    let mut new_path = path.clone();
+                    new_path.push(next);
+                    if next == goal { return Some(new_path); }
+                    visited.insert(next);
+                    queue.push_back((next, new_path));
+                }
+            }
+        }
+        None
+    }
+}
+
+// ============================================================
+// STREET LIGHTING INVENTORY
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LightingType { HPS, LED, MH, Fluorescent, Incandescent }
+
+#[derive(Debug, Clone)]
+pub struct StreetLight {
+    pub id: u32,
+    pub station_m: f32,
+    pub side: String,
+    pub lighting_type: LightingType,
+    pub wattage_w: f32,
+    pub height_m: f32,
+    pub arm_length_m: f32,
+    pub is_operational: bool,
+    pub age_years: f32,
+}
+
+impl StreetLight {
+    pub fn new(id: u32, station_m: f32, side: &str, lighting_type: LightingType, wattage_w: f32) -> Self {
+        Self { id, station_m, side: side.to_string(), lighting_type, wattage_w,
+            height_m: 9.0, arm_length_m: 1.5, is_operational: true, age_years: 0.0 }
+    }
+    pub fn illuminance_lux_at_road(&self) -> f32 {
+        let luminous_efficacy = match &self.lighting_type {
+            LightingType::LED => 130.0,
+            LightingType::HPS => 90.0,
+            LightingType::MH => 80.0,
+            LightingType::Fluorescent => 70.0,
+            LightingType::Incandescent => 15.0,
+        };
+        let lumens = self.wattage_w * luminous_efficacy;
+        let h2 = self.height_m * self.height_m;
+        let area = std::f32::consts::PI * h2; // simplified - illuminated area under cone
+        lumens / area.max(1.0)
+    }
+    pub fn annual_energy_kwh(&self) -> f32 { self.wattage_w / 1000.0 * 4000.0 }  // 4000 operating hours/year
+    pub fn annual_energy_cost_usd(&self, rate_per_kwh: f32) -> f32 {
+        self.annual_energy_kwh() * rate_per_kwh
+    }
+    pub fn lighting_type_str(&self) -> &'static str {
+        match &self.lighting_type {
+            LightingType::HPS => "High Pressure Sodium",
+            LightingType::LED => "LED",
+            LightingType::MH => "Metal Halide",
+            LightingType::Fluorescent => "Fluorescent",
+            LightingType::Incandescent => "Incandescent",
+        }
+    }
+    pub fn is_energy_efficient(&self) -> bool {
+        matches!(&self.lighting_type, LightingType::LED)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LightingInventory {
+    pub road_id: String,
+    pub lights: Vec<StreetLight>,
+}
+
+impl LightingInventory {
+    pub fn new(road_id: &str) -> Self { Self { road_id: road_id.to_string(), lights: Vec::new() } }
+    pub fn add(&mut self, l: StreetLight) { self.lights.push(l); }
+    pub fn count(&self) -> usize { self.lights.len() }
+    pub fn operational_count(&self) -> usize { self.lights.iter().filter(|l| l.is_operational).count() }
+    pub fn total_annual_energy_kwh(&self) -> f32 {
+        self.lights.iter().map(|l| l.annual_energy_kwh()).sum()
+    }
+    pub fn average_spacing_m(&self, road_length_m: f32) -> f32 {
+        if self.lights.is_empty() { return 0.0; }
+        road_length_m / self.lights.len() as f32
+    }
+    pub fn led_percentage(&self) -> f32 {
+        if self.lights.is_empty() { return 0.0; }
+        let led = self.lights.iter().filter(|l| l.is_energy_efficient()).count();
+        led as f32 / self.lights.len() as f32 * 100.0
+    }
+    pub fn outage_rate(&self) -> f32 {
+        if self.lights.is_empty() { return 0.0; }
+        let outages = self.lights.iter().filter(|l| !l.is_operational).count();
+        outages as f32 / self.lights.len() as f32 * 100.0
+    }
+}
+
+// ============================================================
+// ROAD CRASH DATA ANALYSIS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CrashSeverity { Fatal, Serious, Minor, PropertyDamageOnly }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CrashType {
+    RearEnd, SideSwipe, HeadOn, RightAngle, SingleVehicle,
+    PedestrianInvolvement, BicycleInvolvement, AnimalInvolvement, Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct CrashRecord {
+    pub crash_id: u32,
+    pub station_m: f32,
+    pub severity: CrashSeverity,
+    pub crash_type: CrashType,
+    pub year: u32,
+    pub month: u8,
+    pub time_hour: u8,
+    pub road_condition: String,
+    pub light_condition: String,
+    pub vehicles_involved: u8,
+}
+
+impl CrashRecord {
+    pub fn new(crash_id: u32, station_m: f32, severity: CrashSeverity, crash_type: CrashType, year: u32) -> Self {
+        Self { crash_id, station_m, severity, crash_type, year, month: 1, time_hour: 12,
+            road_condition: "Dry".to_string(), light_condition: "Daylight".to_string(), vehicles_involved: 2 }
+    }
+    pub fn severity_weight(&self) -> f32 {
+        match &self.severity {
+            CrashSeverity::Fatal => 20.0,
+            CrashSeverity::Serious => 5.0,
+            CrashSeverity::Minor => 1.5,
+            CrashSeverity::PropertyDamageOnly => 1.0,
+        }
+    }
+    pub fn is_wet_road(&self) -> bool {
+        self.road_condition.to_lowercase().contains("wet") ||
+        self.road_condition.to_lowercase().contains("ice") ||
+        self.road_condition.to_lowercase().contains("snow")
+    }
+    pub fn is_night_crash(&self) -> bool { self.time_hour < 6 || self.time_hour >= 20 }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CrashDatabase {
+    pub road_id: String,
+    pub road_length_km: f32,
+    pub crashes: Vec<CrashRecord>,
+    pub exposure_years: f32,
+    pub aadt: u32,
+}
+
+impl CrashDatabase {
+    pub fn new(road_id: &str, road_length_km: f32) -> Self {
+        Self { road_id: road_id.to_string(), road_length_km, crashes: Vec::new(),
+            exposure_years: 3.0, aadt: 10000 }
+    }
+    pub fn add_crash(&mut self, c: CrashRecord) { self.crashes.push(c); }
+    pub fn total_crashes(&self) -> usize { self.crashes.len() }
+    pub fn fatal_crashes(&self) -> usize {
+        self.crashes.iter().filter(|c| matches!(&c.severity, CrashSeverity::Fatal)).count()
+    }
+    pub fn serious_crashes(&self) -> usize {
+        self.crashes.iter().filter(|c| matches!(&c.severity, CrashSeverity::Serious)).count()
+    }
+    pub fn crash_rate_per_mvkmt(&self) -> f32 {
+        let mvkmt = self.aadt as f32 * 365.0 * self.exposure_years * self.road_length_km / 1_000_000.0;
+        if mvkmt < 0.001 { return 0.0; }
+        self.total_crashes() as f32 / mvkmt
+    }
+    pub fn severity_index(&self) -> f32 {
+        if self.crashes.is_empty() { return 0.0; }
+        self.crashes.iter().map(|c| c.severity_weight()).sum::<f32>() / self.crashes.len() as f32
+    }
+    pub fn wet_road_percentage(&self) -> f32 {
+        if self.crashes.is_empty() { return 0.0; }
+        let wet = self.crashes.iter().filter(|c| c.is_wet_road()).count();
+        wet as f32 / self.crashes.len() as f32 * 100.0
+    }
+    pub fn night_crash_percentage(&self) -> f32 {
+        if self.crashes.is_empty() { return 0.0; }
+        let night = self.crashes.iter().filter(|c| c.is_night_crash()).count();
+        night as f32 / self.crashes.len() as f32 * 100.0
+    }
+    pub fn black_spots(&self, radius_m: f32, min_crashes: usize) -> Vec<f32> {
+        let mut spots = Vec::new();
+        let stations: Vec<f32> = self.crashes.iter().map(|c| c.station_m).collect();
+        for &sta in &stations {
+            let count = stations.iter().filter(|&&s| (s - sta).abs() <= radius_m).count();
+            if count >= min_crashes && !spots.iter().any(|&s: &f32| (s - sta).abs() < radius_m) {
+                spots.push(sta);
+            }
+        }
+        spots
+    }
+}
+
+// ============================================================
+// TRAFFIC CALMING
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalmingDeviceType {
+    SpeedHump, SpeedTable, RaisedCrossing, RaisedIntersection,
+    NeckDown, Chicane, RoundAbout, SplitterIsland, TrafficCircle,
+}
+
+#[derive(Debug, Clone)]
+pub struct CalmingDevice {
+    pub id: u32,
+    pub device_type: CalmingDeviceType,
+    pub station_m: f32,
+    pub installation_year: u32,
+    pub expected_speed_reduction_kph: f32,
+    pub construction_cost_usd: f32,
+}
+
+impl CalmingDevice {
+    pub fn new(id: u32, device_type: CalmingDeviceType, station_m: f32) -> Self {
+        let (reduction, cost) = match &device_type {
+            CalmingDeviceType::SpeedHump => (12.0, 3000.0),
+            CalmingDeviceType::SpeedTable => (8.0, 8000.0),
+            CalmingDeviceType::RaisedCrossing => (6.0, 15000.0),
+            CalmingDeviceType::RaisedIntersection => (10.0, 25000.0),
+            CalmingDeviceType::NeckDown => (4.0, 12000.0),
+            CalmingDeviceType::Chicane => (15.0, 20000.0),
+            CalmingDeviceType::RoundAbout => (20.0, 80000.0),
+            CalmingDeviceType::SplitterIsland => (5.0, 10000.0),
+            CalmingDeviceType::TrafficCircle => (18.0, 60000.0),
+        };
+        Self { id, device_type, station_m, installation_year: 2024,
+            expected_speed_reduction_kph: reduction, construction_cost_usd: cost }
+    }
+    pub fn device_type_str(&self) -> &'static str {
+        match &self.device_type {
+            CalmingDeviceType::SpeedHump => "Speed Hump",
+            CalmingDeviceType::SpeedTable => "Speed Table",
+            CalmingDeviceType::RaisedCrossing => "Raised Crossing",
+            CalmingDeviceType::RaisedIntersection => "Raised Intersection",
+            CalmingDeviceType::NeckDown => "Neck Down / Bulb-Out",
+            CalmingDeviceType::Chicane => "Chicane",
+            CalmingDeviceType::RoundAbout => "Roundabout",
+            CalmingDeviceType::SplitterIsland => "Splitter Island",
+            CalmingDeviceType::TrafficCircle => "Traffic Circle",
+        }
+    }
+    pub fn cost_per_kph_reduction(&self) -> f32 {
+        if self.expected_speed_reduction_kph < 0.1 { return 0.0; }
+        self.construction_cost_usd / self.expected_speed_reduction_kph
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrafficCalmingPlan {
+    pub road_id: String,
+    pub devices: Vec<CalmingDevice>,
+    pub target_85th_percentile_kph: f32,
+}
+
+impl TrafficCalmingPlan {
+    pub fn new(road_id: &str, target_speed_kph: f32) -> Self {
+        Self { road_id: road_id.to_string(), devices: Vec::new(), target_85th_percentile_kph: target_speed_kph }
+    }
+    pub fn add_device(&mut self, d: CalmingDevice) { self.devices.push(d); }
+    pub fn total_cost_usd(&self) -> f32 { self.devices.iter().map(|d| d.construction_cost_usd).sum() }
+    pub fn total_speed_reduction_kph(&self) -> f32 {
+        self.devices.iter().map(|d| d.expected_speed_reduction_kph).sum()
+    }
+    pub fn count(&self) -> usize { self.devices.len() }
+}
+
+// ============================================================
+// ADDITIONAL TEST FUNCTIONS
+// ============================================================
+
+pub fn run_road_network_tests() {
+    let mut network = RoadNetwork::new("CITY-CORE");
+    network.add_node(RoadNetworkNode::new(0, 0.0, 0.0));
+    network.add_node(RoadNetworkNode::new(1, 500.0, 0.0));
+    network.add_node(RoadNetworkNode::new(2, 500.0, 500.0));
+    network.add_node(RoadNetworkNode::new(3, 0.0, 500.0));
+    network.add_edge(RoadNetworkEdge::new(1, 0, 1, 500.0, 50.0));
+    network.add_edge(RoadNetworkEdge::new(2, 1, 2, 500.0, 50.0));
+    network.add_edge(RoadNetworkEdge::new(3, 2, 3, 500.0, 50.0));
+    network.add_edge(RoadNetworkEdge::new(4, 3, 0, 500.0, 50.0));
+    assert_eq!(network.node_count(), 4);
+    assert_eq!(network.edge_count(), 4);
+    let path = network.bfs_path(0, 2);
+    assert!(path.is_some());
+    assert!(path.unwrap().len() >= 3);
+    let total_km = network.total_length_km();
+    assert!((total_km - 2.0).abs() < 0.01);
+}
+
+pub fn run_crash_analysis_tests() {
+    let mut db = CrashDatabase::new("HWY-101", 5.0);
+    db.aadt = 15000;
+    db.exposure_years = 3.0;
+    db.add_crash(CrashRecord::new(1, 1200.0, CrashSeverity::Minor, CrashType::RearEnd, 2022));
+    db.add_crash(CrashRecord::new(2, 1250.0, CrashSeverity::Serious, CrashType::HeadOn, 2022));
+    db.add_crash(CrashRecord::new(3, 3500.0, CrashSeverity::PropertyDamageOnly, CrashType::SideSwipe, 2023));
+    assert_eq!(db.total_crashes(), 3);
+    assert_eq!(db.fatal_crashes(), 0);
+    assert_eq!(db.serious_crashes(), 1);
+    let rate = db.crash_rate_per_mvkmt();
+    assert!(rate > 0.0);
+    let black_spots = db.black_spots(200.0, 2);
+    assert!(black_spots.len() >= 1);
+}
+
+pub fn run_sign_inventory_tests() {
+    let mut inv = SignInventory::new("HWY-101");
+    inv.add(RoadSign::new(1, SignType::Stop, 500.0, "NB"));
+    inv.add(RoadSign::new(2, SignType::SpeedLimit, 1000.0, "NB"));
+    inv.add(RoadSign::new(3, SignType::Warning, 1500.0, "NB"));
+    assert_eq!(inv.count(), 3);
+    let total_cost = inv.total_replacement_cost();
+    assert!(total_cost > 0.0);
+}
+
+pub fn run_condition_survey_tests() {
+    let mut db = ConditionSurveyDatabase::new();
+    db.add(ConditionSurveyRecord::new("SEC-001", 0.0, 500.0, 75.0, 8.0, 2.0, 45.0));
+    db.add(ConditionSurveyRecord::new("SEC-002", 500.0, 1000.0, 45.0, 20.0, 7.0, 35.0));
+    db.add(ConditionSurveyRecord::new("SEC-003", 1000.0, 1500.0, 85.0, 3.0, 1.5, 52.0));
+    let avg_pci = db.average_pci();
+    assert!((avg_pci - (75.0 + 45.0 + 85.0) / 3.0).abs() < 0.1);
+    let repair_sections = db.sections_needing_repair();
+    assert!(!repair_sections.is_empty());
+    let worst = db.worst_sections(2);
+    assert_eq!(worst.len(), 2);
+    assert!(worst[0].pci <= worst[1].pci);
+}
+
+pub fn run_active_transport_tests() {
+    let mut net = ActiveTransportNetwork::new("MAIN-ST");
+    net.add(ActiveTransportFacility::new(1, FacilityType::Sidewalk, 0.0, 500.0, 2.0));
+    net.add(ActiveTransportFacility::new(2, FacilityType::BikeLane, 0.0, 500.0, 1.5));
+    net.add(ActiveTransportFacility::new(3, FacilityType::ProtectedBikeLane, 500.0, 1000.0, 2.5));
+    assert_eq!(net.facilities.len(), 3);
+    let bike_len = net.bike_facility_length_m();
+    assert!(bike_len > 0.0);
+    let sidewalk_len = net.sidewalk_coverage_m();
+    assert!((sidewalk_len - 500.0).abs() < 0.1);
+    let ada_rate = net.ada_compliance_rate();
+    assert!(ada_rate > 0.0);
+}
+
+pub fn run_lighting_tests() {
+    let mut inv = LightingInventory::new("HWY-101");
+    inv.add(StreetLight::new(1, 0.0, "NB", LightingType::LED, 100.0));
+    inv.add(StreetLight::new(2, 50.0, "NB", LightingType::HPS, 150.0));
+    inv.add(StreetLight::new(3, 100.0, "NB", LightingType::LED, 100.0));
+    assert_eq!(inv.count(), 3);
+    assert_eq!(inv.operational_count(), 3);
+    let energy = inv.total_annual_energy_kwh();
+    assert!(energy > 0.0);
+    let led_pct = inv.led_percentage();
+    assert!((led_pct - 66.67).abs() < 0.1);
+}
+
+pub fn run_traffic_calming_tests() {
+    let mut plan = TrafficCalmingPlan::new("OAK-ST", 30.0);
+    plan.add_device(CalmingDevice::new(1, CalmingDeviceType::SpeedHump, 100.0));
+    plan.add_device(CalmingDevice::new(2, CalmingDeviceType::SpeedTable, 300.0));
+    plan.add_device(CalmingDevice::new(3, CalmingDeviceType::RoundAbout, 500.0));
+    assert_eq!(plan.count(), 3);
+    let total_cost = plan.total_cost_usd();
+    assert!(total_cost > 80000.0);
+    let total_reduction = plan.total_speed_reduction_kph();
+    assert!(total_reduction > 30.0);
+}
+
+pub fn terrain_road_tool_extended_tests() {
+    run_road_network_tests();
+    run_crash_analysis_tests();
+    run_sign_inventory_tests();
+    run_condition_survey_tests();
+    run_active_transport_tests();
+    run_lighting_tests();
+    run_traffic_calming_tests();
+}
+
+pub fn terrain_road_tool_all_tests_v2() {
+    terrain_road_tool_run_all_tests();
+    terrain_road_tool_extended_tests();
+}
+
+// ============================================================
+// ROAD MAINTENANCE MANAGEMENT
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MaintenanceCategory {
+    Routine, Preventive, Corrective, Emergency, Capital,
+}
+
+#[derive(Debug, Clone)]
+pub struct MaintenanceWork {
+    pub work_id: u32,
+    pub description: String,
+    pub category: MaintenanceCategory,
+    pub start_station_m: f32,
+    pub end_station_m: f32,
+    pub planned_year: u32,
+    pub estimated_cost_usd: f32,
+    pub unit_cost: f32,
+    pub quantity: f32,
+    pub unit: String,
+    pub priority: u8,
+    pub is_complete: bool,
+}
+
+impl MaintenanceWork {
+    pub fn new(work_id: u32, description: &str, category: MaintenanceCategory, start_m: f32, end_m: f32, planned_year: u32) -> Self {
+        Self { work_id, description: description.to_string(), category,
+            start_station_m: start_m, end_station_m: end_m, planned_year,
+            estimated_cost_usd: 0.0, unit_cost: 0.0, quantity: 0.0,
+            unit: String::new(), priority: 3, is_complete: false }
+    }
+    pub fn length_m(&self) -> f32 { (self.end_station_m - self.start_station_m).abs() }
+    pub fn compute_cost(&mut self, unit_cost: f32, quantity: f32, unit: &str) {
+        self.unit_cost = unit_cost;
+        self.quantity = quantity;
+        self.unit = unit.to_string();
+        self.estimated_cost_usd = unit_cost * quantity;
+    }
+    pub fn category_str(&self) -> &'static str {
+        match &self.category {
+            MaintenanceCategory::Routine => "Routine",
+            MaintenanceCategory::Preventive => "Preventive",
+            MaintenanceCategory::Corrective => "Corrective",
+            MaintenanceCategory::Emergency => "Emergency",
+            MaintenanceCategory::Capital => "Capital",
+        }
+    }
+    pub fn is_high_priority(&self) -> bool { self.priority <= 2 }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MaintenanceProgram {
+    pub program_id: String,
+    pub program_years: Vec<u32>,
+    pub works: Vec<MaintenanceWork>,
+    pub annual_budget_usd: f32,
+}
+
+impl MaintenanceProgram {
+    pub fn new(program_id: &str, annual_budget: f32) -> Self {
+        Self { program_id: program_id.to_string(), program_years: Vec::new(), works: Vec::new(), annual_budget_usd: annual_budget }
+    }
+    pub fn add_work(&mut self, w: MaintenanceWork) { self.works.push(w); }
+    pub fn total_cost_usd(&self) -> f32 { self.works.iter().map(|w| w.estimated_cost_usd).sum() }
+    pub fn works_by_year(&self, year: u32) -> Vec<&MaintenanceWork> {
+        self.works.iter().filter(|w| w.planned_year == year).collect()
+    }
+    pub fn annual_cost(&self, year: u32) -> f32 {
+        self.works_by_year(year).iter().map(|w| w.estimated_cost_usd).sum()
+    }
+    pub fn budget_deficit(&self, year: u32) -> f32 {
+        let cost = self.annual_cost(year);
+        (cost - self.annual_budget_usd).max(0.0)
+    }
+    pub fn high_priority_works(&self) -> Vec<&MaintenanceWork> {
+        self.works.iter().filter(|w| w.is_high_priority()).collect()
+    }
+    pub fn completion_rate(&self) -> f32 {
+        if self.works.is_empty() { return 100.0; }
+        let complete = self.works.iter().filter(|w| w.is_complete).count();
+        complete as f32 / self.works.len() as f32 * 100.0
+    }
+    pub fn works_by_category(&self) -> HashMap<String, usize> {
+        let mut map: HashMap<String, usize> = HashMap::new();
+        for w in &self.works { *map.entry(w.category_str().to_string()).or_insert(0) += 1; }
+        map
+    }
+    pub fn report(&self) -> String {
+        let s = format!("MaintenanceProgram {} total_cost={:.0} budget={:.0} works={} complete={:.0}pct",
+            self.program_id, self.total_cost_usd(), self.annual_budget_usd,
+            self.works.len(), self.completion_rate());
+        s
+    }
+}
+
+// ============================================================
+// ROAD DESIGN STANDARDS CHECKER
+// ============================================================
+
+pub struct DesignStandardsChecker;
+
+impl DesignStandardsChecker {
+    pub fn check_lane_width(width_m: f32, road_class: &str) -> (bool, String) {
+        let min = match road_class { "highway" => 3.65, "arterial" => 3.5, "collector" => 3.0, _ => 2.7 };
+        let ok = width_m >= min;
+        let msg = if ok { format!("Lane width {:.2}m OK (min {:.2}m)", width_m, min) }
+            else { format!("Lane width {:.2}m FAILS (min {:.2}m)", width_m, min) };
+        (ok, msg)
+    }
+    pub fn check_shoulder_width(width_m: f32, road_class: &str) -> (bool, String) {
+        let min = match road_class { "highway" => 3.0, "arterial" => 2.0, "collector" => 1.2, _ => 0.5 };
+        let ok = width_m >= min;
+        let msg = if ok { format!("Shoulder width {:.2}m OK (min {:.2}m)", width_m, min) }
+            else { format!("Shoulder width {:.2}m FAILS (min {:.2}m)", width_m, min) };
+        (ok, msg)
+    }
+    pub fn check_grade(grade_pct: f32, design_speed_kph: f32) -> (bool, String) {
+        let max = if design_speed_kph >= 100.0 { 4.0 } else if design_speed_kph >= 80.0 { 5.0 } else { 6.0 };
+        let ok = grade_pct.abs() <= max;
+        let msg = if ok { format!("Grade {:.1}% OK (max {:.1}%)", grade_pct, max) }
+            else { format!("Grade {:.1}% EXCEEDS max {:.1}%", grade_pct, max) };
+        (ok, msg)
+    }
+    pub fn check_cross_slope(slope_pct: f32) -> (bool, String) {
+        let ok = slope_pct >= 1.5 && slope_pct <= 3.0;
+        let msg = if ok { format!("Cross slope {:.1}% OK (1.5-3.0%)", slope_pct) }
+            else { format!("Cross slope {:.1}% outside 1.5-3.0%", slope_pct) };
+        (ok, msg)
+    }
+    pub fn check_sight_distance(available_m: f32, design_speed_kph: f32) -> (bool, String) {
+        let ssd = 0.278 * design_speed_kph * 2.5 + design_speed_kph.powi(2) / (254.0 * 0.35);
+        let ok = available_m >= ssd;
+        let msg = if ok { format!("SSD {:.1}m available >= {:.1}m required", available_m, ssd) }
+            else { format!("SSD {:.1}m INSUFFICIENT (required {:.1}m)", available_m, ssd) };
+        (ok, msg)
+    }
+    pub fn run_standard_checks(
+        lane_width_m: f32,
+        shoulder_width_m: f32,
+        grade_pct: f32,
+        cross_slope_pct: f32,
+        sight_distance_m: f32,
+        design_speed_kph: f32,
+        road_class: &str,
+    ) -> Vec<(String, bool)> {
+        let mut results = Vec::new();
+        let (ok, msg) = Self::check_lane_width(lane_width_m, road_class);
+        results.push((msg, ok));
+        let (ok, msg) = Self::check_shoulder_width(shoulder_width_m, road_class);
+        results.push((msg, ok));
+        let (ok, msg) = Self::check_grade(grade_pct, design_speed_kph);
+        results.push((msg, ok));
+        let (ok, msg) = Self::check_cross_slope(cross_slope_pct);
+        results.push((msg, ok));
+        let (ok, msg) = Self::check_sight_distance(sight_distance_m, design_speed_kph);
+        results.push((msg, ok));
+        results
+    }
+}
+
+pub fn run_design_standards_tests() {
+    let results = DesignStandardsChecker::run_standard_checks(
+        3.65, 3.0, 3.5, 2.0, 200.0, 80.0, "arterial"
+    );
+    assert_eq!(results.len(), 5);
+    let passes: Vec<&bool> = results.iter().map(|(_, ok)| ok).collect();
+    assert!(passes.iter().any(|&&ok| ok));
+}
+
+pub fn run_maintenance_tests() {
+    let mut prog = MaintenanceProgram::new("MAINT-2024-2028", 2_000_000.0);
+    let mut w1 = MaintenanceWork::new(1, "Crack Sealing", MaintenanceCategory::Preventive, 0.0, 1000.0, 2024);
+    w1.compute_cost(5.0, 1000.0, "m");
+    w1.priority = 2;
+    let mut w2 = MaintenanceWork::new(2, "Pothole Patching", MaintenanceCategory::Corrective, 500.0, 600.0, 2024);
+    w2.compute_cost(150.0, 20.0, "m2");
+    w2.priority = 1;
+    let mut w3 = MaintenanceWork::new(3, "Overlay", MaintenanceCategory::Capital, 0.0, 2000.0, 2025);
+    w3.compute_cost(25.0, 2000.0 * 7.0, "m2");
+    w3.priority = 3;
+    prog.add_work(w1);
+    prog.add_work(w2);
+    prog.add_work(w3);
+    assert_eq!(prog.works.len(), 3);
+    let hp = prog.high_priority_works();
+    assert_eq!(hp.len(), 2);
+    let cost_2024 = prog.annual_cost(2024);
+    assert!(cost_2024 > 0.0);
+    let deficit = prog.budget_deficit(2025);
+    assert!(deficit >= 0.0);
+    let completion = prog.completion_rate();
+    assert!((completion - 0.0).abs() < 0.1);
+}
+
+pub fn run_all_terrain_road_tool_final() {
+    terrain_road_tool_all_tests_v2();
+    run_design_standards_tests();
+    run_maintenance_tests();
+}

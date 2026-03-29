@@ -1,0 +1,326 @@
+
+// ============================================================
+// COLOR GRADING AND TONEMAPPING
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ColorGradingLUT {
+    pub name: String,
+    pub size: u32,
+    pub data: Vec<Vec3>,
+}
+
+impl ColorGradingLUT {
+    pub fn new_identity(size: u32) -> Self {
+        let mut data = Vec::with_capacity((size * size * size) as usize);
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    data.push(Vec3::new(
+                        r as f32 / (size - 1) as f32,
+                        g as f32 / (size - 1) as f32,
+                        b as f32 / (size - 1) as f32,
+                    ));
+                }
+            }
+        }
+        ColorGradingLUT { name: "Identity".to_string(), size, data }
+    }
+
+    pub fn apply(&self, color: Vec3) -> Vec3 {
+        let s = (self.size - 1) as f32;
+        let r = (color.x * s).clamp(0.0, s);
+        let g = (color.y * s).clamp(0.0, s);
+        let b = (color.z * s).clamp(0.0, s);
+        let ri = r as usize; let gi = g as usize; let bi = b as usize;
+        let ri = ri.min(self.size as usize - 2);
+        let gi = gi.min(self.size as usize - 2);
+        let bi = bi.min(self.size as usize - 2);
+        let fr = r - ri as f32; let fg = g - gi as f32; let fb = b - bi as f32;
+        let s2 = self.size as usize;
+        let idx = |r2: usize, g2: usize, b2: usize| b2 * s2 * s2 + g2 * s2 + r2;
+        let c000 = self.data[idx(ri, gi, bi)];
+        let c100 = self.data[idx(ri+1, gi, bi)];
+        let c010 = self.data[idx(ri, gi+1, bi)];
+        let c110 = self.data[idx(ri+1, gi+1, bi)];
+        let c001 = self.data[idx(ri, gi, bi+1)];
+        let c101 = self.data[idx(ri+1, gi, bi+1)];
+        let c011 = self.data[idx(ri, gi+1, bi+1)];
+        let c111 = self.data[idx(ri+1, gi+1, bi+1)];
+        let c00 = c000.lerp(c100, fr);
+        let c10 = c010.lerp(c110, fr);
+        let c01 = c001.lerp(c101, fr);
+        let c11 = c011.lerp(c111, fr);
+        let c0 = c00.lerp(c10, fg);
+        let c1 = c01.lerp(c11, fg);
+        c0.lerp(c1, fb)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToneMapper {
+    pub exposure: f32,
+    pub gamma: f32,
+    pub white_point: f32,
+}
+
+impl ToneMapper {
+    pub fn new() -> Self {
+        ToneMapper { exposure: 1.0, gamma: 2.2, white_point: 11.2 }
+    }
+
+    pub fn reinhard(&self, color: Vec3) -> Vec3 {
+        let c = color * self.exposure;
+        Vec3::new(c.x / (1.0 + c.x), c.y / (1.0 + c.y), c.z / (1.0 + c.z))
+    }
+
+    pub fn aces(&self, color: Vec3) -> Vec3 {
+        let c = color * self.exposure;
+        let a = 2.51_f32; let b = 0.03_f32; let cc = 2.43_f32; let d = 0.59_f32; let e = 0.14_f32;
+        let tone = |x: f32| ((x * (a * x + b)) / (x * (cc * x + d) + e)).clamp(0.0, 1.0);
+        Vec3::new(tone(c.x), tone(c.y), tone(c.z))
+    }
+
+    pub fn filmic(&self, color: Vec3) -> Vec3 {
+        let c = (color * self.exposure).max(Vec3::ZERO);
+        let w = self.white_point;
+        let filmic_f = |x: f32| -> f32 {
+            let a = 0.22_f32; let b = 0.30_f32; let cc = 0.10_f32;
+            let d = 0.20_f32; let ee = 0.01_f32; let f = 0.30_f32;
+            ((x * (a * x + cc * b) + d * ee) / (x * (a * x + b) + d * f)) - ee / f
+        };
+        let white = filmic_f(w);
+        Vec3::new(filmic_f(c.x) / white, filmic_f(c.y) / white, filmic_f(c.z) / white)
+    }
+
+    pub fn gamma_correct(&self, linear: Vec3) -> Vec3 {
+        let g = 1.0 / self.gamma;
+        Vec3::new(linear.x.powf(g), linear.y.powf(g), linear.z.powf(g))
+    }
+}
+
+// ============================================================
+// CUBEMAP AND IBL
+// ============================================================
+
+pub const CUBEMAP_FACE_COUNT: usize = 6;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CubemapFace {
+    PosX, NegX, PosY, NegY, PosZ, NegZ,
+}
+
+#[derive(Debug, Clone)]
+pub struct CubemapAsset {
+    pub name: String,
+    pub face_resolution: u32,
+    pub mip_levels: u32,
+    pub hdr: bool,
+    pub source_path: String,
+}
+
+impl CubemapAsset {
+    pub fn new(name: &str, res: u32, hdr: bool) -> Self {
+        CubemapAsset {
+            name: name.to_string(), face_resolution: res,
+            mip_levels: (res as f32).log2() as u32 + 1,
+            hdr, source_path: String::new(),
+        }
+    }
+
+    pub fn total_texels(&self) -> u64 {
+        let mut total = 0u64;
+        let mut res = self.face_resolution;
+        for _ in 0..self.mip_levels {
+            total += (res as u64) * (res as u64) * CUBEMAP_FACE_COUNT as u64;
+            res = (res / 2).max(1);
+        }
+        total
+    }
+}
+
+// ============================================================
+// ADVANCED AUDIO DSP
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct BiQuadFilter {
+    pub b0: f32, pub b1: f32, pub b2: f32,
+    pub a1: f32, pub a2: f32,
+    x1: f32, x2: f32, y1: f32, y2: f32,
+}
+
+impl BiQuadFilter {
+    pub fn low_pass(sample_rate: f32, cutoff: f32, q: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * cutoff / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let b1 = 1.0 - cos_w0;
+        let b0 = b1 / 2.0;
+        let b2 = b0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        BiQuadFilter { b0: b0/a0, b1: b1/a0, b2: b2/a0, a1: a1/a0, a2: a2/a0, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
+    }
+
+    pub fn high_pass(sample_rate: f32, cutoff: f32, q: f32) -> Self {
+        let w0 = 2.0 * std::f32::consts::PI * cutoff / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = b0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        BiQuadFilter { b0: b0/a0, b1: b1/a0, b2: b2/a0, a1: a1/a0, a2: a2/a0, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
+    }
+
+    pub fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
+        self.x2 = self.x1; self.x1 = x;
+        self.y2 = self.y1; self.y1 = y;
+        y
+    }
+}
+
+// ============================================================
+// PARTICLE CURVE DATA
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ParticleCurvePoint {
+    pub time: f32,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParticleCurve {
+    pub name: String,
+    pub points: Vec<ParticleCurvePoint>,
+    pub loop_curve: bool,
+}
+
+impl ParticleCurve {
+    pub fn new(name: &str) -> Self {
+        ParticleCurve { name: name.to_string(), points: Vec::new(), loop_curve: false }
+    }
+
+    pub fn flat(name: &str, value: f32) -> Self {
+        let mut c = ParticleCurve::new(name);
+        c.points.push(ParticleCurvePoint { time: 0.0, value });
+        c.points.push(ParticleCurvePoint { time: 1.0, value });
+        c
+    }
+
+    pub fn ramp_up(name: &str) -> Self {
+        let mut c = ParticleCurve::new(name);
+        c.points.push(ParticleCurvePoint { time: 0.0, value: 0.0 });
+        c.points.push(ParticleCurvePoint { time: 1.0, value: 1.0 });
+        c
+    }
+
+    pub fn evaluate(&self, t: f32) -> f32 {
+        if self.points.is_empty() { return 0.0; }
+        if self.points.len() == 1 { return self.points[0].value; }
+        let t = if self.loop_curve { t.fract() } else { t.clamp(0.0, 1.0) };
+        let idx = self.points.partition_point(|p| p.time <= t);
+        if idx == 0 { return self.points[0].value; }
+        if idx >= self.points.len() { return self.points.last().unwrap().value; }
+        let a = &self.points[idx - 1];
+        let b = &self.points[idx];
+        let s = (t - a.time) / (b.time - a.time).max(0.001);
+        a.value + (b.value - a.value) * s
+    }
+}
+
+// ============================================================
+// FINAL TEST BLOCK FOR CUTSCENE MODULE
+// ============================================================
+
+#[cfg(test)]
+mod tests_cutscene_final {
+    use super::*;
+
+    #[test]
+    fn test_lut_identity() {
+        let lut = ColorGradingLUT::new_identity(4);
+        let color = Vec3::new(0.5, 0.3, 0.8);
+        let result = lut.apply(color);
+        assert!((result.x - color.x).abs() < 0.1);
+        assert!((result.y - color.y).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_tonemapper_reinhard() {
+        let tm = ToneMapper::new();
+        let bright = Vec3::new(2.0, 1.5, 0.5);
+        let result = tm.reinhard(bright);
+        assert!(result.x < 1.0 && result.y < 1.0 && result.z <= 1.0);
+    }
+
+    #[test]
+    fn test_biquad_lowpass() {
+        let mut filt = BiQuadFilter::low_pass(44100.0, 1000.0, 0.707);
+        let y = filt.process(1.0);
+        assert!(y.is_finite());
+        let y2 = filt.process(0.0);
+        assert!(y2.is_finite());
+    }
+
+    #[test]
+    fn test_particle_curve_evaluate() {
+        let curve = ParticleCurve::ramp_up("alpha");
+        assert!((curve.evaluate(0.0)).abs() < 0.001);
+        assert!((curve.evaluate(1.0) - 1.0).abs() < 0.001);
+        assert!((curve.evaluate(0.5) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cubemap_total_texels() {
+        let cube = CubemapAsset::new("SkyHDR", 512, true);
+        let total = cube.total_texels();
+        assert!(total > 512 * 512 * 6);
+    }
+
+    #[test]
+    fn test_playback_engine() {
+        let mut engine = PlaybackEngine::new(10.0, 24.0);
+        engine.play();
+        engine.advance(5.0);
+        assert!((engine.current_time - 5.0).abs() < 0.001);
+        assert_eq!(engine.current_frame(), 120);
+        engine.advance(6.0);
+        assert_eq!(engine.state, PlaybackState::Stopped);
+    }
+
+    #[test]
+    fn test_export_job_progress() {
+        let config = ExportPipelineConfig::web_preview();
+        let mut job = ExportJob::new("job001", config, 100);
+        for _ in 0..50 { job.advance_frame(); }
+        assert!((job.progress - 0.5).abs() < 0.01);
+        assert!(!job.complete);
+        for _ in 0..50 { job.advance_frame(); }
+        assert!(job.complete);
+    }
+
+    #[test]
+    fn test_asset_registry() {
+        let mut reg = CutsceneAssetRegistry::new();
+        reg.register(CutsceneAssetRef::new("mesh_001", "Mesh", "assets/hero.glb"));
+        reg.mark_complete("mesh_001");
+        assert_eq!(reg.ready_asset_ids().len(), 1);
+        reg.register(CutsceneAssetRef::new("tex_002", "Texture", "assets/hero_diff.png"));
+        reg.mark_failed("tex_002");
+        assert_eq!(reg.failed_imports.len(), 1);
+    }
+}
+
+// Final constants
+pub const CUTSCENE_EDITOR_VERSION: &str = "3.1.0";
+pub const CUTSCENE_MAX_CAMERAS: u32 = 32;
+pub const CUTSCENE_MAX_LAYERS: u32 = 64;
+pub const CUTSCENE_MAX_EVENTS: u32 = 4096;
+pub const CUTSCENE_MAX_SUBTITLES_PER_LANG: u32 = 2048;

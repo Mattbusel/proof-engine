@@ -1,0 +1,538 @@
+
+// ============================================================
+// SPELL / ABILITY SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpellSchool {
+    Abjuration, Conjuration, Divination, Enchantment,
+    Evocation, Illusion, Necromancy, Transmutation, Universal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DamageType {
+    Physical, Fire, Cold, Lightning, Acid, Poison,
+    Necrotic, Radiant, Force, Thunder, Psychic, Bludgeoning,
+    Piercing, Slashing,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpellEffect {
+    pub damage_dice: String,
+    pub damage_bonus: i32,
+    pub damage_type: DamageType,
+    pub healing_dice: String,
+    pub status_effect: Option<String>,
+    pub duration_rounds: u32,
+    pub area_radius_m: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Spell {
+    pub id: u32,
+    pub name: String,
+    pub school: SpellSchool,
+    pub level: u32,
+    pub casting_time_actions: u32,
+    pub range_m: f32,
+    pub verbal: bool,
+    pub somatic: bool,
+    pub material: Option<String>,
+    pub concentration: bool,
+    pub ritual: bool,
+    pub duration_description: String,
+    pub description: String,
+    pub effects: Vec<SpellEffect>,
+    pub upcast_bonus_dice: Option<String>,
+    pub classes_allowed: Vec<String>,
+}
+
+impl Spell {
+    pub fn new(id: u32, name: &str, school: SpellSchool, level: u32) -> Self {
+        Spell {
+            id, name: name.to_string(), school, level,
+            casting_time_actions: 1, range_m: 9.0,
+            verbal: true, somatic: true, material: None,
+            concentration: false, ritual: false,
+            duration_description: "Instantaneous".to_string(),
+            description: String::new(),
+            effects: Vec::new(), upcast_bonus_dice: None,
+            classes_allowed: Vec::new(),
+        }
+    }
+
+    pub fn is_cantrip(&self) -> bool { self.level == 0 }
+    pub fn slot_level(&self) -> u32 { self.level }
+
+    pub fn requires_components(&self) -> String {
+        let mut comp = String::new();
+        if self.verbal { comp.push('V'); }
+        if self.somatic { if !comp.is_empty() { comp.push_str(", "); } comp.push('S'); }
+        if self.material.is_some() { if !comp.is_empty() { comp.push_str(", "); } comp.push('M'); }
+        comp
+    }
+}
+
+// ============================================================
+// GAME CHARACTER STATS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CharacterStats {
+    pub strength: i32, pub dexterity: i32, pub constitution: i32,
+    pub intelligence: i32, pub wisdom: i32, pub charisma: i32,
+}
+
+impl CharacterStats {
+    pub fn modifier(stat: i32) -> i32 { (stat - 10) / 2 }
+    pub fn str_mod(&self) -> i32 { Self::modifier(self.strength) }
+    pub fn dex_mod(&self) -> i32 { Self::modifier(self.dexterity) }
+    pub fn con_mod(&self) -> i32 { Self::modifier(self.constitution) }
+    pub fn int_mod(&self) -> i32 { Self::modifier(self.intelligence) }
+    pub fn wis_mod(&self) -> i32 { Self::modifier(self.wisdom) }
+    pub fn cha_mod(&self) -> i32 { Self::modifier(self.charisma) }
+
+    pub fn point_buy_cost(&self) -> i32 {
+        let cost = |s: i32| match s {
+            8 => 0, 9 => 1, 10 => 2, 11 => 3, 12 => 4,
+            13 => 5, 14 => 7, 15 => 9, _ => 100,
+        };
+        cost(self.strength) + cost(self.dexterity) + cost(self.constitution)
+            + cost(self.intelligence) + cost(self.wisdom) + cost(self.charisma)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Character {
+    pub id: u32,
+    pub name: String,
+    pub race: String,
+    pub class: String,
+    pub subclass: String,
+    pub level: u32,
+    pub experience: u64,
+    pub stats: CharacterStats,
+    pub max_hp: i32, pub current_hp: i32,
+    pub temp_hp: i32,
+    pub armor_class: i32,
+    pub proficiency_bonus: i32,
+    pub speed_m: f32,
+    pub alignment: String,
+    pub background: String,
+    pub known_spells: Vec<u32>,
+    pub spell_slots: Vec<(u32, u32)>,
+    pub features: Vec<String>,
+    pub equipment_ids: Vec<u32>,
+    pub gold: f32,
+}
+
+impl Character {
+    pub fn new(id: u32, name: &str) -> Self {
+        Character {
+            id, name: name.to_string(),
+            race: String::new(), class: String::new(), subclass: String::new(),
+            level: 1, experience: 0,
+            stats: CharacterStats { strength: 10, dexterity: 10, constitution: 10, intelligence: 10, wisdom: 10, charisma: 10 },
+            max_hp: 10, current_hp: 10, temp_hp: 0,
+            armor_class: 10, proficiency_bonus: 2,
+            speed_m: 9.0, alignment: "Neutral".to_string(),
+            background: String::new(),
+            known_spells: Vec::new(), spell_slots: Vec::new(),
+            features: Vec::new(), equipment_ids: Vec::new(),
+            gold: 0.0,
+        }
+    }
+
+    pub fn is_alive(&self) -> bool { self.current_hp > 0 }
+    pub fn is_unconscious(&self) -> bool { self.current_hp <= 0 }
+
+    pub fn heal(&mut self, amount: i32) {
+        self.current_hp = (self.current_hp + amount).min(self.max_hp);
+    }
+
+    pub fn take_damage(&mut self, amount: i32) {
+        let effective = (amount - self.temp_hp).max(0);
+        self.temp_hp = (self.temp_hp - amount).max(0);
+        self.current_hp -= effective;
+    }
+
+    pub fn initiative_roll(&self, dice_roll: u32) -> i32 {
+        dice_roll as i32 + self.stats.dex_mod()
+    }
+
+    pub fn passive_perception(&self) -> i32 {
+        10 + self.stats.wis_mod() + if self.features.contains(&"Perception Proficiency".to_string()) { self.proficiency_bonus } else { 0 }
+    }
+
+    pub fn xp_to_next_level(&self) -> u64 {
+        let thresholds: &[u64] = &[0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000];
+        if self.level as usize >= thresholds.len() { return u64::MAX; }
+        thresholds[self.level as usize].saturating_sub(self.experience)
+    }
+}
+
+// ============================================================
+// ITEM / EQUIPMENT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ItemRarity {
+    Common, Uncommon, Rare, VeryRare, Legendary, Artifact,
+}
+
+impl ItemRarity {
+    pub fn gold_value_modifier(&self) -> f32 {
+        match self {
+            ItemRarity::Common => 1.0,
+            ItemRarity::Uncommon => 5.0,
+            ItemRarity::Rare => 25.0,
+            ItemRarity::VeryRare => 250.0,
+            ItemRarity::Legendary => 5000.0,
+            ItemRarity::Artifact => f32::INFINITY,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ItemCategory {
+    Weapon, Armor, Shield, Ring, Necklace, Cloak, Boots,
+    Helmet, Gloves, Belt, Wand, Staff, Scroll, Potion,
+    Gem, QuestItem, Consumable, Tool, Mount, Vehicle,
+}
+
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub id: u32,
+    pub name: String,
+    pub category: ItemCategory,
+    pub rarity: ItemRarity,
+    pub weight_kg: f32,
+    pub base_value: f32,
+    pub description: String,
+    pub properties: HashMap<String, String>,
+    pub requires_attunement: bool,
+    pub attuned_to: Option<u32>,
+    pub charges: Option<u32>,
+    pub max_charges: Option<u32>,
+    pub spell_trigger: Option<u32>,
+}
+
+impl Item {
+    pub fn new(id: u32, name: &str, category: ItemCategory, rarity: ItemRarity) -> Self {
+        Item {
+            id, name: name.to_string(), category, rarity,
+            weight_kg: 1.0, base_value: 10.0, description: String::new(),
+            properties: HashMap::new(), requires_attunement: false,
+            attuned_to: None, charges: None, max_charges: None, spell_trigger: None,
+        }
+    }
+
+    pub fn effective_value(&self) -> f32 {
+        self.base_value * self.rarity.gold_value_modifier()
+    }
+
+    pub fn use_charge(&mut self) -> bool {
+        if let Some(ref mut c) = self.charges {
+            if *c > 0 { *c -= 1; true } else { false }
+        } else { true }
+    }
+
+    pub fn is_depleted(&self) -> bool {
+        self.charges.map(|c| c == 0).unwrap_or(false)
+    }
+}
+
+// ============================================================
+// CRAFTING SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CraftingIngredient {
+    pub item_id: u32,
+    pub quantity: u32,
+    pub consumed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CraftingRecipe {
+    pub recipe_id: u32,
+    pub name: String,
+    pub output_item_id: u32,
+    pub output_quantity: u32,
+    pub ingredients: Vec<CraftingIngredient>,
+    pub required_tools: Vec<String>,
+    pub skill_required: String,
+    pub skill_level: u32,
+    pub time_minutes: f32,
+    pub experience_granted: u32,
+}
+
+impl CraftingRecipe {
+    pub fn new(recipe_id: u32, name: &str, output_item: u32) -> Self {
+        CraftingRecipe {
+            recipe_id, name: name.to_string(),
+            output_item_id: output_item, output_quantity: 1,
+            ingredients: Vec::new(), required_tools: Vec::new(),
+            skill_required: "Crafting".to_string(), skill_level: 1,
+            time_minutes: 10.0, experience_granted: 100,
+        }
+    }
+
+    pub fn add_ingredient(&mut self, item_id: u32, quantity: u32, consumed: bool) {
+        self.ingredients.push(CraftingIngredient { item_id, quantity, consumed });
+    }
+
+    pub fn consumed_ingredients(&self) -> Vec<&CraftingIngredient> {
+        self.ingredients.iter().filter(|i| i.consumed).collect()
+    }
+}
+
+// ============================================================
+// DIALOGUE SCRIPTING ENGINE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DialogueCondition {
+    pub condition_type: String,
+    pub target: String,
+    pub operator: String,
+    pub value: String,
+}
+
+impl DialogueCondition {
+    pub fn check_flag(flag: &str, expected: bool) -> Self {
+        DialogueCondition {
+            condition_type: "flag".to_string(),
+            target: flag.to_string(),
+            operator: "==".to_string(),
+            value: expected.to_string(),
+        }
+    }
+
+    pub fn check_level(min_level: u32) -> Self {
+        DialogueCondition {
+            condition_type: "level".to_string(),
+            target: "player".to_string(),
+            operator: ">=".to_string(),
+            value: min_level.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogueAction {
+    pub action_type: String,
+    pub target: String,
+    pub value: String,
+}
+
+impl DialogueAction {
+    pub fn set_flag(flag: &str, value: bool) -> Self {
+        DialogueAction { action_type: "set_flag".to_string(), target: flag.to_string(), value: value.to_string() }
+    }
+
+    pub fn give_item(item_id: u32) -> Self {
+        DialogueAction { action_type: "give_item".to_string(), target: "player".to_string(), value: item_id.to_string() }
+    }
+
+    pub fn give_xp(amount: u32) -> Self {
+        DialogueAction { action_type: "give_xp".to_string(), target: "player".to_string(), value: amount.to_string() }
+    }
+}
+
+// ============================================================
+// MAP CHUNK STREAMING
+// ============================================================
+
+pub const CHUNK_SIZE: u32 = 64;
+pub const CHUNK_LOAD_RADIUS: u32 = 3;
+
+#[derive(Debug, Clone)]
+pub struct MapChunk {
+    pub chunk_x: i32,
+    pub chunk_y: i32,
+    pub loaded: bool,
+    pub dirty: bool,
+    pub tile_data: Vec<u32>,
+    pub object_ids: Vec<u32>,
+    pub light_data: Vec<Vec3>,
+    pub last_accessed_frame: u64,
+}
+
+impl MapChunk {
+    pub fn new(cx: i32, cy: i32) -> Self {
+        let size = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+        MapChunk {
+            chunk_x: cx, chunk_y: cy,
+            loaded: false, dirty: false,
+            tile_data: vec![0u32; size],
+            object_ids: Vec::new(),
+            light_data: vec![Vec3::ZERO; size],
+            last_accessed_frame: 0,
+        }
+    }
+
+    pub fn get_tile(&self, local_x: u32, local_y: u32) -> u32 {
+        if local_x >= CHUNK_SIZE || local_y >= CHUNK_SIZE { return 0; }
+        self.tile_data[(local_y * CHUNK_SIZE + local_x) as usize]
+    }
+
+    pub fn set_tile(&mut self, local_x: u32, local_y: u32, tile_id: u32) {
+        if local_x >= CHUNK_SIZE || local_y >= CHUNK_SIZE { return; }
+        self.tile_data[(local_y * CHUNK_SIZE + local_x) as usize] = tile_id;
+        self.dirty = true;
+    }
+
+    pub fn world_position(&self) -> Vec2 {
+        Vec2::new(self.chunk_x as f32 * CHUNK_SIZE as f32, self.chunk_y as f32 * CHUNK_SIZE as f32)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkManager {
+    pub loaded_chunks: HashMap<(i32, i32), MapChunk>,
+    pub player_chunk: (i32, i32),
+    pub frame: u64,
+    pub max_loaded_chunks: usize,
+}
+
+impl ChunkManager {
+    pub fn new() -> Self {
+        ChunkManager {
+            loaded_chunks: HashMap::new(),
+            player_chunk: (0, 0),
+            frame: 0,
+            max_loaded_chunks: 64,
+        }
+    }
+
+    pub fn world_to_chunk(world_x: f32, world_y: f32) -> (i32, i32) {
+        (
+            (world_x / CHUNK_SIZE as f32).floor() as i32,
+            (world_y / CHUNK_SIZE as f32).floor() as i32,
+        )
+    }
+
+    pub fn get_tile(&self, world_x: f32, world_y: f32) -> u32 {
+        let (cx, cy) = Self::world_to_chunk(world_x, world_y);
+        let local_x = (world_x as i32 - cx * CHUNK_SIZE as i32) as u32;
+        let local_y = (world_y as i32 - cy * CHUNK_SIZE as i32) as u32;
+        self.loaded_chunks.get(&(cx, cy))
+            .map(|c| c.get_tile(local_x, local_y))
+            .unwrap_or(0)
+    }
+
+    pub fn required_chunks(&self) -> Vec<(i32, i32)> {
+        let (px, py) = self.player_chunk;
+        let r = CHUNK_LOAD_RADIUS as i32;
+        let mut required = Vec::new();
+        for dy in -r..=r {
+            for dx in -r..=r {
+                required.push((px + dx, py + dy));
+            }
+        }
+        required
+    }
+
+    pub fn evict_distant_chunks(&mut self) {
+        if self.loaded_chunks.len() <= self.max_loaded_chunks { return; }
+        let (px, py) = self.player_chunk;
+        let mut chunks_with_dist: Vec<((i32, i32), i32)> = self.loaded_chunks.keys()
+            .map(|&(cx, cy)| ((cx, cy), (cx - px).abs() + (cy - py).abs()))
+            .collect();
+        chunks_with_dist.sort_by_key(|(_, d)| -(*d));
+        let to_remove = chunks_with_dist.len() - self.max_loaded_chunks;
+        for i in 0..to_remove {
+            self.loaded_chunks.remove(&chunks_with_dist[i].0);
+        }
+    }
+}
+
+// ============================================================
+// ADDITIONAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_final2 {
+    use super::*;
+
+    #[test]
+    fn test_spell_components() {
+        let spell = Spell::new(1, "Fireball", SpellSchool::Evocation, 3);
+        let comp = spell.requires_components();
+        assert!(comp.contains('V'));
+        assert!(comp.contains('S'));
+    }
+
+    #[test]
+    fn test_character_healing() {
+        let mut c = Character::new(1, "Aragorn");
+        c.max_hp = 40;
+        c.current_hp = 10;
+        c.heal(15);
+        assert_eq!(c.current_hp, 25);
+        c.heal(100);
+        assert_eq!(c.current_hp, 40);
+    }
+
+    #[test]
+    fn test_character_damage() {
+        let mut c = Character::new(1, "Legolas");
+        c.max_hp = 30;
+        c.current_hp = 30;
+        c.take_damage(35);
+        assert!(!c.is_alive());
+    }
+
+    #[test]
+    fn test_item_effective_value() {
+        let item = Item::new(1, "Longsword +2", ItemCategory::Weapon, ItemRarity::Rare);
+        assert!(item.effective_value() > item.base_value);
+    }
+
+    #[test]
+    fn test_chunk_manager_tile() {
+        let mut mgr = ChunkManager::new();
+        let mut chunk = MapChunk::new(0, 0);
+        chunk.set_tile(3, 5, 42);
+        mgr.loaded_chunks.insert((0, 0), chunk);
+        assert_eq!(mgr.get_tile(3.0, 5.0), 42);
+    }
+
+    #[test]
+    fn test_chunk_required() {
+        let mgr = ChunkManager::new();
+        let required = mgr.required_chunks();
+        assert_eq!(required.len(), (2 * CHUNK_LOAD_RADIUS as usize + 1).pow(2));
+    }
+
+    #[test]
+    fn test_loot_roll() {
+        let mut table = ExtLootTable::new(1, "Test", 1);
+        table.add_entry(ExtLootEntry {
+            item_id: "gold".to_string(), weight: 100.0,
+            min_quantity: 1, max_quantity: 10, condition: None,
+        });
+        let results = table.roll_deterministic(1234, 0);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_crafting_recipe() {
+        let mut recipe = CraftingRecipe::new(1, "Iron Sword", 100);
+        recipe.add_ingredient(50, 2, true);
+        recipe.add_ingredient(51, 1, false);
+        assert_eq!(recipe.consumed_ingredients().len(), 1);
+    }
+
+    #[test]
+    fn test_stats_point_buy() {
+        let stats = CharacterStats { strength: 15, dexterity: 14, constitution: 13, intelligence: 12, wisdom: 10, charisma: 8 };
+        assert_eq!(stats.point_buy_cost(), 27);
+    }
+}
+
+pub const MAP_MAX_OBJECTS: u32 = 10000;
+pub const MAP_MAX_LAYERS: u32 = 16;
+pub const MAP_TILE_SIZE_DEFAULT: u32 = 16;
+pub const MAP_EDITOR_VERSION: &str = "2.5.0";

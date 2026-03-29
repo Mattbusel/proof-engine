@@ -1,0 +1,149 @@
+
+impl MapLayer {
+    pub fn new(name: impl Into<String>, layer_type: LayerType, width: usize, height: usize) -> Self {
+        Self { name: name.into(), layer_type, tiles: vec![Tile::default(); width * height], width, height, visible: true, locked: false, opacity: 1.0, z_offset: 0.0 }
+    }
+    pub fn set(&mut self, x: usize, y: usize, tile: Tile) {
+        if x < self.width && y < self.height { self.tiles[y * self.width + x] = tile; }
+    }
+    pub fn get(&self, x: usize, y: usize) -> Option<&Tile> {
+        if x < self.width && y < self.height { Some(&self.tiles[y * self.width + x]) } else { None }
+    }
+}
+
+impl TileMap {
+    pub fn new(width: usize, height: usize, tile_width: u32, tile_height: u32) -> Self {
+        Self { width, height, tile_width, tile_height, layers: Vec::new(), projection: MapProjection::TopDown, background_color: Vec4::ZERO, ambient_light: 0.3 }
+    }
+    pub fn add_layer(&mut self, layer: MapLayer) { self.layers.push(layer); }
+    pub fn layer_count(&self) -> usize { self.layers.len() }
+}
+
+impl TileDatabase {
+    pub fn new() -> Self { Self { definitions: HashMap::new() } }
+    pub fn register(&mut self, def: TileDefinition) { self.definitions.insert(def.id, def); }
+    pub fn get(&self, id: u32) -> Option<&TileDefinition> { self.definitions.get(&id) }
+}
+
+impl TilePos {
+    pub fn new(x: i32, y: i32) -> Self { Self { x, y } }
+    pub fn octile_distance(&self, other: &TilePos) -> f32 {
+        let dx = (self.x - other.x).abs() as f32;
+        let dy = (self.y - other.y).abs() as f32;
+        let (big, small) = if dx > dy { (dx, dy) } else { (dy, dx) };
+        big + (std::f32::consts::SQRT_2 - 1.0) * small
+    }
+    pub fn manhattan_distance(&self, other: &TilePos) -> i32 { (self.x - other.x).abs() + (self.y - other.y).abs() }
+}
+
+impl TileRect {
+    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self { Self { x, y, width, height } }
+    pub fn contains(&self, x: i32, y: i32) -> bool { x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height }
+    pub fn area(&self) -> i32 { self.width * self.height }
+}
+
+impl MapRegion {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), region_type: RegionType::Field, bounds: (0,0,100,100), connected_regions: Vec::new(), level_range: (1, 10), background_music: None, ambient_sounds: Vec::new(), weather: "clear".into(), discovered: false, completion: 0.0 }
+    }
+}
+
+impl TrapDefinition {
+    pub fn new(id: u32, trap_type: TrapType, x: i32, y: i32) -> Self {
+        Self { id, trap_type, position: (x,y), damage: 10, damage_type: "physical".into(), triggered: false, rearm_time: 30.0, time_since_trigger: 0.0, visible: false, disarm_skill: 10 }
+    }
+}
+
+impl DoorDefinition {
+    pub fn new(id: u32, x: i32, y: i32) -> Self {
+        Self { id, position: (x,y), facing: 0, state: DoorState::Closed, key_id: None, lock_difficulty: 0, hp: 50, material: "wood".into(), auto_close_time: None, is_secret: false }
+    }
+}
+
+impl TileObject {
+    pub fn new(id: u32, object_type: impl Into<String>, x: i32, y: i32) -> Self {
+        Self { id, object_type: object_type.into(), position: (x,y), size: (1,1), rotation: 0, flip_x: false, flip_y: false, layer: 0, properties: HashMap::new(), collidable: true, sprite_id: 0 }
+    }
+}
+
+impl WarpPoint {
+    pub fn new(id: u32, name: impl Into<String>, x: i32, y: i32, target_map: impl Into<String>) -> Self {
+        Self { id, name: name.into(), position: (x,y), target_map: target_map.into(), target_position: (0,0), unlock_condition: None, is_unlocked: false, warp_type: "portal".into(), effect_name: "warp".into() }
+    }
+}
+
+impl DungeonGenerator {
+    pub fn new(width: i32, height: i32, seed: u64) -> Self {
+        Self { width, height, seed, min_room_size: 5, max_room_size: 15, max_rooms: 20 }
+    }
+}
+
+impl MapEvent {
+    pub fn new(id: u32, event_type: MapEventType, x: i32, y: i32) -> Self {
+        Self { id, event_type, position: (x,y), data: HashMap::new(), fired: false, cooldown_s: 0.0, last_fire_time: 0.0 }
+    }
+    pub fn with_data(mut self, key: &str, val: &str) -> Self { self.data.insert(key.into(), val.into()); self }
+    pub fn with_cooldown(mut self, secs: f32) -> Self { self.cooldown_s = secs; self }
+    pub fn can_fire(&self, current_time: f32) -> bool { !self.fired || (current_time - self.last_fire_time) >= self.cooldown_s }
+}
+
+impl MapEventSystem {
+    pub fn new() -> Self { Self { events: Vec::new(), current_time: 0.0 } }
+    pub fn add_event(&mut self, e: MapEvent) { self.events.push(e); }
+    pub fn events_at(&self, x: i32, y: i32) -> Vec<&MapEvent> { self.events.iter().filter(|e| e.position == (x,y)).collect() }
+    pub fn trigger_at(&mut self, x: i32, y: i32) -> Vec<u32> {
+        let t = self.current_time;
+        let mut fired = Vec::new();
+        for e in &mut self.events { if e.position == (x,y) && e.can_fire(t) { e.fired = true; e.last_fire_time = t; fired.push(e.id); } }
+        fired
+    }
+    pub fn events_of_type(&self, et: &MapEventType) -> Vec<&MapEvent> {
+        self.events.iter().filter(|e| std::mem::discriminant(&e.event_type) == std::mem::discriminant(et)).collect()
+    }
+    pub fn reset_all(&mut self) { for e in &mut self.events { e.fired = false; } }
+}
+
+impl PatrolWaypoint {
+    pub fn new(x: i32, y: i32) -> Self { Self { position: (x,y), wait_time_s: 0.0, animation_hint: String::new() } }
+}
+
+impl MapProgressionData {
+    pub fn new(map_id: u32) -> Self {
+        Self { map_id, total_secrets: 0, found_secrets: 0, total_enemies: 0, killed_enemies: 0, total_chests: 0, opened_chests: 0, boss_defeated: false, time_spent_s: 0.0, completion_flags: HashSet::new() }
+    }
+}
+
+impl OverworldGenerator {
+    pub fn new(seed: u64) -> Self { Self { seed, world_width: 256, world_height: 256, num_regions: 10, num_settlements: 5, num_dungeons: 8 } }
+}
+
+impl MapEditor {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            map: TileMap::new(width, height, 32, 32),
+            db: TileDatabase::new(),
+            undo_stack: MapUndoStack { actions: std::collections::VecDeque::new(), redo_stack: std::collections::VecDeque::new(), max_depth: 50 },
+            brush: BrushState::default(),
+            clipboard: Clipboard { layers: Vec::new(), width: 0, height: 0 },
+            selection: SelectionRect { active: false, x: 0, y: 0, w: 0, h: 0 },
+            rooms: RoomGraph { rooms: Vec::new(), adjacency: HashMap::new() },
+            encounter_zones: Vec::new(),
+            patrol_paths: Vec::new(),
+            event_zones: Vec::new(),
+            scripted_sequences: Vec::new(),
+            lights: Vec::new(),
+            minimap: MinimapData { pixels: Vec::new(), width: 64, height: 64, needs_update: true },
+            mode: MapEditorMode::Draw,
+            current_layer: 0,
+            rng: MapRng::new(42),
+            pending_actions: Vec::new(),
+            grid_visible: true,
+            show_collision: false,
+            show_entities: true,
+            show_lighting: true,
+            show_patrol_paths: false,
+            show_encounter_zones: false,
+            show_minimap: true,
+        }
+    }
+}

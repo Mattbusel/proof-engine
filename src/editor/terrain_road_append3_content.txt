@@ -1,0 +1,925 @@
+
+// ============================================================
+// SPEED ZONE ANALYSIS
+// ============================================================
+
+pub const SPEED_ZONE_DEFAULT_URBAN_KPH: f32 = 50.0;
+pub const SPEED_ZONE_DEFAULT_RURAL_KPH: f32 = 100.0;
+pub const SPEED_ZONE_SCHOOL_KPH: f32 = 25.0;
+pub const SPEED_ZONE_CONSTRUCTION_KPH: f32 = 40.0;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpeedZoneType {
+    Urban,
+    Rural,
+    HighSpeed,
+    School,
+    Hospital,
+    Construction,
+    Advisory,
+    Variable,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpeedZone {
+    pub id: u32,
+    pub zone_type: SpeedZoneType,
+    pub posted_speed_kph: f32,
+    pub start_chainage: f32,
+    pub end_chainage: f32,
+    pub active_hours_start: f32,
+    pub active_hours_end: f32,
+    pub enforcement_camera: bool,
+    pub justification: String,
+}
+
+impl SpeedZone {
+    pub fn new(id: u32, zone_type: SpeedZoneType, speed_kph: f32, start: f32, end: f32) -> Self {
+        SpeedZone {
+            id, zone_type, posted_speed_kph: speed_kph,
+            start_chainage: start, end_chainage: end,
+            active_hours_start: 0.0, active_hours_end: 24.0,
+            enforcement_camera: false,
+            justification: String::new(),
+        }
+    }
+
+    pub fn length(&self) -> f32 {
+        (self.end_chainage - self.start_chainage).abs()
+    }
+
+    pub fn is_active_at_hour(&self, hour: f32) -> bool {
+        hour >= self.active_hours_start && hour < self.active_hours_end
+    }
+
+    pub fn stopping_sight_distance(&self) -> f32 {
+        // AASHTO 2018 Green Book: SSD = V*t + V^2/(2*g*f)
+        let v_ms = self.posted_speed_kph / 3.6;
+        let t_reaction = 2.5;
+        let g = 9.81;
+        let f_friction = 0.35;
+        v_ms * t_reaction + (v_ms * v_ms) / (2.0 * g * f_friction)
+    }
+
+    pub fn decision_sight_distance(&self) -> f32 {
+        // DSD = 1.5 * SSD approximately
+        self.stopping_sight_distance() * 1.5
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpeedZoneInventory {
+    pub road_id: u32,
+    pub zones: Vec<SpeedZone>,
+}
+
+impl SpeedZoneInventory {
+    pub fn new(road_id: u32) -> Self {
+        SpeedZoneInventory { road_id, zones: Vec::new() }
+    }
+
+    pub fn add_zone(&mut self, zone: SpeedZone) {
+        self.zones.push(zone);
+        self.zones.sort_by(|a, b| a.start_chainage.partial_cmp(&b.start_chainage).unwrap());
+    }
+
+    pub fn zone_at_chainage(&self, ch: f32) -> Option<&SpeedZone> {
+        self.zones.iter().find(|z| ch >= z.start_chainage && ch <= z.end_chainage)
+    }
+
+    pub fn school_zones(&self) -> Vec<&SpeedZone> {
+        self.zones.iter().filter(|z| z.zone_type == SpeedZoneType::School).collect()
+    }
+}
+
+// ============================================================
+// CROSS-SECTION ELEMENTS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaneType {
+    ThroughLane,
+    TurnLane,
+    CycleLane,
+    BusLane,
+    EmergencyStoppingLane,
+    Auxiliary,
+    Ramp,
+    Acceleration,
+    Deceleration,
+}
+
+#[derive(Debug, Clone)]
+pub struct Lane {
+    pub id: u32,
+    pub lane_type: LaneType,
+    pub width_m: f32,
+    pub direction: i32, // +1 or -1
+    pub surface_type: String,
+    pub has_rumble_strip: bool,
+    pub has_markings: bool,
+    pub speed_kph: f32,
+}
+
+impl Lane {
+    pub fn new(id: u32, lane_type: LaneType, width_m: f32, direction: i32) -> Self {
+        Lane {
+            id, lane_type, width_m, direction,
+            surface_type: "Asphalt".to_string(),
+            has_rumble_strip: false, has_markings: true,
+            speed_kph: 80.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Shoulder {
+    pub width_m: f32,
+    pub paved: bool,
+    pub surface_type: String,
+    pub has_barrier: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Median {
+    pub width_m: f32,
+    pub raised: bool,
+    pub has_barrier: bool,
+    pub landscaped: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadCrossSection {
+    pub chainage: f32,
+    pub lanes: Vec<Lane>,
+    pub left_shoulder: Option<Shoulder>,
+    pub right_shoulder: Option<Shoulder>,
+    pub median: Option<Median>,
+    pub total_width_m: f32,
+    pub carriageway_width_m: f32,
+    pub cut_fill_type: String,
+    pub fill_height_m: f32,
+    pub cut_depth_m: f32,
+}
+
+impl RoadCrossSection {
+    pub fn new(chainage: f32) -> Self {
+        RoadCrossSection {
+            chainage,
+            lanes: Vec::new(),
+            left_shoulder: None, right_shoulder: None,
+            median: None,
+            total_width_m: 0.0,
+            carriageway_width_m: 0.0,
+            cut_fill_type: "At-Grade".to_string(),
+            fill_height_m: 0.0, cut_depth_m: 0.0,
+        }
+    }
+
+    pub fn compute_widths(&mut self) {
+        self.carriageway_width_m = self.lanes.iter().map(|l| l.width_m).sum::<f32>()
+            + self.median.as_ref().map(|m| m.width_m).unwrap_or(0.0);
+        let ls = self.left_shoulder.as_ref().map(|s| s.width_m).unwrap_or(0.0);
+        let rs = self.right_shoulder.as_ref().map(|s| s.width_m).unwrap_or(0.0);
+        self.total_width_m = self.carriageway_width_m + ls + rs;
+    }
+
+    pub fn lane_count_by_direction(&self, dir: i32) -> usize {
+        self.lanes.iter().filter(|l| l.direction == dir).count()
+    }
+}
+
+// ============================================================
+// EARTHWORKS COMPUTATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct EarthworkSection {
+    pub start_chainage: f32,
+    pub end_chainage: f32,
+    pub start_area_m2: f32,
+    pub end_area_m2: f32,
+    pub is_cut: bool,
+}
+
+impl EarthworkSection {
+    pub fn volume_prismatoid_m3(&self) -> f32 {
+        let l = (self.end_chainage - self.start_chainage).abs();
+        // Average end area method
+        (self.start_area_m2 + self.end_area_m2) / 2.0 * l
+    }
+
+    pub fn volume_prismatoid_corrected_m3(&self, mid_area_m2: f32) -> f32 {
+        let l = (self.end_chainage - self.start_chainage).abs();
+        // Prismatoid formula
+        l / 6.0 * (self.start_area_m2 + 4.0 * mid_area_m2 + self.end_area_m2)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MassHaulDiagram {
+    pub stations: Vec<f32>,
+    pub ordinates: Vec<f32>,
+    pub freehaul_distance: f32,
+    pub overhaul_rate_per_m3_station: f32,
+}
+
+impl MassHaulDiagram {
+    pub fn new(freehaul_distance: f32) -> Self {
+        MassHaulDiagram {
+            stations: Vec::new(),
+            ordinates: Vec::new(),
+            freehaul_distance,
+            overhaul_rate_per_m3_station: 0.05,
+        }
+    }
+
+    pub fn build(&mut self, sections: &[EarthworkSection]) {
+        let mut cumulative = 0.0f32;
+        self.stations.clear();
+        self.ordinates.clear();
+        self.stations.push(sections.first().map(|s| s.start_chainage).unwrap_or(0.0));
+        self.ordinates.push(0.0);
+        for sec in sections {
+            let vol = sec.volume_prismatoid_m3();
+            cumulative += if sec.is_cut { vol } else { -vol };
+            self.stations.push(sec.end_chainage);
+            self.ordinates.push(cumulative);
+        }
+    }
+
+    pub fn balance_point(&self) -> Option<f32> {
+        // Find where ordinate crosses zero after a non-zero region
+        for i in 1..self.ordinates.len() {
+            if self.ordinates[i - 1] * self.ordinates[i] < 0.0 {
+                let frac = self.ordinates[i - 1] / (self.ordinates[i - 1] - self.ordinates[i]);
+                return Some(self.stations[i - 1] + frac * (self.stations[i] - self.stations[i - 1]));
+            }
+        }
+        None
+    }
+
+    pub fn total_cut_m3(&self) -> f32 {
+        self.ordinates.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(0.0)
+    }
+
+    pub fn total_fill_m3(&self) -> f32 {
+        (-self.ordinates.iter().cloned().fold(f32::INFINITY, f32::min)).max(0.0)
+    }
+}
+
+// ============================================================
+// STORMWATER DRAINAGE DESIGN
+// ============================================================
+
+pub const STORMWATER_RUNOFF_COEFF_PAVEMENT: f32 = 0.90;
+pub const STORMWATER_RUNOFF_COEFF_LAWN: f32 = 0.25;
+pub const STORMWATER_RUNOFF_COEFF_GRAVEL: f32 = 0.60;
+pub const STORMWATER_MANNING_CONCRETE: f32 = 0.013;
+pub const STORMWATER_MANNING_EARTHEN: f32 = 0.030;
+
+#[derive(Debug, Clone)]
+pub struct CatchmentArea {
+    pub id: u32,
+    pub area_ha: f32,
+    pub runoff_coefficient: f32,
+    pub time_of_concentration_min: f32,
+    pub slope_pct: f32,
+    pub description: String,
+}
+
+impl CatchmentArea {
+    pub fn new(id: u32, area_ha: f32, runoff_coeff: f32) -> Self {
+        CatchmentArea {
+            id, area_ha, runoff_coefficient: runoff_coeff,
+            time_of_concentration_min: 10.0,
+            slope_pct: 1.0,
+            description: String::new(),
+        }
+    }
+
+    pub fn rational_flow_m3s(&self, rainfall_intensity_mm_hr: f32) -> f32 {
+        // Q = C * i * A / 360 (m³/s, A in ha, i in mm/hr)
+        self.runoff_coefficient * rainfall_intensity_mm_hr * self.area_ha / 360.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StormDrainPipe {
+    pub id: u32,
+    pub diameter_mm: f32,
+    pub material: String,
+    pub manning_n: f32,
+    pub slope_percent: f32,
+    pub length_m: f32,
+    pub upstream_invert: f32,
+    pub downstream_invert: f32,
+}
+
+impl StormDrainPipe {
+    pub fn new(id: u32, diameter_mm: f32, slope_pct: f32, length_m: f32) -> Self {
+        StormDrainPipe {
+            id, diameter_mm, material: "Concrete".to_string(),
+            manning_n: STORMWATER_MANNING_CONCRETE,
+            slope_percent: slope_pct, length_m,
+            upstream_invert: 0.0, downstream_invert: 0.0,
+        }
+    }
+
+    pub fn full_flow_capacity_m3s(&self) -> f32 {
+        // Manning's equation: Q = (1/n) * A * R^(2/3) * S^(1/2)
+        let r_m = self.diameter_mm / 2000.0;
+        let area = std::f32::consts::PI * r_m * r_m;
+        let hydraulic_radius = r_m / 2.0;
+        let slope = self.slope_percent / 100.0;
+        (1.0 / self.manning_n) * area * hydraulic_radius.powf(2.0 / 3.0) * slope.sqrt()
+    }
+
+    pub fn velocity_full_ms(&self) -> f32 {
+        let r_m = self.diameter_mm / 2000.0;
+        let hydraulic_radius = r_m / 2.0;
+        let slope = self.slope_percent / 100.0;
+        (1.0 / self.manning_n) * hydraulic_radius.powf(2.0 / 3.0) * slope.sqrt()
+    }
+
+    pub fn is_self_cleansing(&self) -> bool {
+        self.velocity_full_ms() >= 0.6
+    }
+
+    pub fn travel_time_min(&self) -> f32 {
+        let v = self.velocity_full_ms().max(0.001);
+        self.length_m / v / 60.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenChannel {
+    pub id: u32,
+    pub base_width_m: f32,
+    pub side_slope_ratio: f32,
+    pub depth_m: f32,
+    pub manning_n: f32,
+    pub slope_percent: f32,
+    pub length_m: f32,
+}
+
+impl OpenChannel {
+    pub fn new(id: u32, base_m: f32, depth_m: f32, slope_pct: f32) -> Self {
+        OpenChannel {
+            id, base_width_m: base_m,
+            side_slope_ratio: 2.0,
+            depth_m,
+            manning_n: STORMWATER_MANNING_EARTHEN,
+            slope_percent: slope_pct,
+            length_m: 100.0,
+        }
+    }
+
+    pub fn flow_area_m2(&self) -> f32 {
+        (self.base_width_m + self.side_slope_ratio * self.depth_m) * self.depth_m
+    }
+
+    pub fn wetted_perimeter_m(&self) -> f32 {
+        self.base_width_m + 2.0 * self.depth_m * (1.0 + self.side_slope_ratio * self.side_slope_ratio).sqrt()
+    }
+
+    pub fn hydraulic_radius_m(&self) -> f32 {
+        let p = self.wetted_perimeter_m();
+        if p <= 0.0 { return 0.0; }
+        self.flow_area_m2() / p
+    }
+
+    pub fn capacity_m3s(&self) -> f32 {
+        let slope = self.slope_percent / 100.0;
+        (1.0 / self.manning_n)
+            * self.flow_area_m2()
+            * self.hydraulic_radius_m().powf(2.0 / 3.0)
+            * slope.sqrt()
+    }
+
+    pub fn freeboard_m(&self, design_flow: f32) -> f32 {
+        // Estimate design depth from capacity
+        let capacity = self.capacity_m3s();
+        if capacity <= 0.0 { return 0.0; }
+        let flow_ratio = (design_flow / capacity).min(1.0);
+        self.depth_m * (1.0 - flow_ratio)
+    }
+}
+
+// ============================================================
+// PAVEMENT PERFORMANCE MODEL
+// ============================================================
+
+pub const IRI_THRESHOLD_GOOD: f32 = 2.5;
+pub const IRI_THRESHOLD_FAIR: f32 = 4.5;
+pub const IRI_THRESHOLD_POOR: f32 = 7.0;
+pub const PSR_NEW_PAVEMENT: f32 = 4.5;
+pub const PSR_TERMINAL: f32 = 2.0;
+
+#[derive(Debug, Clone)]
+pub struct PavementPerformanceModel {
+    pub section_id: u32,
+    pub initial_iri: f32,
+    pub deterioration_rate: f32,
+    pub traffic_esal_annual: f64,
+    pub climate_factor: f32,
+    pub age_years: f32,
+}
+
+impl PavementPerformanceModel {
+    pub fn new(section_id: u32, initial_iri: f32, esal: f64) -> Self {
+        PavementPerformanceModel {
+            section_id, initial_iri,
+            deterioration_rate: 0.15,
+            traffic_esal_annual: esal,
+            climate_factor: 1.0,
+            age_years: 0.0,
+        }
+    }
+
+    pub fn iri_at_age(&self, years: f32) -> f32 {
+        // Simplified linear + traffic model
+        let traffic_factor = (self.traffic_esal_annual as f32 / 1_000_000.0).sqrt();
+        self.initial_iri + self.deterioration_rate * years * self.climate_factor * (1.0 + traffic_factor * 0.1)
+    }
+
+    pub fn condition_at_age(&self, years: f32) -> &'static str {
+        let iri = self.iri_at_age(years);
+        if iri < IRI_THRESHOLD_GOOD { "Good" }
+        else if iri < IRI_THRESHOLD_FAIR { "Fair" }
+        else if iri < IRI_THRESHOLD_POOR { "Poor" }
+        else { "Very Poor" }
+    }
+
+    pub fn years_to_terminal(&self) -> f32 {
+        let terminal_iri = IRI_THRESHOLD_POOR;
+        if self.initial_iri >= terminal_iri { return 0.0; }
+        let traffic_factor = (self.traffic_esal_annual as f32 / 1_000_000.0).sqrt();
+        let rate = self.deterioration_rate * self.climate_factor * (1.0 + traffic_factor * 0.1);
+        if rate <= 0.0 { return f32::INFINITY; }
+        (terminal_iri - self.initial_iri) / rate
+    }
+
+    pub fn remaining_service_life(&self) -> f32 {
+        (self.years_to_terminal() - self.age_years).max(0.0)
+    }
+
+    pub fn treatment_recommendation(&self) -> &'static str {
+        let iri = self.iri_at_age(self.age_years);
+        if iri < 2.0 { "No treatment needed" }
+        else if iri < IRI_THRESHOLD_GOOD { "Preventive maintenance" }
+        else if iri < IRI_THRESHOLD_FAIR { "Minor rehabilitation" }
+        else if iri < IRI_THRESHOLD_POOR { "Major rehabilitation" }
+        else { "Reconstruction" }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PavementNetwork {
+    pub sections: Vec<PavementPerformanceModel>,
+    pub total_lane_km: f32,
+    pub budget_annual: f64,
+}
+
+impl PavementNetwork {
+    pub fn new(budget: f64) -> Self {
+        PavementNetwork { sections: Vec::new(), total_lane_km: 0.0, budget_annual: budget }
+    }
+
+    pub fn add_section(&mut self, section: PavementPerformanceModel) {
+        self.sections.push(section);
+    }
+
+    pub fn network_iri_average(&self) -> f32 {
+        if self.sections.is_empty() { return 0.0; }
+        self.sections.iter().map(|s| s.iri_at_age(s.age_years)).sum::<f32>() / self.sections.len() as f32
+    }
+
+    pub fn sections_needing_treatment(&self) -> Vec<&PavementPerformanceModel> {
+        self.sections.iter()
+            .filter(|s| s.iri_at_age(s.age_years) >= IRI_THRESHOLD_GOOD)
+            .collect()
+    }
+
+    pub fn network_condition_distribution(&self) -> HashMap<&'static str, usize> {
+        let mut dist: HashMap<&'static str, usize> = HashMap::new();
+        for s in &self.sections {
+            let cond = s.condition_at_age(s.age_years);
+            *dist.entry(cond).or_insert(0) += 1;
+        }
+        dist
+    }
+}
+
+// ============================================================
+// BRIDGE DESIGN OVERVIEW
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeType {
+    BeamBridge,
+    ArchBridge,
+    SuspensionBridge,
+    CableStayed,
+    TrussBridge,
+    BoxGirder,
+    Culvert,
+    Underpass,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeSpan {
+    pub span_number: u32,
+    pub length_m: f32,
+    pub width_m: f32,
+    pub deck_elevation: f32,
+    pub clearance_m: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Bridge {
+    pub id: u32,
+    pub name: String,
+    pub bridge_type: BridgeType,
+    pub total_length_m: f32,
+    pub carriageway_width_m: f32,
+    pub spans: Vec<BridgeSpan>,
+    pub design_load_kn_m2: f32,
+    pub construction_year: u32,
+    pub inspection_rating: f32,
+    pub material: String,
+    pub water_crossing: bool,
+    pub min_clearance_m: f32,
+}
+
+impl Bridge {
+    pub fn new(id: u32, name: &str, bridge_type: BridgeType) -> Self {
+        Bridge {
+            id, name: name.to_string(), bridge_type,
+            total_length_m: 0.0, carriageway_width_m: 7.3,
+            spans: Vec::new(),
+            design_load_kn_m2: 5.0,
+            construction_year: 2000,
+            inspection_rating: 4.0,
+            material: "Reinforced Concrete".to_string(),
+            water_crossing: false, min_clearance_m: 4.5,
+        }
+    }
+
+    pub fn add_span(&mut self, span: BridgeSpan) {
+        self.total_length_m += span.length_m;
+        self.spans.push(span);
+    }
+
+    pub fn span_count(&self) -> usize {
+        self.spans.len()
+    }
+
+    pub fn requires_inspection(&self) -> bool {
+        self.inspection_rating < 3.0
+    }
+
+    pub fn deck_area_m2(&self) -> f32 {
+        self.total_length_m * self.carriageway_width_m
+    }
+}
+
+// ============================================================
+// GEOMETRIC DESIGN PARAMETERS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DesignSpeed {
+    pub speed_kph: f32,
+    pub min_horizontal_radius_m: f32,
+    pub max_superelevation_pct: f32,
+    pub min_stopping_sight_distance_m: f32,
+    pub min_crest_k: f32,
+    pub min_sag_k: f32,
+}
+
+impl DesignSpeed {
+    pub fn for_speed(kph: f32) -> Self {
+        let v = kph;
+        let r_min = v * v / (127.0 * (0.10 + 0.14));
+        let ssd = v / 3.6 * 2.5 + (v / 3.6) * (v / 3.6) / (2.0 * 9.81 * 0.35);
+        DesignSpeed {
+            speed_kph: kph,
+            min_horizontal_radius_m: r_min,
+            max_superelevation_pct: 10.0,
+            min_stopping_sight_distance_m: ssd,
+            min_crest_k: ssd * ssd / (2.0 * ssd * 0.105 + 0.022 * ssd - 2.6),
+            min_sag_k: ssd * ssd / (120.0 + 3.5 * ssd),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadGeometryReport {
+    pub road_id: u32,
+    pub total_length_m: f32,
+    pub design_speed_kph: f32,
+    pub horizontal_curve_count: u32,
+    pub vertical_curve_count: u32,
+    pub min_radius_found_m: f32,
+    pub max_grade_pct: f32,
+    pub non_compliant_elements: Vec<String>,
+    pub compliant: bool,
+}
+
+impl RoadGeometryReport {
+    pub fn new(road_id: u32) -> Self {
+        RoadGeometryReport {
+            road_id, total_length_m: 0.0, design_speed_kph: 80.0,
+            horizontal_curve_count: 0, vertical_curve_count: 0,
+            min_radius_found_m: f32::INFINITY, max_grade_pct: 0.0,
+            non_compliant_elements: Vec::new(), compliant: true,
+        }
+    }
+
+    pub fn check_radius(&mut self, radius_m: f32) {
+        let params = DesignSpeed::for_speed(self.design_speed_kph);
+        if radius_m < params.min_horizontal_radius_m {
+            self.non_compliant_elements.push(
+                format!("Radius {:.1}m < min {:.1}m for {}kph", radius_m, params.min_horizontal_radius_m, self.design_speed_kph)
+            );
+            self.compliant = false;
+        }
+        if radius_m < self.min_radius_found_m { self.min_radius_found_m = radius_m; }
+    }
+
+    pub fn check_grade(&mut self, grade_pct: f32) {
+        let max_allowed = if self.design_speed_kph >= 100.0 { 5.0 } else if self.design_speed_kph >= 80.0 { 7.0 } else { 10.0 };
+        if grade_pct.abs() > max_allowed {
+            self.non_compliant_elements.push(
+                format!("Grade {:.1}% > max {:.1}% for {}kph", grade_pct, max_allowed, self.design_speed_kph)
+            );
+            self.compliant = false;
+        }
+        if grade_pct.abs() > self.max_grade_pct { self.max_grade_pct = grade_pct.abs(); }
+    }
+}
+
+// ============================================================
+// ENVIRONMENTAL IMPACT ASSESSMENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct NoiseSensitiveReceiver {
+    pub id: u32,
+    pub name: String,
+    pub location: Vec2,
+    pub receiver_type: String,
+    pub naaqs_criterion_dba: f32,
+    pub predicted_noise_dba: f32,
+    pub existing_noise_dba: f32,
+    pub impact_threshold_increase_dba: f32,
+}
+
+impl NoiseSensitiveReceiver {
+    pub fn new(id: u32, name: &str, location: Vec2, criterion: f32) -> Self {
+        NoiseSensitiveReceiver {
+            id, name: name.to_string(), location,
+            receiver_type: "Residential".to_string(),
+            naaqs_criterion_dba: criterion,
+            predicted_noise_dba: 0.0,
+            existing_noise_dba: 0.0,
+            impact_threshold_increase_dba: 3.0,
+        }
+    }
+
+    pub fn is_impacted(&self) -> bool {
+        self.predicted_noise_dba > self.naaqs_criterion_dba
+            || (self.predicted_noise_dba - self.existing_noise_dba) > self.impact_threshold_increase_dba
+    }
+
+    pub fn excess_noise_dba(&self) -> f32 {
+        (self.predicted_noise_dba - self.naaqs_criterion_dba).max(0.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AirQualityImpact {
+    pub receptor_id: u32,
+    pub location: Vec2,
+    pub pm25_ug_m3: f32,
+    pub pm10_ug_m3: f32,
+    pub no2_ppb: f32,
+    pub co_ppm: f32,
+    pub exceeds_standard: bool,
+}
+
+impl AirQualityImpact {
+    pub fn check_standards(&mut self) {
+        // NAAQS 24-hr standards
+        self.exceeds_standard = self.pm25_ug_m3 > 35.0
+            || self.pm10_ug_m3 > 150.0
+            || self.no2_ppb > 100.0
+            || self.co_ppm > 9.0;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EnvironmentalImpactReport {
+    pub project_id: u32,
+    pub noise_receivers: Vec<NoiseSensitiveReceiver>,
+    pub air_quality_impacts: Vec<AirQualityImpact>,
+    pub impacted_wetland_ha: f32,
+    pub impacted_threatened_species: Vec<String>,
+    pub mitigation_measures: Vec<String>,
+    pub overall_significance: String,
+}
+
+impl EnvironmentalImpactReport {
+    pub fn new(project_id: u32) -> Self {
+        EnvironmentalImpactReport {
+            project_id,
+            noise_receivers: Vec::new(),
+            air_quality_impacts: Vec::new(),
+            impacted_wetland_ha: 0.0,
+            impacted_threatened_species: Vec::new(),
+            mitigation_measures: Vec::new(),
+            overall_significance: "To be determined".to_string(),
+        }
+    }
+
+    pub fn noise_impacts_count(&self) -> usize {
+        self.noise_receivers.iter().filter(|r| r.is_impacted()).count()
+    }
+
+    pub fn air_exceedances_count(&self) -> usize {
+        self.air_quality_impacts.iter().filter(|a| a.exceeds_standard).count()
+    }
+
+    pub fn add_mitigation(&mut self, measure: &str) {
+        self.mitigation_measures.push(measure.to_string());
+    }
+
+    pub fn assess_significance(&mut self) {
+        let noise_impacts = self.noise_impacts_count();
+        let air_exceedances = self.air_exceedances_count();
+        let has_wetlands = self.impacted_wetland_ha > 0.0;
+        let has_species = !self.impacted_threatened_species.is_empty();
+
+        self.overall_significance = if noise_impacts > 10 || air_exceedances > 0 || has_wetlands || has_species {
+            "Significant"
+        } else if noise_impacts > 3 {
+            "Moderate"
+        } else {
+            "Minor"
+        }.to_string();
+    }
+}
+
+// ============================================================
+// ROAD SAFETY IMPROVEMENT PROGRAM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SafetyTreatment {
+    pub id: u32,
+    pub name: String,
+    pub unit_cost: f64,
+    pub estimated_crash_reduction_pct: f32,
+    pub applicable_crash_types: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SafetyBenefitCost {
+    pub treatment_id: u32,
+    pub location_id: u32,
+    pub annual_crash_cost_before: f64,
+    pub annual_crash_cost_after: f64,
+    pub implementation_cost: f64,
+    pub analysis_period_years: u32,
+    pub discount_rate: f32,
+}
+
+impl SafetyBenefitCost {
+    pub fn npv_benefits(&self) -> f64 {
+        let annual_saving = self.annual_crash_cost_before - self.annual_crash_cost_after;
+        let r = self.discount_rate as f64;
+        let n = self.analysis_period_years as f64;
+        if r == 0.0 { return annual_saving * n; }
+        annual_saving * (1.0 - (1.0 + r).powf(-n)) / r
+    }
+
+    pub fn bcr(&self) -> f64 {
+        if self.implementation_cost <= 0.0 { return f64::INFINITY; }
+        self.npv_benefits() / self.implementation_cost
+    }
+
+    pub fn payback_years(&self) -> f64 {
+        let annual_saving = self.annual_crash_cost_before - self.annual_crash_cost_after;
+        if annual_saving <= 0.0 { return f64::INFINITY; }
+        self.implementation_cost / annual_saving
+    }
+}
+
+// ============================================================
+// TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_road_extended {
+    use super::*;
+
+    #[test]
+    fn test_speed_zone_ssd() {
+        let zone = SpeedZone::new(1, SpeedZoneType::Urban, 50.0, 0.0, 500.0);
+        let ssd = zone.stopping_sight_distance();
+        assert!(ssd > 30.0 && ssd < 80.0);
+    }
+
+    #[test]
+    fn test_storm_drain_capacity() {
+        let pipe = StormDrainPipe::new(1, 600.0, 0.5, 50.0);
+        let q = pipe.full_flow_capacity_m3s();
+        assert!(q > 0.1);
+        assert!(pipe.is_self_cleansing());
+    }
+
+    #[test]
+    fn test_open_channel_capacity() {
+        let chan = OpenChannel::new(1, 2.0, 1.0, 0.5);
+        let q = chan.capacity_m3s();
+        assert!(q > 0.0);
+    }
+
+    #[test]
+    fn test_pavement_performance() {
+        let mut model = PavementPerformanceModel::new(1, 1.5, 500_000);
+        model.age_years = 10.0;
+        let iri = model.iri_at_age(10.0);
+        assert!(iri > 1.5);
+        let rsl = model.remaining_service_life();
+        assert!(rsl >= 0.0);
+    }
+
+    #[test]
+    fn test_mass_haul() {
+        let sections = vec![
+            EarthworkSection { start_chainage: 0.0, end_chainage: 100.0, start_area_m2: 10.0, end_area_m2: 15.0, is_cut: true },
+            EarthworkSection { start_chainage: 100.0, end_chainage: 200.0, start_area_m2: 8.0, end_area_m2: 5.0, is_cut: false },
+        ];
+        let mut diagram = MassHaulDiagram::new(200.0);
+        diagram.build(&sections);
+        assert_eq!(diagram.stations.len(), 3);
+    }
+
+    #[test]
+    fn test_bridge_deck_area() {
+        let mut bridge = Bridge::new(1, "Test Bridge", BridgeType::BeamBridge);
+        bridge.add_span(BridgeSpan { span_number: 1, length_m: 30.0, width_m: 9.0, deck_elevation: 10.0, clearance_m: 5.5 });
+        assert_eq!(bridge.span_count(), 1);
+        assert!((bridge.deck_area_m2() - 30.0 * 7.3).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_road_geometry_report() {
+        let mut report = RoadGeometryReport::new(1);
+        report.design_speed_kph = 80.0;
+        let params = DesignSpeed::for_speed(80.0);
+        report.check_radius(params.min_horizontal_radius_m * 1.5);
+        assert!(report.compliant);
+        report.check_radius(10.0);
+        assert!(!report.compliant);
+    }
+
+    #[test]
+    fn test_cross_section_widths() {
+        let mut cs = RoadCrossSection::new(500.0);
+        cs.lanes.push(Lane::new(0, LaneType::ThroughLane, 3.5, 1));
+        cs.lanes.push(Lane::new(1, LaneType::ThroughLane, 3.5, -1));
+        cs.compute_widths();
+        assert!((cs.carriageway_width_m - 7.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_eia_noise_impact() {
+        let mut receiver = NoiseSensitiveReceiver::new(1, "School", Vec2::new(100.0, 0.0), 60.0);
+        receiver.predicted_noise_dba = 65.0;
+        assert!(receiver.is_impacted());
+        assert!((receiver.excess_noise_dba() - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_safety_bcr() {
+        let bcr_calc = SafetyBenefitCost {
+            treatment_id: 1, location_id: 5,
+            annual_crash_cost_before: 200_000.0,
+            annual_crash_cost_after: 100_000.0,
+            implementation_cost: 500_000.0,
+            analysis_period_years: 10,
+            discount_rate: 0.07,
+        };
+        let bcr = bcr_calc.bcr();
+        assert!(bcr > 1.0);
+    }
+}
+
+pub fn terrain_road_module_version() -> &'static str { "2.3.0" }
+pub fn terrain_road_features() -> &'static [&'static str] {
+    &["speed_zones", "cross_sections", "earthworks", "stormwater",
+      "pavement_performance", "bridges", "environmental_impact", "safety_program"]
+}

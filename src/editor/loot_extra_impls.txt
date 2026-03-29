@@ -1,0 +1,30 @@
+
+impl UpgradeNode {
+    pub fn new(id: impl Into<String>, display_name: impl Into<String>, cost: u32, required_level: u32) -> Self {
+        Self { id: id.into(), display_name: display_name.into(), description: String::new(), cost, required_level, prerequisites: Vec::new(), stat_changes: Vec::new(), is_passive: true }
+    }
+}
+
+impl DungeonRun {
+    pub fn generate_standard_dungeon(dungeon_id: u32, player_level: u32, difficulty: u32) -> Self {
+        let n_rooms = (5 + difficulty * 2) as usize;
+        let mut rooms: Vec<DungeonRoom> = (0..n_rooms).map(|i| {
+            let is_boss = i == n_rooms - 1;
+            DungeonRoom {
+                room_id: i as u32 + 1,
+                room_type: if is_boss { DungeonRoomType::BossRoom } else if i == 0 { DungeonRoomType::Entrance } else { DungeonRoomType::Combat },
+                monster_level: player_level,
+                monster_count: if is_boss { 1 } else { 3 + (i as u32) },
+                has_chest: i % 3 == 2,
+                chest_tier: difficulty,
+                is_boss_room: is_boss,
+                completion_bonus: if is_boss { 2.0 } else { 1.0 },
+                gold_min: 10 * player_level,
+                gold_max: 50 * player_level,
+            }
+        }).collect();
+        Self { dungeon_id, player_level, difficulty, rooms, player_magic_find: 0.0, party_size: 1 }
+    }
+    pub fn boss_rooms(&self) -> Vec<&DungeonRoom> { self.rooms.iter().filter(|r| r.is_boss_room).collect() }
+    pub fn total_expected_value(&self) -> f32 { self.rooms.iter().map(|r| (r.gold_min + r.gold_max) as f32 / 2.0).sum() }
+}

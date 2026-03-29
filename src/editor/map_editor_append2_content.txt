@@ -1,0 +1,535 @@
+
+// ============================================================
+// WEATHER AND ENVIRONMENT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WeatherType {
+    Clear, Cloudy, Overcast, LightRain, HeavyRain,
+    Thunderstorm, LightSnow, HeavySnow, Blizzard,
+    Fog, HeavyFog, Sandstorm, Hail, Sleet,
+}
+
+#[derive(Debug, Clone)]
+pub struct WeatherState {
+    pub weather_type: WeatherType,
+    pub temperature_celsius: f32,
+    pub wind_speed_kph: f32,
+    pub wind_direction_deg: f32,
+    pub humidity_pct: f32,
+    pub visibility_km: f32,
+    pub precipitation_mm_hr: f32,
+    pub cloud_cover_pct: f32,
+    pub fog_density: f32,
+}
+
+impl WeatherState {
+    pub fn clear_day() -> Self {
+        WeatherState {
+            weather_type: WeatherType::Clear,
+            temperature_celsius: 22.0, wind_speed_kph: 10.0,
+            wind_direction_deg: 270.0, humidity_pct: 45.0,
+            visibility_km: 30.0, precipitation_mm_hr: 0.0,
+            cloud_cover_pct: 10.0, fog_density: 0.0,
+        }
+    }
+
+    pub fn heavy_storm() -> Self {
+        WeatherState {
+            weather_type: WeatherType::Thunderstorm,
+            temperature_celsius: 14.0, wind_speed_kph: 60.0,
+            wind_direction_deg: 180.0, humidity_pct: 95.0,
+            visibility_km: 1.0, precipitation_mm_hr: 40.0,
+            cloud_cover_pct: 100.0, fog_density: 0.0,
+        }
+    }
+
+    pub fn movement_penalty(&self) -> f32 {
+        match self.weather_type {
+            WeatherType::Clear | WeatherType::Cloudy => 1.0,
+            WeatherType::LightRain | WeatherType::LightSnow => 1.2,
+            WeatherType::HeavyRain | WeatherType::Overcast => 1.4,
+            WeatherType::Thunderstorm | WeatherType::Fog => 1.8,
+            WeatherType::HeavySnow | WeatherType::Blizzard => 2.5,
+            WeatherType::Sandstorm => 2.0,
+            _ => 1.5,
+        }
+    }
+
+    pub fn ambient_light_factor(&self) -> f32 {
+        let cloud = 1.0 - self.cloud_cover_pct / 100.0 * 0.7;
+        let fog = 1.0 - self.fog_density * 0.8;
+        cloud * fog
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WeatherForecast {
+    pub entries: Vec<(f32, WeatherState)>,
+}
+
+impl WeatherForecast {
+    pub fn new() -> Self {
+        WeatherForecast { entries: Vec::new() }
+    }
+
+    pub fn add_entry(&mut self, time: f32, state: WeatherState) {
+        self.entries.push((time, state));
+        self.entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    }
+
+    pub fn weather_at(&self, time: f32) -> Option<&WeatherState> {
+        self.entries.iter()
+            .rev()
+            .find(|(t, _)| *t <= time)
+            .map(|(_, s)| s)
+    }
+}
+
+// ============================================================
+// TIME OF DAY SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SunPosition {
+    pub azimuth_deg: f32,
+    pub elevation_deg: f32,
+    pub color: Vec3,
+    pub intensity: f32,
+}
+
+impl SunPosition {
+    pub fn from_time_of_day(hour: f32, latitude_deg: f32) -> Self {
+        let hour_angle = (hour - 12.0) * 15.0;
+        let lat_rad = latitude_deg.to_radians();
+        let declination_rad = (-23.45f32).to_radians();
+        let h_rad = hour_angle.to_radians();
+        let elevation = (lat_rad.sin() * declination_rad.sin()
+            + lat_rad.cos() * declination_rad.cos() * h_rad.cos()).asin();
+        let elevation_deg = elevation.to_degrees();
+        let azimuth_deg = h_rad.sin().atan2(
+            h_rad.cos() * lat_rad.sin() - declination_rad.tan() * lat_rad.cos()
+        ).to_degrees() + 180.0;
+
+        let (color, intensity) = if elevation_deg < -5.0 {
+            (Vec3::new(0.01, 0.01, 0.05), 0.0)
+        } else if elevation_deg < 0.0 {
+            (Vec3::new(0.3, 0.1, 0.05), 0.05)
+        } else if elevation_deg < 15.0 {
+            (Vec3::new(1.0, 0.4, 0.1), 0.4)
+        } else if elevation_deg < 40.0 {
+            (Vec3::new(1.0, 0.85, 0.6), 0.8)
+        } else {
+            (Vec3::new(1.0, 0.97, 0.9), 1.0)
+        };
+
+        SunPosition { azimuth_deg, elevation_deg, color, intensity }
+    }
+
+    pub fn direction(&self) -> Vec3 {
+        let az = self.azimuth_deg.to_radians();
+        let el = self.elevation_deg.to_radians();
+        Vec3::new(-el.cos() * az.sin(), el.sin(), -el.cos() * az.cos()).normalize()
+    }
+
+    pub fn is_daytime(&self) -> bool { self.elevation_deg > 0.0 }
+}
+
+// ============================================================
+// GAME ECONOMY SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct Currency {
+    pub name: String,
+    pub symbol: String,
+    pub conversion_to_gold: f32,
+}
+
+impl Currency {
+    pub fn gold() -> Self { Currency { name: "Gold".to_string(), symbol: "G".to_string(), conversion_to_gold: 1.0 } }
+    pub fn silver() -> Self { Currency { name: "Silver".to_string(), symbol: "S".to_string(), conversion_to_gold: 0.1 } }
+    pub fn copper() -> Self { Currency { name: "Copper".to_string(), symbol: "C".to_string(), conversion_to_gold: 0.01 } }
+}
+
+#[derive(Debug, Clone)]
+pub struct PriceTable {
+    pub region_id: u32,
+    pub prices: HashMap<String, f32>,
+    pub supply_modifier: HashMap<String, f32>,
+    pub demand_modifier: HashMap<String, f32>,
+}
+
+impl PriceTable {
+    pub fn new(region_id: u32) -> Self {
+        PriceTable {
+            region_id, prices: HashMap::new(),
+            supply_modifier: HashMap::new(),
+            demand_modifier: HashMap::new(),
+        }
+    }
+
+    pub fn set_base_price(&mut self, item: &str, price: f32) {
+        self.prices.insert(item.to_string(), price);
+    }
+
+    pub fn effective_price(&self, item: &str) -> f32 {
+        let base = self.prices.get(item).copied().unwrap_or(1.0);
+        let supply = self.supply_modifier.get(item).copied().unwrap_or(1.0);
+        let demand = self.demand_modifier.get(item).copied().unwrap_or(1.0);
+        base * demand / supply
+    }
+
+    pub fn apply_shortage(&mut self, item: &str, factor: f32) {
+        *self.supply_modifier.entry(item.to_string()).or_insert(1.0) /= factor.max(0.1);
+    }
+}
+
+// ============================================================
+// LOOT TABLE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LootEntry {
+    pub item_id: String,
+    pub weight: f32,
+    pub min_quantity: u32,
+    pub max_quantity: u32,
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LootTable {
+    pub id: u32,
+    pub name: String,
+    pub entries: Vec<LootEntry>,
+    pub guaranteed_entries: Vec<LootEntry>,
+    pub rolls: u32,
+    pub luck_bonus: f32,
+}
+
+impl LootTable {
+    pub fn new(id: u32, name: &str, rolls: u32) -> Self {
+        LootTable { id, name: name.to_string(), entries: Vec::new(), guaranteed_entries: Vec::new(), rolls, luck_bonus: 0.0 }
+    }
+
+    pub fn add_entry(&mut self, entry: LootEntry) {
+        self.entries.push(entry);
+    }
+
+    pub fn total_weight(&self) -> f32 {
+        self.entries.iter().map(|e| e.weight).sum()
+    }
+
+    pub fn roll_deterministic(&self, seed: u64, roll_index: u32) -> Vec<(&str, u32)> {
+        let mut result = Vec::new();
+        let mut rng = seed ^ (roll_index as u64 * 6364136223846793005 + 1442695040888963407);
+        rng ^= rng >> 33; rng *= 0xff51afd7ed558ccd; rng ^= rng >> 33;
+        let total = self.total_weight();
+        if total <= 0.0 { return result; }
+        let pick = (rng as f32 / u64::MAX as f32) * total;
+        let mut cumulative = 0.0;
+        for entry in &self.entries {
+            cumulative += entry.weight;
+            if pick <= cumulative {
+                let qty_range = entry.max_quantity - entry.min_quantity + 1;
+                let qty = entry.min_quantity + (rng % qty_range as u64) as u32;
+                result.push((entry.item_id.as_str(), qty));
+                break;
+            }
+        }
+        for g in &self.guaranteed_entries {
+            result.push((g.item_id.as_str(), g.min_quantity));
+        }
+        result
+    }
+}
+
+// ============================================================
+// NPC AI BEHAVIOR TREE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BehaviorStatus {
+    Success,
+    Failure,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BehaviorNodeType {
+    Selector,
+    Sequence,
+    Parallel,
+    Decorator,
+    Action,
+    Condition,
+}
+
+#[derive(Debug, Clone)]
+pub struct BehaviorNode {
+    pub id: u32,
+    pub node_type: BehaviorNodeType,
+    pub name: String,
+    pub children: Vec<u32>,
+    pub action_id: Option<String>,
+    pub blackboard_key: Option<String>,
+    pub inverted: bool,
+}
+
+impl BehaviorNode {
+    pub fn new_action(id: u32, name: &str, action_id: &str) -> Self {
+        BehaviorNode {
+            id, node_type: BehaviorNodeType::Action,
+            name: name.to_string(), children: Vec::new(),
+            action_id: Some(action_id.to_string()),
+            blackboard_key: None, inverted: false,
+        }
+    }
+
+    pub fn new_sequence(id: u32, name: &str) -> Self {
+        BehaviorNode {
+            id, node_type: BehaviorNodeType::Sequence,
+            name: name.to_string(), children: Vec::new(),
+            action_id: None, blackboard_key: None, inverted: false,
+        }
+    }
+
+    pub fn new_selector(id: u32, name: &str) -> Self {
+        BehaviorNode {
+            id, node_type: BehaviorNodeType::Selector,
+            name: name.to_string(), children: Vec::new(),
+            action_id: None, blackboard_key: None, inverted: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BehaviorTree {
+    pub name: String,
+    pub nodes: HashMap<u32, BehaviorNode>,
+    pub root_id: u32,
+    pub blackboard: HashMap<String, String>,
+}
+
+impl BehaviorTree {
+    pub fn new(name: &str, root_id: u32) -> Self {
+        BehaviorTree { name: name.to_string(), nodes: HashMap::new(), root_id, blackboard: HashMap::new() }
+    }
+
+    pub fn add_node(&mut self, node: BehaviorNode) {
+        self.nodes.insert(node.id, node);
+    }
+
+    pub fn set_blackboard(&mut self, key: &str, value: &str) {
+        self.blackboard.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn get_blackboard(&self, key: &str) -> Option<&str> {
+        self.blackboard.get(key).map(|s| s.as_str())
+    }
+
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+}
+
+// ============================================================
+// MONSTER / ENEMY DATABASE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MonsterCategory {
+    Beast, Undead, Demon, Dragon, Humanoid, Construct,
+    Elemental, Fey, Giant, Plant, Ooze, Celestial, Aberration,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonsterStats {
+    pub hp: u32, pub max_hp: u32,
+    pub armor_class: u32,
+    pub attack_bonus: i32,
+    pub damage_dice: String,
+    pub damage_bonus: i32,
+    pub speed_m: f32,
+    pub strength: i32, pub dexterity: i32, pub constitution: i32,
+    pub intelligence: i32, pub wisdom: i32, pub charisma: i32,
+    pub challenge_rating: f32,
+}
+
+impl MonsterStats {
+    pub fn modifier(stat: i32) -> i32 { (stat - 10) / 2 }
+    pub fn proficiency_bonus(cr: f32) -> i32 { (cr / 4.0).ceil() as i32 + 1 }
+    pub fn xp_for_cr(cr: f32) -> u32 {
+        match cr as u32 {
+            0 => 10, 1 => 200, 2 => 450, 3 => 700, 4 => 1100,
+            5 => 1800, 6 => 2300, 7 => 2900, 8 => 3900, 9 => 5000,
+            10 => 5900, 11 => 7200, 12 => 8400, 13 => 10000, 14 => 11500,
+            15 => 13000, 16 => 15000, 17 => 18000, 18 => 20000, _ => 25000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MonsterDefinition {
+    pub id: u32,
+    pub name: String,
+    pub category: MonsterCategory,
+    pub stats: MonsterStats,
+    pub loot_table_id: Option<u32>,
+    pub abilities: Vec<String>,
+    pub immunities: Vec<String>,
+    pub resistances: Vec<String>,
+    pub behavior_tree_name: Option<String>,
+    pub sprite_asset: String,
+    pub description: String,
+}
+
+impl MonsterDefinition {
+    pub fn xp_value(&self) -> u32 {
+        MonsterStats::xp_for_cr(self.stats.challenge_rating)
+    }
+
+    pub fn is_elite(&self) -> bool {
+        self.stats.challenge_rating >= 5.0 && self.abilities.len() >= 3
+    }
+}
+
+// ============================================================
+// MAP IMPORT / EXPORT
+// ============================================================
+
+pub const MAP_FILE_MAGIC: u32 = 0x4D415000; // "MAP\0"
+pub const MAP_FILE_VERSION: u32 = 2;
+
+#[derive(Debug, Clone)]
+pub struct MapFileHeader {
+    pub magic: u32,
+    pub version: u32,
+    pub width: u32,
+    pub height: u32,
+    pub tile_size: u32,
+    pub layer_count: u32,
+    pub object_count: u32,
+    pub region_count: u32,
+    pub author: String,
+    pub timestamp: u64,
+}
+
+impl MapFileHeader {
+    pub fn new(width: u32, height: u32, tile_size: u32) -> Self {
+        MapFileHeader {
+            magic: MAP_FILE_MAGIC,
+            version: MAP_FILE_VERSION,
+            width, height, tile_size,
+            layer_count: 0, object_count: 0, region_count: 0,
+            author: String::new(), timestamp: 0,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.magic == MAP_FILE_MAGIC && self.version <= MAP_FILE_VERSION
+    }
+
+    pub fn total_tiles(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+}
+
+// ============================================================
+// ADDITIONAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_final {
+    use super::*;
+
+    #[test]
+    fn test_weather_movement_penalty() {
+        let clear = WeatherState::clear_day();
+        let storm = WeatherState::heavy_storm();
+        assert_eq!(clear.movement_penalty(), 1.0);
+        assert!(storm.movement_penalty() > 1.0);
+    }
+
+    #[test]
+    fn test_sun_position_daytime() {
+        let noon = SunPosition::from_time_of_day(12.0, 40.0);
+        assert!(noon.is_daytime());
+        let midnight = SunPosition::from_time_of_day(0.0, 40.0);
+        assert!(!midnight.is_daytime());
+    }
+
+    #[test]
+    fn test_price_table_effective_price() {
+        let mut pt = PriceTable::new(1);
+        pt.set_base_price("Iron Sword", 50.0);
+        pt.apply_shortage("Iron Sword", 2.0);
+        let price = pt.effective_price("Iron Sword");
+        assert!(price > 50.0);
+    }
+
+    #[test]
+    fn test_loot_table_roll() {
+        let mut table = LootTable::new(1, "CommonChest", 1);
+        table.add_entry(LootEntry {
+            item_id: "gold_coin".to_string(), weight: 70.0,
+            min_quantity: 5, max_quantity: 20, condition: None,
+        });
+        table.add_entry(LootEntry {
+            item_id: "health_potion".to_string(), weight: 30.0,
+            min_quantity: 1, max_quantity: 2, condition: None,
+        });
+        let results = table.roll_deterministic(42, 0);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_behavior_tree_blackboard() {
+        let mut bt = BehaviorTree::new("PatrolAI", 0);
+        bt.set_blackboard("enemy_spotted", "false");
+        bt.set_blackboard("patrol_complete", "true");
+        assert_eq!(bt.get_blackboard("enemy_spotted"), Some("false"));
+    }
+
+    #[test]
+    fn test_monster_xp() {
+        let mon = MonsterDefinition {
+            id: 1, name: "Goblin".to_string(),
+            category: MonsterCategory::Humanoid,
+            stats: MonsterStats {
+                hp: 7, max_hp: 7, armor_class: 15, attack_bonus: 4,
+                damage_dice: "1d6".to_string(), damage_bonus: 2,
+                speed_m: 9.0, strength: 8, dexterity: 14, constitution: 10,
+                intelligence: 10, wisdom: 8, charisma: 8, challenge_rating: 0.25,
+            },
+            loot_table_id: None, abilities: Vec::new(), immunities: Vec::new(),
+            resistances: Vec::new(), behavior_tree_name: None,
+            sprite_asset: "goblin.png".to_string(), description: String::new(),
+        };
+        assert_eq!(mon.xp_value(), 10);
+    }
+
+    #[test]
+    fn test_map_file_header() {
+        let header = MapFileHeader::new(100, 80, 16);
+        assert!(header.is_valid());
+        assert_eq!(header.total_tiles(), 8000);
+    }
+
+    #[test]
+    fn test_world_map_pathfind() {
+        let mut wm = WorldMap::new("Testrealm", 1000.0, 1000.0);
+        let mut r1 = WorldRegion::new(1, "A", BiomeType::Plains);
+        r1.center = Vec2::new(100.0, 100.0);
+        r1.adjacent_region_ids.push(2);
+        let mut r2 = WorldRegion::new(2, "B", BiomeType::Forest);
+        r2.center = Vec2::new(200.0, 100.0);
+        r2.adjacent_region_ids.push(1);
+        wm.add_region(r1);
+        wm.add_region(r2);
+        let path = wm.pathfind_regions(1, 2);
+        assert!(path.is_some());
+        assert_eq!(path.unwrap().len(), 2);
+    }
+}
+
+pub fn map_editor_extended_version() -> &'static str { "2.5.1-extended" }

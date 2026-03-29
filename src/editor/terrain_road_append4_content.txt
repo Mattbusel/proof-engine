@@ -1,0 +1,465 @@
+
+// ============================================================
+// ROUNDABOUT DESIGN
+// ============================================================
+
+pub const ROUNDABOUT_MIN_INSCRIBED_DIAMETER_M: f32 = 14.0;
+pub const ROUNDABOUT_MAX_ENTRY_SPEED_KPH: f32 = 30.0;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoundaboutType {
+    MiniRoundabout,
+    SingleLane,
+    MultiLane,
+    Turbo,
+    TrumpetInterchange,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoundaboutEntry {
+    pub entry_id: u32,
+    pub bearing_deg: f32,
+    pub lane_count: u32,
+    pub entry_width_m: f32,
+    pub flare_length_m: f32,
+    pub approach_speed_kph: f32,
+    pub design_flow_vph: u32,
+    pub pedestrian_crossing: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Roundabout {
+    pub id: u32,
+    pub roundabout_type: RoundaboutType,
+    pub inscribed_diameter_m: f32,
+    pub central_island_diameter_m: f32,
+    pub circulatory_lane_count: u32,
+    pub circulatory_lane_width_m: f32,
+    pub entries: Vec<RoundaboutEntry>,
+    pub mountable_apron_width_m: f32,
+    pub design_speed_kph: f32,
+}
+
+impl Roundabout {
+    pub fn new(id: u32, roundabout_type: RoundaboutType, inscribed_diameter: f32) -> Self {
+        let central = inscribed_diameter * 0.45;
+        Roundabout {
+            id, roundabout_type, inscribed_diameter_m: inscribed_diameter,
+            central_island_diameter_m: central,
+            circulatory_lane_count: 1,
+            circulatory_lane_width_m: 4.0,
+            entries: Vec::new(),
+            mountable_apron_width_m: 2.0,
+            design_speed_kph: 25.0,
+        }
+    }
+
+    pub fn circulatory_road_width(&self) -> f32 {
+        self.circulatory_lane_count as f32 * self.circulatory_lane_width_m
+    }
+
+    pub fn add_entry(&mut self, entry: RoundaboutEntry) {
+        self.entries.push(entry);
+    }
+
+    pub fn entry_count(&self) -> usize { self.entries.len() }
+
+    pub fn is_4_way(&self) -> bool { self.entries.len() == 4 }
+
+    pub fn capacity_estimate_vph(&self) -> f32 {
+        // Simplified HCM roundabout capacity
+        let qe_max = 1200.0;
+        let qi_factor = 0.9;
+        self.entries.iter()
+            .map(|e| qe_max * e.lane_count as f32 * qi_factor)
+            .sum::<f32>() / self.entries.len() as f32
+    }
+}
+
+// ============================================================
+// INTERCHANGE DESIGN
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterchangeType {
+    Diamond,
+    Cloverleaf,
+    Diverging_Diamond,
+    SinglePointUrban,
+    FolioTrumpet,
+    HalfCloverleaf,
+    StackInterchange,
+    Roundabout_Interchange,
+}
+
+#[derive(Debug, Clone)]
+pub struct RampConnection {
+    pub ramp_id: u32,
+    pub from_road_id: u32,
+    pub to_road_id: u32,
+    pub ramp_type: String,
+    pub length_m: f32,
+    pub speed_kph: f32,
+    pub lane_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Interchange {
+    pub id: u32,
+    pub name: String,
+    pub interchange_type: InterchangeType,
+    pub position: Vec2,
+    pub ramps: Vec<RampConnection>,
+    pub grade_separation: bool,
+    pub total_area_ha: f32,
+    pub construction_cost_estimate: f64,
+}
+
+impl Interchange {
+    pub fn new(id: u32, name: &str, interchange_type: InterchangeType) -> Self {
+        Interchange {
+            id, name: name.to_string(), interchange_type,
+            position: Vec2::ZERO, ramps: Vec::new(),
+            grade_separation: true, total_area_ha: 0.0,
+            construction_cost_estimate: 0.0,
+        }
+    }
+
+    pub fn ramp_count(&self) -> usize { self.ramps.len() }
+
+    pub fn total_ramp_length(&self) -> f32 {
+        self.ramps.iter().map(|r| r.length_m).sum()
+    }
+}
+
+// ============================================================
+// SIGHT DISTANCE ANALYSIS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SightDistanceCheck {
+    pub location_chainage: f32,
+    pub required_ssd_m: f32,
+    pub available_ssd_m: f32,
+    pub required_psd_m: f32,
+    pub available_psd_m: f32,
+    pub compliant: bool,
+    pub obstruction_type: Option<String>,
+}
+
+impl SightDistanceCheck {
+    pub fn new(chainage: f32, speed_kph: f32) -> Self {
+        let zone = SpeedZone::new(0, SpeedZoneType::Rural, speed_kph, 0.0, 1000.0);
+        let ssd = zone.stopping_sight_distance();
+        let psd = ssd * 2.5;
+        SightDistanceCheck {
+            location_chainage: chainage,
+            required_ssd_m: ssd,
+            available_ssd_m: 0.0,
+            required_psd_m: psd,
+            available_psd_m: 0.0,
+            compliant: false,
+            obstruction_type: None,
+        }
+    }
+
+    pub fn evaluate(&mut self) {
+        self.compliant = self.available_ssd_m >= self.required_ssd_m;
+    }
+
+    pub fn ssd_deficiency(&self) -> f32 {
+        (self.required_ssd_m - self.available_ssd_m).max(0.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SightDistanceProfile {
+    pub road_id: u32,
+    pub checks: Vec<SightDistanceCheck>,
+    pub check_interval_m: f32,
+}
+
+impl SightDistanceProfile {
+    pub fn new(road_id: u32, interval_m: f32) -> Self {
+        SightDistanceProfile { road_id, checks: Vec::new(), check_interval_m: interval_m }
+    }
+
+    pub fn add_check(&mut self, check: SightDistanceCheck) {
+        self.checks.push(check);
+    }
+
+    pub fn non_compliant_count(&self) -> usize {
+        self.checks.iter().filter(|c| !c.compliant).count()
+    }
+
+    pub fn worst_deficiency(&self) -> f32 {
+        self.checks.iter().map(|c| c.ssd_deficiency()).fold(0.0_f32, f32::max)
+    }
+
+    pub fn compliance_rate(&self) -> f32 {
+        if self.checks.is_empty() { return 1.0; }
+        let compliant = self.checks.iter().filter(|c| c.compliant).count();
+        compliant as f32 / self.checks.len() as f32
+    }
+}
+
+// ============================================================
+// TRAFFIC SIGNAL OPTIMIZATION
+// ============================================================
+
+pub const SIGNAL_LOST_TIME_PER_PHASE: f32 = 4.0;
+pub const SIGNAL_MIN_GREEN_S: f32 = 7.0;
+pub const SIGNAL_SATURATION_FLOW_RATE_PCE_HR: f32 = 1800.0;
+
+#[derive(Debug, Clone)]
+pub struct SignalPhaseExtended {
+    pub phase_id: u32,
+    pub description: String,
+    pub movements: Vec<String>,
+    pub min_green_s: f32,
+    pub max_green_s: f32,
+    pub actual_green_s: f32,
+    pub yellow_s: f32,
+    pub all_red_s: f32,
+    pub volume_pce_hr: f32,
+    pub saturation_flow_pce_hr: f32,
+}
+
+impl SignalPhaseExtended {
+    pub fn new(phase_id: u32, desc: &str) -> Self {
+        SignalPhaseExtended {
+            phase_id, description: desc.to_string(),
+            movements: Vec::new(),
+            min_green_s: SIGNAL_MIN_GREEN_S,
+            max_green_s: 60.0,
+            actual_green_s: 30.0,
+            yellow_s: 3.5,
+            all_red_s: 1.5,
+            volume_pce_hr: 0.0,
+            saturation_flow_pce_hr: SIGNAL_SATURATION_FLOW_RATE_PCE_HR,
+        }
+    }
+
+    pub fn flow_ratio(&self) -> f32 {
+        if self.saturation_flow_pce_hr <= 0.0 { return 0.0; }
+        self.volume_pce_hr / self.saturation_flow_pce_hr
+    }
+
+    pub fn effective_green_s(&self) -> f32 {
+        self.actual_green_s + self.yellow_s - SIGNAL_LOST_TIME_PER_PHASE
+    }
+
+    pub fn degree_of_saturation(&self, cycle_s: f32) -> f32 {
+        let cap = self.saturation_flow_pce_hr * self.effective_green_s() / cycle_s;
+        if cap <= 0.0 { return f32::INFINITY; }
+        self.volume_pce_hr / cap
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrafficSignalController {
+    pub intersection_id: u32,
+    pub cycle_length_s: f32,
+    pub phases: Vec<SignalPhaseExtended>,
+    pub offset_s: f32,
+    pub actuated: bool,
+    pub coord_group: Option<u32>,
+}
+
+impl TrafficSignalController {
+    pub fn new(intersection_id: u32) -> Self {
+        TrafficSignalController {
+            intersection_id, cycle_length_s: 90.0,
+            phases: Vec::new(), offset_s: 0.0,
+            actuated: true, coord_group: None,
+        }
+    }
+
+    pub fn add_phase(&mut self, phase: SignalPhaseExtended) {
+        self.phases.push(phase);
+    }
+
+    pub fn total_lost_time(&self) -> f32 {
+        self.phases.len() as f32 * SIGNAL_LOST_TIME_PER_PHASE
+    }
+
+    pub fn effective_cycle_s(&self) -> f32 {
+        self.cycle_length_s - self.total_lost_time()
+    }
+
+    pub fn critical_flow_ratio_sum(&self) -> f32 {
+        self.phases.iter().map(|p| p.flow_ratio()).fold(0.0_f32, f32::max)
+    }
+
+    pub fn webster_optimal_cycle(&self) -> f32 {
+        let l = self.total_lost_time();
+        let y = self.critical_flow_ratio_sum();
+        if y >= 1.0 { return 120.0; }
+        ((1.5 * l + 5.0) / (1.0 - y)).clamp(60.0, 120.0)
+    }
+
+    pub fn current_phase_at(&self, time_in_cycle: f32) -> Option<&SignalPhaseExtended> {
+        let mut elapsed = 0.0;
+        for phase in &self.phases {
+            let phase_dur = phase.actual_green_s + phase.yellow_s + phase.all_red_s;
+            if time_in_cycle < elapsed + phase_dur {
+                return Some(phase);
+            }
+            elapsed += phase_dur;
+        }
+        None
+    }
+}
+
+// ============================================================
+// ROAD INVENTORY MANAGEMENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RoadSegment {
+    pub segment_id: u32,
+    pub road_name: String,
+    pub road_number: String,
+    pub start_chainage: f32,
+    pub end_chainage: f32,
+    pub lanes_each_direction: u32,
+    pub carriageway_width_m: f32,
+    pub surface_type: String,
+    pub pavement_age_years: u32,
+    pub speed_limit_kph: f32,
+    pub aadt: u32,
+    pub truck_pct: f32,
+    pub local_authority: String,
+    pub urban_rural: String,
+    pub functional_class: String,
+}
+
+impl RoadSegment {
+    pub fn new(segment_id: u32, road_name: &str) -> Self {
+        RoadSegment {
+            segment_id, road_name: road_name.to_string(),
+            road_number: String::new(),
+            start_chainage: 0.0, end_chainage: 0.0,
+            lanes_each_direction: 1,
+            carriageway_width_m: 7.0,
+            surface_type: "Asphalt".to_string(),
+            pavement_age_years: 0,
+            speed_limit_kph: 80.0,
+            aadt: 0, truck_pct: 10.0,
+            local_authority: String::new(),
+            urban_rural: "Rural".to_string(),
+            functional_class: "Collector".to_string(),
+        }
+    }
+
+    pub fn length_km(&self) -> f32 {
+        (self.end_chainage - self.start_chainage).abs() / 1000.0
+    }
+
+    pub fn lane_km(&self) -> f32 {
+        self.length_km() * self.lanes_each_direction as f32 * 2.0
+    }
+
+    pub fn annual_esal(&self) -> f64 {
+        let trucks = self.aadt as f64 * self.truck_pct as f64 / 100.0 * 365.0;
+        trucks * 2.5 // avg ESALs per truck
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RoadInventory {
+    pub inventory_id: String,
+    pub year: u32,
+    pub segments: Vec<RoadSegment>,
+}
+
+impl RoadInventory {
+    pub fn new(year: u32) -> Self {
+        RoadInventory { inventory_id: format!("INV-{}", year), year, segments: Vec::new() }
+    }
+
+    pub fn add_segment(&mut self, seg: RoadSegment) {
+        self.segments.push(seg);
+    }
+
+    pub fn total_lane_km(&self) -> f32 {
+        self.segments.iter().map(|s| s.lane_km()).sum()
+    }
+
+    pub fn total_network_km(&self) -> f32 {
+        self.segments.iter().map(|s| s.length_km()).sum()
+    }
+
+    pub fn segments_by_surface(&self, surface: &str) -> Vec<&RoadSegment> {
+        self.segments.iter().filter(|s| s.surface_type == surface).collect()
+    }
+}
+
+// ============================================================
+// FINAL TEST FUNCTIONS FOR TERRAIN ROAD
+// ============================================================
+
+#[cfg(test)]
+mod tests_terrain_road_final {
+    use super::*;
+
+    #[test]
+    fn test_roundabout_capacity() {
+        let mut ra = Roundabout::new(1, RoundaboutType::SingleLane, 28.0);
+        ra.add_entry(RoundaboutEntry { entry_id: 0, bearing_deg: 0.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 400, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { entry_id: 1, bearing_deg: 90.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 350, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { entry_id: 2, bearing_deg: 180.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 380, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { entry_id: 3, bearing_deg: 270.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 320, pedestrian_crossing: true });
+        assert!(ra.is_4_way());
+        assert!(ra.capacity_estimate_vph() > 0.0);
+    }
+
+    #[test]
+    fn test_sight_distance_profile() {
+        let mut profile = SightDistanceProfile::new(1, 100.0);
+        let mut check = SightDistanceCheck::new(500.0, 80.0);
+        check.available_ssd_m = check.required_ssd_m + 20.0;
+        check.evaluate();
+        profile.add_check(check);
+        assert_eq!(profile.non_compliant_count(), 0);
+        assert!((profile.compliance_rate() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_signal_controller_webster() {
+        let mut ctrl = TrafficSignalController::new(1);
+        let mut p1 = SignalPhaseExtended::new(0, "NS Through");
+        p1.volume_pce_hr = 600.0;
+        let mut p2 = SignalPhaseExtended::new(1, "EW Through");
+        p2.volume_pce_hr = 500.0;
+        ctrl.add_phase(p1);
+        ctrl.add_phase(p2);
+        let optimal = ctrl.webster_optimal_cycle();
+        assert!(optimal >= 60.0 && optimal <= 120.0);
+    }
+
+    #[test]
+    fn test_road_inventory_totals() {
+        let mut inv = RoadInventory::new(2024);
+        let mut seg = RoadSegment::new(1, "Main Street");
+        seg.start_chainage = 0.0;
+        seg.end_chainage = 5000.0;
+        seg.lanes_each_direction = 2;
+        inv.add_segment(seg);
+        assert!((inv.total_network_km() - 5.0).abs() < 0.001);
+        assert!((inv.total_lane_km() - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_interchange_ramp_length() {
+        let mut ic = Interchange::new(1, "Highway Exit 42", InterchangeType::Diamond);
+        ic.ramps.push(RampConnection { ramp_id: 0, from_road_id: 1, to_road_id: 2, ramp_type: "On-Ramp".to_string(), length_m: 250.0, speed_kph: 80.0, lane_count: 1 });
+        ic.ramps.push(RampConnection { ramp_id: 1, from_road_id: 2, to_road_id: 1, ramp_type: "Off-Ramp".to_string(), length_m: 220.0, speed_kph: 60.0, lane_count: 1 });
+        assert_eq!(ic.ramp_count(), 2);
+        assert!((ic.total_ramp_length() - 470.0).abs() < 0.001);
+    }
+}
+
+pub fn terrain_road_final_info() -> &'static str {
+    "TerrainRoadTool v2.3: Roundabouts, Interchanges, SightDistance, Signals, Inventory"
+}

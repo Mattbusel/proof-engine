@@ -1,0 +1,282 @@
+
+// ============================================================
+// RANDOM ENCOUNTER TABLE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RandomEncounterEntry {
+    pub weight: u32,
+    pub encounter_id: u32,
+    pub min_party_level: u32,
+    pub max_party_level: u32,
+    pub time_of_day: Option<String>,
+    pub weather_conditions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RandomEncounterTable {
+    pub table_id: u32,
+    pub region_id: u32,
+    pub entries: Vec<RandomEncounterEntry>,
+    pub check_interval_minutes: f32,
+    pub base_encounter_chance_pct: f32,
+}
+
+impl RandomEncounterTable {
+    pub fn new(table_id: u32, region_id: u32) -> Self {
+        RandomEncounterTable {
+            table_id, region_id,
+            entries: Vec::new(),
+            check_interval_minutes: 30.0,
+            base_encounter_chance_pct: 20.0,
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: RandomEncounterEntry) {
+        self.entries.push(entry);
+    }
+
+    pub fn total_weight(&self, party_level: u32) -> u32 {
+        self.entries.iter()
+            .filter(|e| party_level >= e.min_party_level && party_level <= e.max_party_level)
+            .map(|e| e.weight)
+            .sum()
+    }
+
+    pub fn roll(& self, party_level: u32, rng_value: u32) -> Option<u32> {
+        let total = self.total_weight(party_level);
+        if total == 0 { return None; }
+        let pick = rng_value % total;
+        let mut cumulative = 0u32;
+        for entry in &self.entries {
+            if party_level < entry.min_party_level || party_level > entry.max_party_level { continue; }
+            cumulative += entry.weight;
+            if pick < cumulative { return Some(entry.encounter_id); }
+        }
+        None
+    }
+}
+
+// ============================================================
+// POINT OF INTEREST SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PoiCategory {
+    Dungeon, Settlement, Landmark, Resource, Shop,
+    QuestMarker, Danger, Secret, Teleporter, Camp,
+}
+
+#[derive(Debug, Clone)]
+pub struct PointOfInterest {
+    pub id: u32,
+    pub name: String,
+    pub category: PoiCategory,
+    pub position: Vec2,
+    pub description: String,
+    pub discovered: bool,
+    pub icon_id: u32,
+    pub level_range: (u32, u32),
+    pub quest_ids: Vec<u32>,
+    pub region_id: Option<u32>,
+}
+
+impl PointOfInterest {
+    pub fn new(id: u32, name: &str, category: PoiCategory, pos: Vec2) -> Self {
+        PointOfInterest {
+            id, name: name.to_string(), category, position: pos,
+            description: String::new(), discovered: false, icon_id: 0,
+            level_range: (1, 99), quest_ids: Vec::new(), region_id: None,
+        }
+    }
+
+    pub fn distance_to(&self, pos: Vec2) -> f32 {
+        (self.position - pos).length()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PoiManager {
+    pub pois: Vec<PointOfInterest>,
+}
+
+impl PoiManager {
+    pub fn new() -> Self {
+        PoiManager { pois: Vec::new() }
+    }
+
+    pub fn add(&mut self, poi: PointOfInterest) {
+        self.pois.push(poi);
+    }
+
+    pub fn nearest_to(&self, pos: Vec2) -> Option<&PointOfInterest> {
+        self.pois.iter().min_by(|a, b| a.distance_to(pos).partial_cmp(&b.distance_to(pos)).unwrap())
+    }
+
+    pub fn in_radius(&self, pos: Vec2, radius: f32) -> Vec<&PointOfInterest> {
+        self.pois.iter().filter(|p| p.distance_to(pos) <= radius).collect()
+    }
+
+    pub fn by_category(&self, cat: &PoiCategory) -> Vec<&PointOfInterest> {
+        self.pois.iter().filter(|p| &p.category == cat).collect()
+    }
+
+    pub fn discover(&mut self, id: u32) {
+        if let Some(poi) = self.pois.iter_mut().find(|p| p.id == id) {
+            poi.discovered = true;
+        }
+    }
+}
+
+// ============================================================
+// PUZZLE / TRAP SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrapType {
+    SpikePit, PoisonDart, Fireball, Boulder, Net, Alarm,
+    FloorBlade, CeilingCrush, MagicGlyph, Illusion,
+}
+
+#[derive(Debug, Clone)]
+pub struct Trap {
+    pub id: u32,
+    pub trap_type: TrapType,
+    pub position: Vec3,
+    pub trigger_radius: f32,
+    pub damage_dice: String,
+    pub damage_bonus: i32,
+    pub save_dc: i32,
+    pub save_type: String,
+    pub detection_dc: i32,
+    pub disarm_dc: i32,
+    pub triggered: bool,
+    pub reset_able: bool,
+}
+
+impl Trap {
+    pub fn new(id: u32, trap_type: TrapType, pos: Vec3) -> Self {
+        Trap {
+            id, trap_type, position: pos,
+            trigger_radius: 1.0,
+            damage_dice: "2d6".to_string(),
+            damage_bonus: 0, save_dc: 14,
+            save_type: "DEX".to_string(),
+            detection_dc: 15, disarm_dc: 12,
+            triggered: false, reset_able: false,
+        }
+    }
+
+    pub fn threat_level(&self) -> &'static str {
+        match self.trap_type {
+            TrapType::SpikePit | TrapType::PoisonDart => "Low",
+            TrapType::Fireball | TrapType::Boulder | TrapType::Net => "Medium",
+            TrapType::FloorBlade | TrapType::CeilingCrush | TrapType::MagicGlyph => "High",
+            TrapType::Alarm | TrapType::Illusion => "Special",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PuzzleType {
+    Slider, Pattern, Sequence, Logic, Riddle, Physical, Mathematical,
+}
+
+#[derive(Debug, Clone)]
+pub struct Puzzle {
+    pub id: u32,
+    pub puzzle_type: PuzzleType,
+    pub description: String,
+    pub solution: String,
+    pub hints: Vec<String>,
+    pub reward_ids: Vec<u32>,
+    pub solved: bool,
+    pub difficulty: u32,
+    pub attempts: u32,
+    pub max_attempts: Option<u32>,
+}
+
+impl Puzzle {
+    pub fn new(id: u32, puzzle_type: PuzzleType, description: &str) -> Self {
+        Puzzle {
+            id, puzzle_type, description: description.to_string(),
+            solution: String::new(), hints: Vec::new(), reward_ids: Vec::new(),
+            solved: false, difficulty: 3, attempts: 0, max_attempts: None,
+        }
+    }
+
+    pub fn attempt(&mut self, answer: &str) -> bool {
+        self.attempts += 1;
+        if answer.to_lowercase() == self.solution.to_lowercase() {
+            self.solved = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn hint_for_attempt(&self) -> Option<&str> {
+        let hint_idx = (self.attempts as usize).min(self.hints.len());
+        if hint_idx == 0 { return None; }
+        self.hints.get(hint_idx - 1).map(|s| s.as_str())
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.max_attempts.map(|m| self.attempts >= m).unwrap_or(false)
+    }
+}
+
+// ============================================================
+// FINAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_extra {
+    use super::*;
+
+    #[test]
+    fn test_encounter_table_roll() {
+        let mut table = RandomEncounterTable::new(1, 1);
+        table.add_entry(RandomEncounterEntry { weight: 70, encounter_id: 10, min_party_level: 1, max_party_level: 5, time_of_day: None, weather_conditions: Vec::new() });
+        table.add_entry(RandomEncounterEntry { weight: 30, encounter_id: 11, min_party_level: 1, max_party_level: 5, time_of_day: None, weather_conditions: Vec::new() });
+        let result = table.roll(3, 15);
+        assert!(result.is_some());
+        let enc_id = result.unwrap();
+        assert!(enc_id == 10 || enc_id == 11);
+    }
+
+    #[test]
+    fn test_poi_nearest() {
+        let mut mgr = PoiManager::new();
+        mgr.add(PointOfInterest::new(1, "Castle", PoiCategory::Landmark, Vec2::new(10.0, 0.0)));
+        mgr.add(PointOfInterest::new(2, "Dungeon", PoiCategory::Dungeon, Vec2::new(100.0, 0.0)));
+        let nearest = mgr.nearest_to(Vec2::new(5.0, 0.0));
+        assert_eq!(nearest.unwrap().id, 1);
+    }
+
+    #[test]
+    fn test_puzzle_solve() {
+        let mut puzzle = Puzzle::new(1, PuzzleType::Riddle, "What has keys but no locks?");
+        puzzle.solution = "piano".to_string();
+        puzzle.hints.push("It makes music".to_string());
+        assert!(!puzzle.attempt("guitar"));
+        assert!(puzzle.attempt("piano"));
+        assert!(puzzle.solved);
+    }
+
+    #[test]
+    fn test_trap_threat_level() {
+        let trap = Trap::new(1, TrapType::Fireball, Vec3::ZERO);
+        assert_eq!(trap.threat_level(), "Medium");
+    }
+
+    #[test]
+    fn test_spell_school() {
+        let s = Spell::new(1, "Magic Missile", SpellSchool::Evocation, 1);
+        assert!(!s.is_cantrip());
+        assert_eq!(s.slot_level(), 1);
+    }
+}
+
+pub const MAP_EDITOR_FINAL_VERSION: &str = "2.5.2";
+pub const MAP_EDITOR_MODULE_COUNT: u32 = 28;

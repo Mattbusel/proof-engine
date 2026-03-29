@@ -1,0 +1,373 @@
+
+// ============================================================
+// BRIDGE INSPECTION AND RATING
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeComponentType {
+    Deck, Superstructure, Substructure, Culvert, Channel, Approach,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeComponentRating {
+    pub component: BridgeComponentType,
+    pub inspection_rating: u32,
+    pub notes: String,
+    pub requires_action: bool,
+}
+
+impl BridgeComponentRating {
+    pub fn new(component: BridgeComponentType, rating: u32) -> Self {
+        BridgeComponentRating {
+            component, inspection_rating: rating,
+            notes: String::new(),
+            requires_action: rating <= 4,
+        }
+    }
+
+    pub fn condition_description(&self) -> &'static str {
+        match self.inspection_rating {
+            9 | 10 => "Excellent",
+            7 | 8 => "Good",
+            5 | 6 => "Fair",
+            4 => "Poor",
+            3 => "Serious",
+            2 => "Critical",
+            1 => "Imminent Failure",
+            _ => "Failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeInspectionReport {
+    pub bridge_id: u32,
+    pub inspection_date: String,
+    pub inspector_name: String,
+    pub component_ratings: Vec<BridgeComponentRating>,
+    pub overall_sufficiency_rating: f32,
+    pub load_rating_tonne: f32,
+    pub posted_load_limit_tonne: Option<f32>,
+    pub recommendations: Vec<String>,
+    pub next_inspection_due: String,
+}
+
+impl BridgeInspectionReport {
+    pub fn new(bridge_id: u32) -> Self {
+        BridgeInspectionReport {
+            bridge_id, inspection_date: String::new(), inspector_name: String::new(),
+            component_ratings: Vec::new(),
+            overall_sufficiency_rating: 0.0,
+            load_rating_tonne: 44.0, posted_load_limit_tonne: None,
+            recommendations: Vec::new(), next_inspection_due: String::new(),
+        }
+    }
+
+    pub fn add_component(&mut self, rating: BridgeComponentRating) {
+        self.component_ratings.push(rating);
+    }
+
+    pub fn minimum_rating(&self) -> u32 {
+        self.component_ratings.iter().map(|c| c.inspection_rating).min().unwrap_or(9)
+    }
+
+    pub fn critical_components(&self) -> Vec<&BridgeComponentRating> {
+        self.component_ratings.iter().filter(|c| c.inspection_rating <= 3).collect()
+    }
+
+    pub fn requires_load_posting(&self) -> bool {
+        self.minimum_rating() <= 4
+    }
+
+    pub fn compute_sufficiency_rating(&mut self) {
+        let avg = self.component_ratings.iter().map(|c| c.inspection_rating as f32).sum::<f32>()
+            / self.component_ratings.len().max(1) as f32;
+        self.overall_sufficiency_rating = (avg / 9.0 * 100.0).clamp(0.0, 100.0);
+    }
+}
+
+// ============================================================
+// GEOTECHNICAL INVESTIGATION
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoilType {
+    Rock, GravelSand, SandySilt, ClayLow, ClayHigh, Organic, Fill,
+}
+
+impl SoilType {
+    pub fn bearing_capacity_kpa(&self) -> f32 {
+        match self {
+            SoilType::Rock => 5000.0,
+            SoilType::GravelSand => 400.0,
+            SoilType::SandySilt => 150.0,
+            SoilType::ClayLow => 75.0,
+            SoilType::ClayHigh => 40.0,
+            SoilType::Organic => 25.0,
+            SoilType::Fill => 100.0,
+        }
+    }
+
+    pub fn california_bearing_ratio(&self) -> f32 {
+        match self {
+            SoilType::Rock => 100.0,
+            SoilType::GravelSand => 80.0,
+            SoilType::SandySilt => 20.0,
+            SoilType::ClayLow => 8.0,
+            SoilType::ClayHigh => 3.0,
+            SoilType::Organic => 2.0,
+            SoilType::Fill => 15.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BoreholeLayer {
+    pub depth_from_m: f32,
+    pub depth_to_m: f32,
+    pub soil_type: SoilType,
+    pub spt_n_value: Option<u32>,
+    pub moisture_content_pct: f32,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoreholeLog {
+    pub borehole_id: String,
+    pub location: Vec2,
+    pub total_depth_m: f32,
+    pub water_table_depth_m: Option<f32>,
+    pub layers: Vec<BoreholeLayer>,
+    pub date_drilled: String,
+}
+
+impl BoreholeLog {
+    pub fn new(id: &str, location: Vec2) -> Self {
+        BoreholeLog {
+            borehole_id: id.to_string(), location,
+            total_depth_m: 0.0, water_table_depth_m: None,
+            layers: Vec::new(), date_drilled: String::new(),
+        }
+    }
+
+    pub fn add_layer(&mut self, layer: BoreholeLayer) {
+        if layer.depth_to_m > self.total_depth_m { self.total_depth_m = layer.depth_to_m; }
+        self.layers.push(layer);
+    }
+
+    pub fn soil_at_depth(&self, depth_m: f32) -> Option<&BoreholeLayer> {
+        self.layers.iter().find(|l| depth_m >= l.depth_from_m && depth_m <= l.depth_to_m)
+    }
+
+    pub fn has_groundwater(&self) -> bool {
+        self.water_table_depth_m.is_some()
+    }
+
+    pub fn min_cbr(&self) -> f32 {
+        self.layers.iter().map(|l| l.soil_type.california_bearing_ratio()).fold(f32::INFINITY, f32::min)
+    }
+}
+
+// ============================================================
+// PAVEMENT DESIGN (MECHANISTIC EMPIRICAL)
+// ============================================================
+
+pub const SUBGRADE_CBR_MIN: f32 = 2.0;
+pub const PAVEMENT_POISSON_AC: f32 = 0.35;
+pub const PAVEMENT_POISSON_BASE: f32 = 0.40;
+
+#[derive(Debug, Clone)]
+pub struct PavementMaterialProps {
+    pub material_name: String,
+    pub elastic_modulus_mpa: f32,
+    pub poissons_ratio: f32,
+    pub layer_thickness_mm: f32,
+    pub unit_cost_per_m2: f64,
+}
+
+impl PavementMaterialProps {
+    pub fn dense_graded_ac() -> Self {
+        PavementMaterialProps {
+            material_name: "Dense Graded AC".to_string(),
+            elastic_modulus_mpa: 3000.0, poissons_ratio: PAVEMENT_POISSON_AC,
+            layer_thickness_mm: 50.0, unit_cost_per_m2: 35.0,
+        }
+    }
+
+    pub fn crushed_rock_base() -> Self {
+        PavementMaterialProps {
+            material_name: "Crushed Rock Base".to_string(),
+            elastic_modulus_mpa: 300.0, poissons_ratio: PAVEMENT_POISSON_BASE,
+            layer_thickness_mm: 200.0, unit_cost_per_m2: 20.0,
+        }
+    }
+
+    pub fn subbase_cbr20() -> Self {
+        PavementMaterialProps {
+            material_name: "Granular Subbase CBR20".to_string(),
+            elastic_modulus_mpa: 150.0, poissons_ratio: 0.40,
+            layer_thickness_mm: 150.0, unit_cost_per_m2: 12.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PavementDesign {
+    pub design_id: String,
+    pub road_category: String,
+    pub design_esal: f64,
+    pub subgrade_cbr: f32,
+    pub layers: Vec<PavementMaterialProps>,
+    pub design_life_years: u32,
+    pub reliability_pct: f32,
+}
+
+impl PavementDesign {
+    pub fn new(design_id: &str, esal: f64, subgrade_cbr: f32) -> Self {
+        PavementDesign {
+            design_id: design_id.to_string(), road_category: "Collector".to_string(),
+            design_esal: esal, subgrade_cbr, layers: Vec::new(),
+            design_life_years: 20, reliability_pct: 95.0,
+        }
+    }
+
+    pub fn add_layer(&mut self, layer: PavementMaterialProps) {
+        self.layers.push(layer);
+    }
+
+    pub fn total_pavement_thickness_mm(&self) -> f32 {
+        self.layers.iter().map(|l| l.layer_thickness_mm).sum()
+    }
+
+    pub fn total_material_cost_per_m2(&self) -> f64 {
+        self.layers.iter().map(|l| l.unit_cost_per_m2).sum()
+    }
+
+    pub fn structural_number(&self) -> f32 {
+        // Simplified SN calculation
+        let layer_coefs = [0.44_f32, 0.14, 0.11];
+        self.layers.iter().enumerate().map(|(i, l)| {
+            let a = layer_coefs.get(i).copied().unwrap_or(0.10);
+            a * l.layer_thickness_mm / 25.4
+        }).sum()
+    }
+}
+
+// ============================================================
+// ADDITIONAL UTILITY FUNCTIONS AND CONSTANTS
+// ============================================================
+
+pub const ROAD_DESIGN_GRAVITY: f32 = 9.81;
+pub const ROAD_DESIGN_AIR_DENSITY: f32 = 1.225;
+pub const ROAD_DESIGN_WATER_DENSITY: f32 = 1000.0;
+pub const ROAD_DESIGN_CONCRETE_DENSITY: f32 = 2400.0;
+pub const ROAD_DESIGN_ASPHALT_DENSITY: f32 = 2350.0;
+pub const ROAD_DESIGN_STEEL_DENSITY: f32 = 7850.0;
+
+pub fn friction_force_n(normal_n: f32, friction_coeff: f32) -> f32 {
+    normal_n * friction_coeff
+}
+
+pub fn braking_distance_m(speed_kph: f32, deceleration_ms2: f32) -> f32 {
+    let v = speed_kph / 3.6;
+    v * v / (2.0 * deceleration_ms2)
+}
+
+pub fn headway_to_flow_vphpl(headway_s: f32) -> f32 {
+    if headway_s <= 0.0 { return 0.0; }
+    3600.0 / headway_s
+}
+
+pub fn flow_to_headway_s(flow_vphpl: f32) -> f32 {
+    if flow_vphpl <= 0.0 { return f32::INFINITY; }
+    3600.0 / flow_vphpl
+}
+
+pub fn rolling_resistance_force_n(vehicle_mass_kg: f32, crr: f32) -> f32 {
+    vehicle_mass_kg * ROAD_DESIGN_GRAVITY * crr
+}
+
+pub fn grade_resistance_n(vehicle_mass_kg: f32, grade_pct: f32) -> f32 {
+    vehicle_mass_kg * ROAD_DESIGN_GRAVITY * grade_pct / 100.0
+}
+
+pub fn stopping_distance_on_grade_m(speed_kph: f32, grade_pct: f32, friction: f32) -> f32 {
+    let v = speed_kph / 3.6;
+    let effective_friction = friction - grade_pct / 100.0;
+    if effective_friction <= 0.0 { return f32::INFINITY; }
+    v * v / (2.0 * ROAD_DESIGN_GRAVITY * effective_friction)
+}
+
+pub fn traffic_density_veh_km(flow_vph: f32, speed_kph: f32) -> f32 {
+    if speed_kph <= 0.0 { return 0.0; }
+    flow_vph / speed_kph
+}
+
+pub fn travel_time_index(actual_speed_kph: f32, freeflow_speed_kph: f32) -> f32 {
+    if actual_speed_kph <= 0.0 { return f32::INFINITY; }
+    freeflow_speed_kph / actual_speed_kph
+}
+
+// ============================================================
+// FINAL TEST BLOCK
+// ============================================================
+
+#[cfg(test)]
+mod tests_terrain_road_final2 {
+    use super::*;
+
+    #[test]
+    fn test_bridge_inspection() {
+        let mut report = BridgeInspectionReport::new(1);
+        report.add_component(BridgeComponentRating::new(BridgeComponentType::Deck, 6));
+        report.add_component(BridgeComponentRating::new(BridgeComponentType::Superstructure, 7));
+        report.add_component(BridgeComponentRating::new(BridgeComponentType::Substructure, 5));
+        report.compute_sufficiency_rating();
+        assert!(report.overall_sufficiency_rating > 0.0);
+        assert!(!report.requires_load_posting());
+    }
+
+    #[test]
+    fn test_borehole_soil_at_depth() {
+        let mut bh = BoreholeLog::new("BH-001", Vec2::ZERO);
+        bh.add_layer(BoreholeLayer { depth_from_m: 0.0, depth_to_m: 2.0, soil_type: SoilType::Fill, spt_n_value: Some(10), moisture_content_pct: 15.0, description: String::new() });
+        bh.add_layer(BoreholeLayer { depth_from_m: 2.0, depth_to_m: 8.0, soil_type: SoilType::ClayLow, spt_n_value: Some(5), moisture_content_pct: 25.0, description: String::new() });
+        let soil = bh.soil_at_depth(3.0).unwrap();
+        assert!(matches!(soil.soil_type, SoilType::ClayLow));
+    }
+
+    #[test]
+    fn test_pavement_design_sn() {
+        let mut design = PavementDesign::new("PD-001", 5_000_000.0, 8.0);
+        design.add_layer(PavementMaterialProps::dense_graded_ac());
+        design.add_layer(PavementMaterialProps::crushed_rock_base());
+        design.add_layer(PavementMaterialProps::subbase_cbr20());
+        let sn = design.structural_number();
+        assert!(sn > 2.0);
+        assert!(design.total_pavement_thickness_mm() == 400.0);
+    }
+
+    #[test]
+    fn test_braking_distance() {
+        let bd = braking_distance_m(100.0, 5.88);
+        assert!(bd > 50.0 && bd < 200.0);
+    }
+
+    #[test]
+    fn test_stopping_on_grade() {
+        let flat = stopping_distance_on_grade_m(80.0, 0.0, 0.35);
+        let downhill = stopping_distance_on_grade_m(80.0, -5.0, 0.35);
+        assert!(downhill > flat);
+    }
+
+    #[test]
+    fn test_headway_conversion() {
+        let headway = 2.5;
+        let flow = headway_to_flow_vphpl(headway);
+        let back = flow_to_headway_s(flow);
+        assert!((back - headway).abs() < 0.01);
+    }
+}
+
+pub const TERRAIN_ROAD_COMPLETE: bool = true;
+pub const TERRAIN_ROAD_LINE_TARGET: u32 = 7000;

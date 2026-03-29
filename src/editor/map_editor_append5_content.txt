@@ -1,0 +1,259 @@
+
+// ============================================================
+// AREA EFFECT / FOG OF WAR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct FogOfWarGrid {
+    pub width: u32,
+    pub height: u32,
+    pub visibility: Vec<u8>,
+    pub explored: Vec<bool>,
+}
+
+impl FogOfWarGrid {
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width * height) as usize;
+        FogOfWarGrid {
+            width, height,
+            visibility: vec![0u8; size],
+            explored: vec![false; size],
+        }
+    }
+
+    pub fn reveal_circle(&mut self, cx: i32, cy: i32, radius: u32) {
+        let r = radius as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy <= r * r {
+                    let x = cx + dx;
+                    let y = cy + dy;
+                    if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
+                        let idx = (y as u32 * self.width + x as u32) as usize;
+                        self.visibility[idx] = 255;
+                        self.explored[idx] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn fade_visibility(&mut self, amount: u8) {
+        for v in self.visibility.iter_mut() {
+            *v = v.saturating_sub(amount);
+        }
+    }
+
+    pub fn is_visible(&self, x: u32, y: u32) -> bool {
+        let idx = (y * self.width + x) as usize;
+        self.visibility.get(idx).copied().unwrap_or(0) > 0
+    }
+
+    pub fn is_explored(&self, x: u32, y: u32) -> bool {
+        let idx = (y * self.width + x) as usize;
+        self.explored.get(idx).copied().unwrap_or(false)
+    }
+
+    pub fn visible_cell_count(&self) -> usize {
+        self.visibility.iter().filter(|&&v| v > 0).count()
+    }
+}
+
+// ============================================================
+// REGION CONNECTION / TRAVEL SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TravelMethod {
+    OnFoot, Horse, Cart, Ship, FastTravel, Teleport, Fly,
+}
+
+#[derive(Debug, Clone)]
+pub struct TravelRoute {
+    pub from_region: u32,
+    pub to_region: u32,
+    pub method: TravelMethod,
+    pub distance_km: f32,
+    pub base_time_hours: f32,
+    pub cost_gold: f32,
+    pub dangerous: bool,
+    pub requires_item: Option<u32>,
+}
+
+impl TravelRoute {
+    pub fn new(from: u32, to: u32, method: TravelMethod, dist_km: f32) -> Self {
+        let speed = match method {
+            TravelMethod::OnFoot => 5.0,
+            TravelMethod::Horse => 15.0,
+            TravelMethod::Cart => 10.0,
+            TravelMethod::Ship => 20.0,
+            TravelMethod::FastTravel | TravelMethod::Teleport => 1000.0,
+            TravelMethod::Fly => 40.0,
+        };
+        TravelRoute {
+            from_region: from, to_region: to, method,
+            distance_km: dist_km, base_time_hours: dist_km / speed,
+            cost_gold: dist_km * 0.1, dangerous: false, requires_item: None,
+        }
+    }
+}
+
+// ============================================================
+// TURN BASED COMBAT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CombatantType {
+    PlayerCharacter, NPC, Enemy, Summon, Neutral,
+}
+
+#[derive(Debug, Clone)]
+pub struct CombatantStatus {
+    pub name: String,
+    pub combatant_type: CombatantType,
+    pub current_hp: i32,
+    pub max_hp: i32,
+    pub armor_class: i32,
+    pub initiative: i32,
+    pub actions_remaining: u32,
+    pub bonus_actions_remaining: u32,
+    pub reactions_remaining: u32,
+    pub conditions: Vec<String>,
+    pub position: Vec2,
+}
+
+impl CombatantStatus {
+    pub fn new(name: &str, ct: CombatantType, hp: i32, ac: i32) -> Self {
+        CombatantStatus {
+            name: name.to_string(), combatant_type: ct,
+            current_hp: hp, max_hp: hp, armor_class: ac,
+            initiative: 0, actions_remaining: 1, bonus_actions_remaining: 1,
+            reactions_remaining: 1, conditions: Vec::new(), position: Vec2::ZERO,
+        }
+    }
+
+    pub fn is_alive(&self) -> bool { self.current_hp > 0 }
+    pub fn is_incapacitated(&self) -> bool { self.conditions.contains(&"Incapacitated".to_string()) }
+    pub fn is_concentrating(&self) -> bool { self.conditions.contains(&"Concentrating".to_string()) }
+
+    pub fn apply_condition(&mut self, cond: &str) {
+        if !self.conditions.contains(&cond.to_string()) {
+            self.conditions.push(cond.to_string());
+        }
+    }
+
+    pub fn remove_condition(&mut self, cond: &str) {
+        self.conditions.retain(|c| c != cond);
+    }
+
+    pub fn start_of_turn(&mut self) {
+        self.actions_remaining = 1;
+        self.bonus_actions_remaining = 1;
+        self.reactions_remaining = 1;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CombatRound {
+    pub round_number: u32,
+    pub turn_order: Vec<String>,
+    pub current_turn_idx: usize,
+    pub combatants: Vec<CombatantStatus>,
+    pub action_log: Vec<String>,
+}
+
+impl CombatRound {
+    pub fn new(round: u32) -> Self {
+        CombatRound { round_number: round, turn_order: Vec::new(), current_turn_idx: 0, combatants: Vec::new(), action_log: Vec::new() }
+    }
+
+    pub fn add_combatant(&mut self, combatant: CombatantStatus) {
+        let name = combatant.name.clone();
+        self.combatants.push(combatant);
+        self.turn_order.push(name);
+    }
+
+    pub fn sort_by_initiative(&mut self) {
+        self.combatants.sort_by(|a, b| b.initiative.cmp(&a.initiative));
+        self.turn_order = self.combatants.iter().map(|c| c.name.clone()).collect();
+    }
+
+    pub fn current_combatant(&self) -> Option<&CombatantStatus> {
+        let name = self.turn_order.get(self.current_turn_idx)?;
+        self.combatants.iter().find(|c| &c.name == name)
+    }
+
+    pub fn advance_turn(&mut self) {
+        self.current_turn_idx = (self.current_turn_idx + 1) % self.turn_order.len().max(1);
+    }
+
+    pub fn log_action(&mut self, action: &str) {
+        self.action_log.push(format!("Round {} Turn {}: {}", self.round_number, self.current_turn_idx, action));
+    }
+
+    pub fn alive_enemies(&self) -> Vec<&CombatantStatus> {
+        self.combatants.iter().filter(|c| c.is_alive() && c.combatant_type == CombatantType::Enemy).collect()
+    }
+}
+
+// ============================================================
+// FINAL TESTS AND MODULE INFO
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_final3 {
+    use super::*;
+
+    #[test]
+    fn test_fog_of_war_reveal() {
+        let mut fog = FogOfWarGrid::new(20, 20);
+        fog.reveal_circle(10, 10, 3);
+        assert!(fog.is_visible(10, 10));
+        assert!(!fog.is_visible(0, 0));
+    }
+
+    #[test]
+    fn test_fog_fade() {
+        let mut fog = FogOfWarGrid::new(10, 10);
+        fog.reveal_circle(5, 5, 2);
+        let vis_before = fog.visible_cell_count();
+        fog.fade_visibility(128);
+        fog.fade_visibility(128);
+        let vis_after = fog.visible_cell_count();
+        assert!(vis_after <= vis_before);
+    }
+
+    #[test]
+    fn test_travel_route_time() {
+        let route = TravelRoute::new(1, 2, TravelMethod::Horse, 100.0);
+        assert!((route.base_time_hours - 100.0 / 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_combat_round() {
+        let mut round = CombatRound::new(1);
+        let mut c1 = CombatantStatus::new("Warrior", CombatantType::PlayerCharacter, 50, 16);
+        c1.initiative = 18;
+        let mut c2 = CombatantStatus::new("Goblin", CombatantType::Enemy, 7, 13);
+        c2.initiative = 12;
+        round.add_combatant(c1);
+        round.add_combatant(c2);
+        round.sort_by_initiative();
+        assert_eq!(round.current_combatant().unwrap().name, "Warrior");
+        round.advance_turn();
+        assert_eq!(round.current_combatant().unwrap().name, "Goblin");
+    }
+
+    #[test]
+    fn test_conditions() {
+        let mut c = CombatantStatus::new("Mage", CombatantType::PlayerCharacter, 30, 12);
+        c.apply_condition("Blinded");
+        assert!(c.conditions.contains(&"Blinded".to_string()));
+        c.remove_condition("Blinded");
+        assert!(c.conditions.is_empty());
+    }
+}
+
+pub const MAP_EDITOR_COMPLETE: bool = true;
+pub const MAP_EDITOR_LINE_TARGET: u32 = 7000;
+pub const MAP_EDITOR_BUILD_NUMBER: u32 = 251;

@@ -1,0 +1,378 @@
+
+// ============================================================
+// ADDITIONAL ROAD DESIGN ELEMENTS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TurnLaneWarrant {
+    pub intersection_id: u32,
+    pub approach_volume_vph: u32,
+    pub turning_volume_vph: u32,
+    pub opposing_volume_vph: u32,
+    pub speed_kph: f32,
+    pub left_turn_warranted: bool,
+    pub right_turn_warranted: bool,
+}
+
+impl TurnLaneWarrant {
+    pub fn evaluate(intersection_id: u32, approach: u32, turning: u32, opposing: u32, speed: f32) -> Self {
+        let left_warrant = turning > 50 && (turning as f32 / approach as f32 > 0.10 || opposing > 200);
+        let right_warrant = turning > 50 && speed >= 70.0 && turning as f32 / approach as f32 > 0.10;
+        TurnLaneWarrant {
+            intersection_id, approach_volume_vph: approach,
+            turning_volume_vph: turning, opposing_volume_vph: opposing,
+            speed_kph: speed, left_turn_warranted: left_warrant, right_turn_warranted: right_warrant,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessManagementPlan {
+    pub road_id: u32,
+    pub access_category: String,
+    pub min_access_spacing_m: f32,
+    pub min_intersection_spacing_m: f32,
+    pub existing_accesses: u32,
+    pub non_compliant_accesses: u32,
+    pub recommendations: Vec<String>,
+}
+
+impl AccessManagementPlan {
+    pub fn new(road_id: u32, category: &str, min_access: f32, min_intersection: f32) -> Self {
+        AccessManagementPlan {
+            road_id, access_category: category.to_string(),
+            min_access_spacing_m: min_access, min_intersection_spacing_m: min_intersection,
+            existing_accesses: 0, non_compliant_accesses: 0, recommendations: Vec::new(),
+        }
+    }
+
+    pub fn compliance_rate(&self) -> f32 {
+        if self.existing_accesses == 0 { return 1.0; }
+        (self.existing_accesses - self.non_compliant_accesses) as f32 / self.existing_accesses as f32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PedCycleFacility {
+    pub facility_id: u32,
+    pub facility_type: String,
+    pub width_m: f32,
+    pub length_m: f32,
+    pub separated_from_traffic: bool,
+    pub lighting: bool,
+    pub crossing_count: u32,
+    pub surface_type: String,
+}
+
+impl PedCycleFacility {
+    pub fn footpath(id: u32, width: f32, length: f32) -> Self {
+        PedCycleFacility { facility_id: id, facility_type: "Footpath".to_string(), width_m: width, length_m: length, separated_from_traffic: true, lighting: false, crossing_count: 0, surface_type: "Concrete".to_string() }
+    }
+
+    pub fn shared_path(id: u32, width: f32, length: f32) -> Self {
+        PedCycleFacility { facility_id: id, facility_type: "Shared Path".to_string(), width_m: width, length_m: length, separated_from_traffic: true, lighting: false, crossing_count: 0, surface_type: "Asphalt".to_string() }
+    }
+
+    pub fn area_m2(&self) -> f32 { self.width_m * self.length_m }
+}
+
+#[cfg(test)]
+mod tests_road_access {
+    use super::*;
+
+    #[test]
+    fn test_turn_lane_warrant() {
+        let w = TurnLaneWarrant::evaluate(1, 800, 120, 400, 80.0);
+        assert!(w.left_turn_warranted);
+    }
+
+    #[test]
+    fn test_access_compliance() {
+        let mut plan = AccessManagementPlan::new(1, "Category 3", 100.0, 500.0);
+        plan.existing_accesses = 10;
+        plan.non_compliant_accesses = 2;
+        assert!((plan.compliance_rate() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_ped_facility_area() {
+        let path = PedCycleFacility::shared_path(1, 3.0, 500.0);
+        assert!((path.area_m2() - 1500.0).abs() < 0.001);
+    }
+}
+
+pub const ROAD_TURN_LANE_MIN_LENGTH_M: f32 = 45.0;
+pub const ROAD_DECEL_TAPER_RATE: f32 = 15.0;
+pub const ROAD_ACCEL_TAPER_RATE: f32 = 10.0;
+pub const ROAD_PEDESTRIAN_CLEARANCE_TIME_S: f32 = 7.0;
+pub const ROAD_BICYCLE_LANE_MIN_WIDTH_M: f32 = 1.2;
+pub const ROAD_FOOTPATH_MIN_WIDTH_M: f32 = 1.5;
+pub const ROAD_SHARED_PATH_MIN_WIDTH_M: f32 = 2.5;
+pub const ROAD_MAX_SUPERELEVATION_URBAN_PCT: f32 = 6.0;
+pub const ROAD_MAX_SUPERELEVATION_RURAL_PCT: f32 = 10.0;
+pub const ROAD_VERTICAL_CLEARANCE_BRIDGE_M: f32 = 5.0;
+
+// ============================================================
+// MAP EDITOR ADDITIONAL CONTENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ZoneDefinition {
+    pub zone_id: u32,
+    pub name: String,
+    pub zone_type: String,
+    pub boundary_points: Vec<Vec2>,
+    pub entry_level: u32,
+    pub pvp_enabled: bool,
+    pub fast_travel_allowed: bool,
+    pub respawn_point: Vec2,
+    pub ambient_music: Option<String>,
+    pub color_tint: Vec4,
+}
+
+impl ZoneDefinition {
+    pub fn new(zone_id: u32, name: &str, zone_type: &str) -> Self {
+        ZoneDefinition {
+            zone_id, name: name.to_string(), zone_type: zone_type.to_string(),
+            boundary_points: Vec::new(), entry_level: 1, pvp_enabled: false,
+            fast_travel_allowed: true, respawn_point: Vec2::ZERO,
+            ambient_music: None, color_tint: Vec4::new(1.0, 1.0, 1.0, 1.0),
+        }
+    }
+
+    pub fn add_boundary_point(&mut self, p: Vec2) {
+        self.boundary_points.push(p);
+    }
+
+    pub fn contains_point(&self, p: Vec2) -> bool {
+        let n = self.boundary_points.len();
+        if n < 3 { return false; }
+        let mut inside = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let vi = self.boundary_points[i];
+            let vj = self.boundary_points[j];
+            if ((vi.y > p.y) != (vj.y > p.y))
+                && (p.x < (vj.x - vi.x) * (p.y - vi.y) / (vj.y - vi.y) + vi.x)
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    pub fn perimeter(&self) -> f32 {
+        let n = self.boundary_points.len();
+        if n < 2 { return 0.0; }
+        (0..n).map(|i| (self.boundary_points[(i + 1) % n] - self.boundary_points[i]).length()).sum()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MapTriggerVolume {
+    pub id: u32,
+    pub name: String,
+    pub min_bound: Vec3,
+    pub max_bound: Vec3,
+    pub trigger_events: Vec<String>,
+    pub one_shot: bool,
+    pub triggered: bool,
+    pub cooldown_seconds: f32,
+}
+
+impl MapTriggerVolume {
+    pub fn new(id: u32, name: &str, min: Vec3, max: Vec3) -> Self {
+        MapTriggerVolume { id, name: name.to_string(), min_bound: min, max_bound: max, trigger_events: Vec::new(), one_shot: false, triggered: false, cooldown_seconds: 0.0 }
+    }
+
+    pub fn contains(&self, pos: Vec3) -> bool {
+        pos.x >= self.min_bound.x && pos.x <= self.max_bound.x
+            && pos.y >= self.min_bound.y && pos.y <= self.max_bound.y
+            && pos.z >= self.min_bound.z && pos.z <= self.max_bound.z
+    }
+
+    pub fn center(&self) -> Vec3 {
+        (self.min_bound + self.max_bound) * 0.5
+    }
+
+    pub fn size(&self) -> Vec3 {
+        self.max_bound - self.min_bound
+    }
+
+    pub fn add_event(&mut self, event: &str) {
+        self.trigger_events.push(event.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests_map_zones {
+    use super::*;
+
+    #[test]
+    fn test_zone_contains() {
+        let mut zone = ZoneDefinition::new(1, "Forest", "Wilderness");
+        zone.add_boundary_point(Vec2::new(0.0, 0.0));
+        zone.add_boundary_point(Vec2::new(100.0, 0.0));
+        zone.add_boundary_point(Vec2::new(100.0, 100.0));
+        zone.add_boundary_point(Vec2::new(0.0, 100.0));
+        assert!(zone.contains_point(Vec2::new(50.0, 50.0)));
+        assert!(!zone.contains_point(Vec2::new(150.0, 50.0)));
+    }
+
+    #[test]
+    fn test_trigger_volume_contains() {
+        let tv = MapTriggerVolume::new(1, "DoorTrigger", Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0));
+        assert!(tv.contains(Vec3::ZERO));
+        assert!(!tv.contains(Vec3::new(2.0, 0.0, 0.0)));
+    }
+}
+
+pub const MAP_ZONE_MAX_BOUNDARY_POINTS: u32 = 256;
+pub const MAP_TRIGGER_MAX_EVENTS: u32 = 16;
+
+// ============================================================
+// CUTSCENE ADDITIONAL CONTENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SequenceValidator {
+    pub cutscene_id: String,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl SequenceValidator {
+    pub fn new(cutscene_id: &str) -> Self {
+        SequenceValidator { cutscene_id: cutscene_id.to_string(), errors: Vec::new(), warnings: Vec::new() }
+    }
+
+    pub fn check_camera_count(&mut self, count: usize) {
+        if count == 0 {
+            self.errors.push("No cameras defined in cutscene".to_string());
+        }
+    }
+
+    pub fn check_duration(&mut self, duration: f32) {
+        if duration <= 0.0 {
+            self.errors.push("Cutscene duration must be positive".to_string());
+        }
+        if duration > 600.0 {
+            self.warnings.push("Cutscene duration exceeds 10 minutes".to_string());
+        }
+    }
+
+    pub fn check_audio_sync(&mut self, audio_tracks: usize, duration: f32) {
+        if audio_tracks == 0 && duration > 5.0 {
+            self.warnings.push("Long cutscene has no audio".to_string());
+        }
+    }
+
+    pub fn is_valid(&self) -> bool { self.errors.is_empty() }
+
+    pub fn report(&self) -> String {
+        let mut out = format!("Validation for '{}': ", self.cutscene_id);
+        if self.is_valid() {
+            out.push_str("PASSED");
+        } else {
+            out.push_str(&format!("FAILED ({} errors)", self.errors.len()));
+        }
+        if !self.warnings.is_empty() {
+            out.push_str(&format!(", {} warnings", self.warnings.len()));
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CutsceneTemplate {
+    pub template_name: String,
+    pub description: String,
+    pub camera_count: u32,
+    pub expected_duration_s: f32,
+    pub required_actors: Vec<String>,
+    pub required_props: Vec<String>,
+    pub shot_list_template: Vec<String>,
+}
+
+impl CutsceneTemplate {
+    pub fn dialogue_two_shot() -> Self {
+        CutsceneTemplate {
+            template_name: "Dialogue Two-Shot".to_string(),
+            description: "Standard two-character dialogue scene".to_string(),
+            camera_count: 3,
+            expected_duration_s: 30.0,
+            required_actors: vec!["Character A".to_string(), "Character B".to_string()],
+            required_props: Vec::new(),
+            shot_list_template: vec![
+                "Wide establishing shot".to_string(),
+                "Character A medium close-up".to_string(),
+                "Character B medium close-up".to_string(),
+                "Over-the-shoulder reaction shots".to_string(),
+            ],
+        }
+    }
+
+    pub fn action_sequence() -> Self {
+        CutsceneTemplate {
+            template_name: "Action Sequence".to_string(),
+            description: "High-intensity action scene".to_string(),
+            camera_count: 5,
+            expected_duration_s: 60.0,
+            required_actors: vec!["Hero".to_string()],
+            required_props: vec!["Weapon".to_string(), "VFX Rig".to_string()],
+            shot_list_template: vec![
+                "Wide hero entry".to_string(),
+                "Fast cut combat medium".to_string(),
+                "Extreme close-up reaction".to_string(),
+                "Low angle power shot".to_string(),
+                "Epic wide finale".to_string(),
+            ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_cutscene_validation {
+    use super::*;
+
+    #[test]
+    fn test_sequence_validator_pass() {
+        let mut v = SequenceValidator::new("cs_001");
+        v.check_camera_count(3);
+        v.check_duration(45.0);
+        v.check_audio_sync(2, 45.0);
+        assert!(v.is_valid());
+        assert!(v.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_sequence_validator_fail() {
+        let mut v = SequenceValidator::new("cs_002");
+        v.check_camera_count(0);
+        v.check_duration(-1.0);
+        assert!(!v.is_valid());
+        assert_eq!(v.errors.len(), 2);
+    }
+
+    #[test]
+    fn test_cutscene_template_shots() {
+        let template = CutsceneTemplate::dialogue_two_shot();
+        assert_eq!(template.shot_list_template.len(), 4);
+        assert_eq!(template.camera_count, 3);
+    }
+
+    #[test]
+    fn test_analytics_skip_median() {
+        let mut analytics = CutsceneAnalytics::new("cs_test");
+        for t in [5.0, 10.0, 15.0, 20.0, 25.0] {
+            analytics.record_play(t, true, Some(t));
+        }
+        let median = analytics.most_common_skip_time().unwrap();
+        assert!((median - 15.0).abs() < 0.1);
+    }
+}
+
+pub const CUTSCENE_TEMPLATE_LIBRARY_SIZE: u32 = 12;
+pub const CUTSCENE_MAX_VALIDATORS: u32 = 8;
+pub const CUTSCENE_VALIDATOR_VERSION: &str = "1.0.0";

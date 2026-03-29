@@ -1,0 +1,324 @@
+
+// ============================================================
+// GEOMETRIC ROAD DESIGN - SPIRAL TRANSITIONS
+// ============================================================
+
+pub const CLOTHOID_SCALE: f32 = 100.0;
+
+#[derive(Debug, Clone)]
+pub struct ClothoidSpiral {
+    pub parameter_a: f32,
+    pub length: f32,
+    pub start_radius: f32,
+    pub end_radius: f32,
+    pub direction: i32,
+}
+
+impl ClothoidSpiral {
+    pub fn new(start_r: f32, end_r: f32, a: f32) -> Self {
+        let l = a * a * (1.0 / end_r - 1.0 / start_r).abs();
+        ClothoidSpiral {
+            parameter_a: a, length: l,
+            start_radius: start_r, end_radius: end_r,
+            direction: 1,
+        }
+    }
+
+    pub fn radius_at(&self, s: f32) -> f32 {
+        if s <= 0.0 { return self.start_radius; }
+        let r_inv_start = if self.start_radius.is_infinite() { 0.0 } else { 1.0 / self.start_radius };
+        let r_inv_end = 1.0 / self.end_radius;
+        let t = s / self.length.max(0.001);
+        let r_inv = r_inv_start + (r_inv_end - r_inv_start) * t;
+        if r_inv.abs() < 1e-10 { f32::INFINITY } else { 1.0 / r_inv.abs() }
+    }
+
+    pub fn deflection_angle_rad(&self) -> f32 {
+        self.length / (2.0 * self.end_radius)
+    }
+
+    pub fn minimum_a_for_speed(&self, design_speed_kph: f32) -> f32 {
+        design_speed_kph * 0.036 * design_speed_kph.sqrt()
+    }
+}
+
+// ============================================================
+// ROAD SIGNAGE STANDARDS CHECKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SignStandardsCheck {
+    pub sign_id: u32,
+    pub location_chainage: f32,
+    pub sign_type: String,
+    pub advance_warning_distance_m: f32,
+    pub required_advance_distance_m: f32,
+    pub height_above_pavement_m: f32,
+    pub required_min_height_m: f32,
+    pub retroreflective: bool,
+    pub compliant: bool,
+    pub issues: Vec<String>,
+}
+
+impl SignStandardsCheck {
+    pub fn new(sign_id: u32, chainage: f32, sign_type: &str) -> Self {
+        SignStandardsCheck {
+            sign_id, location_chainage: chainage, sign_type: sign_type.to_string(),
+            advance_warning_distance_m: 0.0, required_advance_distance_m: 150.0,
+            height_above_pavement_m: 2.1, required_min_height_m: 2.1,
+            retroreflective: true, compliant: true, issues: Vec::new(),
+        }
+    }
+
+    pub fn evaluate(&mut self) {
+        self.issues.clear();
+        if self.advance_warning_distance_m < self.required_advance_distance_m {
+            self.issues.push(format!("Insufficient advance warning: {:.0}m < {:.0}m", self.advance_warning_distance_m, self.required_advance_distance_m));
+        }
+        if self.height_above_pavement_m < self.required_min_height_m {
+            self.issues.push(format!("Sign height {:.1}m below minimum {:.1}m", self.height_above_pavement_m, self.required_min_height_m));
+        }
+        if !self.retroreflective {
+            self.issues.push("Sign lacks retroreflective sheeting".to_string());
+        }
+        self.compliant = self.issues.is_empty();
+    }
+}
+
+// ============================================================
+// HORIZONTAL ALIGNMENT COMPUTATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct PI_Point {
+    pub chainage: f32,
+    pub easting: f32,
+    pub northing: f32,
+    pub deflection_angle_deg: f32,
+    pub radius: f32,
+    pub spiral_in_length: f32,
+    pub spiral_out_length: f32,
+}
+
+impl PI_Point {
+    pub fn new(chainage: f32, e: f32, n: f32) -> Self {
+        PI_Point { chainage, easting: e, northing: n, deflection_angle_deg: 0.0, radius: 0.0, spiral_in_length: 0.0, spiral_out_length: 0.0 }
+    }
+
+    pub fn tangent_length(&self) -> f32 {
+        if self.radius <= 0.0 { return 0.0; }
+        let delta_rad = self.deflection_angle_deg.to_radians();
+        let t_simple = self.radius * (delta_rad / 2.0).tan();
+        let t_spiral = self.spiral_in_length / 2.0;
+        t_simple + t_spiral
+    }
+
+    pub fn curve_length(&self) -> f32 {
+        if self.radius <= 0.0 { return 0.0; }
+        let delta_rad = self.deflection_angle_deg.to_radians();
+        self.radius * delta_rad + self.spiral_in_length + self.spiral_out_length
+    }
+
+    pub fn long_chord(&self) -> f32 {
+        if self.radius <= 0.0 { return 0.0; }
+        let delta_rad = self.deflection_angle_deg.to_radians();
+        2.0 * self.radius * (delta_rad / 2.0).sin()
+    }
+
+    pub fn external_distance(&self) -> f32 {
+        if self.radius <= 0.0 { return 0.0; }
+        let delta_rad = self.deflection_angle_deg.to_radians();
+        self.radius * ((delta_rad / 2.0).cos().recip() - 1.0)
+    }
+
+    pub fn mid_ordinate(&self) -> f32 {
+        if self.radius <= 0.0 { return 0.0; }
+        let delta_rad = self.deflection_angle_deg.to_radians();
+        self.radius * (1.0 - (delta_rad / 2.0).cos())
+    }
+}
+
+// ============================================================
+// VERTICAL ALIGNMENT COMPUTATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct VPI_Point {
+    pub chainage: f32,
+    pub elevation: f32,
+    pub grade_in_pct: f32,
+    pub grade_out_pct: f32,
+    pub k_value: f32,
+}
+
+impl VPI_Point {
+    pub fn new(chainage: f32, elevation: f32) -> Self {
+        VPI_Point { chainage, elevation, grade_in_pct: 0.0, grade_out_pct: 0.0, k_value: 30.0 }
+    }
+
+    pub fn grade_change_pct(&self) -> f32 {
+        self.grade_out_pct - self.grade_in_pct
+    }
+
+    pub fn vertical_curve_length(&self) -> f32 {
+        self.k_value * self.grade_change_pct().abs()
+    }
+
+    pub fn is_crest(&self) -> bool {
+        self.grade_change_pct() < 0.0
+    }
+
+    pub fn is_sag(&self) -> bool {
+        self.grade_change_pct() > 0.0
+    }
+
+    pub fn elevation_at_chainage(&self, ch: f32) -> f32 {
+        let l = self.vertical_curve_length();
+        let bvc_ch = self.chainage - l / 2.0;
+        let x = ch - bvc_ch;
+        if x < 0.0 || x > l { return self.elevation; }
+        let bvc_elev = self.elevation - (l / 2.0) * self.grade_in_pct / 100.0;
+        let r = (self.grade_out_pct - self.grade_in_pct) / (l * 100.0);
+        bvc_elev + (self.grade_in_pct / 100.0) * x + 0.5 * (r / 100.0) * x * x
+    }
+}
+
+// ============================================================
+// COST ESTIMATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CostItem {
+    pub item_code: String,
+    pub description: String,
+    pub unit: String,
+    pub quantity: f64,
+    pub unit_rate: f64,
+    pub contingency_pct: f32,
+}
+
+impl CostItem {
+    pub fn base_cost(&self) -> f64 {
+        self.quantity * self.unit_rate
+    }
+
+    pub fn with_contingency(&self) -> f64 {
+        self.base_cost() * (1.0 + self.contingency_pct as f64 / 100.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CostEstimate {
+    pub project_name: String,
+    pub estimate_date: String,
+    pub items: Vec<CostItem>,
+    pub overhead_pct: f32,
+    pub profit_pct: f32,
+    pub gst_pct: f32,
+    pub design_fee_pct: f32,
+    pub supervision_fee_pct: f32,
+}
+
+impl CostEstimate {
+    pub fn new(project_name: &str) -> Self {
+        CostEstimate {
+            project_name: project_name.to_string(), estimate_date: String::new(),
+            items: Vec::new(), overhead_pct: 12.0, profit_pct: 8.0,
+            gst_pct: 10.0, design_fee_pct: 5.0, supervision_fee_pct: 3.0,
+        }
+    }
+
+    pub fn add_item(&mut self, item: CostItem) {
+        self.items.push(item);
+    }
+
+    pub fn direct_cost(&self) -> f64 {
+        self.items.iter().map(|i| i.with_contingency()).sum()
+    }
+
+    pub fn overhead_cost(&self) -> f64 {
+        self.direct_cost() * self.overhead_pct as f64 / 100.0
+    }
+
+    pub fn profit(&self) -> f64 {
+        (self.direct_cost() + self.overhead_cost()) * self.profit_pct as f64 / 100.0
+    }
+
+    pub fn construction_cost(&self) -> f64 {
+        self.direct_cost() + self.overhead_cost() + self.profit()
+    }
+
+    pub fn total_project_cost(&self) -> f64 {
+        let cc = self.construction_cost();
+        let design = cc * self.design_fee_pct as f64 / 100.0;
+        let supervision = cc * self.supervision_fee_pct as f64 / 100.0;
+        let gst = (cc + design + supervision) * self.gst_pct as f64 / 100.0;
+        cc + design + supervision + gst
+    }
+
+    pub fn cost_per_lane_km(&self, lane_km: f32) -> f64 {
+        if lane_km <= 0.0 { return 0.0; }
+        self.construction_cost() / lane_km as f64
+    }
+}
+
+// ============================================================
+// FINAL TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_terrain_final {
+    use super::*;
+
+    #[test]
+    fn test_clothoid_radius() {
+        let spiral = ClothoidSpiral::new(f32::INFINITY, 300.0, 100.0);
+        let r_at_end = spiral.radius_at(spiral.length);
+        assert!((r_at_end - 300.0).abs() < 5.0);
+    }
+
+    #[test]
+    fn test_pi_point_tangent() {
+        let mut pi = PI_Point::new(1000.0, 5000.0, 6000.0);
+        pi.deflection_angle_deg = 30.0;
+        pi.radius = 500.0;
+        let tl = pi.tangent_length();
+        assert!(tl > 0.0);
+    }
+
+    #[test]
+    fn test_vpi_elevation() {
+        let mut vpi = VPI_Point::new(1000.0, 10.0);
+        vpi.grade_in_pct = 3.0;
+        vpi.grade_out_pct = -2.0;
+        vpi.k_value = 20.0;
+        let cl = vpi.vertical_curve_length();
+        assert!((cl - 100.0).abs() < 0.001);
+        assert!(vpi.is_crest());
+    }
+
+    #[test]
+    fn test_cost_estimate() {
+        let mut est = CostEstimate::new("Test Road");
+        est.add_item(CostItem {
+            item_code: "1001".to_string(), description: "Earthworks".to_string(),
+            unit: "m3".to_string(), quantity: 10000.0, unit_rate: 25.0, contingency_pct: 10.0,
+        });
+        assert!(est.total_project_cost() > est.direct_cost());
+    }
+
+    #[test]
+    fn test_sign_standards_check() {
+        let mut check = SignStandardsCheck::new(1, 500.0, "Speed Zone");
+        check.advance_warning_distance_m = 200.0;
+        check.retroreflective = true;
+        check.evaluate();
+        assert!(check.compliant);
+        check.advance_warning_distance_m = 50.0;
+        check.evaluate();
+        assert!(!check.compliant);
+    }
+}
+
+pub const TERRAIN_ROAD_BUILD_VERSION: u32 = 230;
+pub const TERRAIN_ROAD_FEATURE_COUNT: u32 = 47;

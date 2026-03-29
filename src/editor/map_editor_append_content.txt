@@ -1,0 +1,1270 @@
+
+// ============================================================
+// DUNGEON ROOM GENERATOR
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoomShape {
+    Rectangular,
+    LShape,
+    TShape,
+    CrossShape,
+    Circular,
+    Irregular,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoomTheme {
+    Stone,
+    Wood,
+    Cave,
+    Crypt,
+    Library,
+    Throne,
+    Dungeon,
+    Sewers,
+    Ruins,
+    Temple,
+}
+
+#[derive(Debug, Clone)]
+pub struct DungeonRoom {
+    pub id: u32,
+    pub name: String,
+    pub shape: RoomShape,
+    pub theme: RoomTheme,
+    pub width: u32,
+    pub height: u32,
+    pub position: Vec2,
+    pub connections: Vec<u32>,
+    pub loot_table_id: Option<u32>,
+    pub monster_group_id: Option<u32>,
+    pub trap_ids: Vec<u32>,
+    pub secret: bool,
+    pub boss_room: bool,
+    pub visited: bool,
+    pub light_level: f32,
+    pub ambient_sound: Option<String>,
+}
+
+impl DungeonRoom {
+    pub fn new(id: u32, shape: RoomShape, theme: RoomTheme, w: u32, h: u32) -> Self {
+        DungeonRoom {
+            id,
+            name: format!("Room {}", id),
+            shape, theme, width: w, height: h,
+            position: Vec2::ZERO,
+            connections: Vec::new(),
+            loot_table_id: None,
+            monster_group_id: None,
+            trap_ids: Vec::new(),
+            secret: false,
+            boss_room: false,
+            visited: false,
+            light_level: 0.5,
+            ambient_sound: None,
+        }
+    }
+
+    pub fn area(&self) -> f32 {
+        match self.shape {
+            RoomShape::Rectangular => (self.width * self.height) as f32,
+            RoomShape::LShape => (self.width * self.height) as f32 * 0.75,
+            RoomShape::TShape => (self.width * self.height) as f32 * 0.75,
+            RoomShape::CrossShape => (self.width * self.height) as f32 * 0.6,
+            RoomShape::Circular => {
+                let r = self.width.min(self.height) as f32 * 0.5;
+                std::f32::consts::PI * r * r
+            },
+            RoomShape::Irregular => (self.width * self.height) as f32 * 0.65,
+        }
+    }
+
+    pub fn connect(&mut self, other_id: u32) {
+        if !self.connections.contains(&other_id) {
+            self.connections.push(other_id);
+        }
+    }
+
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        (self.position, self.position + Vec2::new(self.width as f32, self.height as f32))
+    }
+
+    pub fn center(&self) -> Vec2 {
+        self.position + Vec2::new(self.width as f32 * 0.5, self.height as f32 * 0.5)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DungeonFloor {
+    pub floor_number: i32,
+    pub rooms: HashMap<u32, DungeonRoom>,
+    pub corridors: Vec<(u32, u32)>,
+    pub entrance_room_id: u32,
+    pub exit_room_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub difficulty: f32,
+}
+
+impl DungeonFloor {
+    pub fn new(floor_number: i32, width: u32, height: u32) -> Self {
+        DungeonFloor {
+            floor_number, rooms: HashMap::new(),
+            corridors: Vec::new(),
+            entrance_room_id: 0, exit_room_id: 0,
+            width, height, difficulty: 1.0,
+        }
+    }
+
+    pub fn add_room(&mut self, room: DungeonRoom) {
+        self.rooms.insert(room.id, room);
+    }
+
+    pub fn connect_rooms(&mut self, a: u32, b: u32) {
+        if let Some(room_a) = self.rooms.get_mut(&a) {
+            room_a.connect(b);
+        }
+        if let Some(room_b) = self.rooms.get_mut(&b) {
+            room_b.connect(a);
+        }
+        self.corridors.push((a, b));
+    }
+
+    pub fn room_count(&self) -> usize { self.rooms.len() }
+
+    pub fn boss_rooms(&self) -> Vec<&DungeonRoom> {
+        self.rooms.values().filter(|r| r.boss_room).collect()
+    }
+
+    pub fn secret_rooms(&self) -> Vec<&DungeonRoom> {
+        self.rooms.values().filter(|r| r.secret).collect()
+    }
+
+    pub fn bfs_distance(&self, from: u32, to: u32) -> Option<u32> {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back((from, 0));
+        visited.insert(from);
+        while let Some((curr, dist)) = queue.pop_front() {
+            if curr == to { return Some(dist); }
+            if let Some(room) = self.rooms.get(&curr) {
+                for &next in &room.connections {
+                    if !visited.contains(&next) {
+                        visited.insert(next);
+                        queue.push_back((next, dist + 1));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+// ============================================================
+// PROCEDURAL DUNGEON GENERATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DungeonGeneratorParams {
+    pub width: u32,
+    pub height: u32,
+    pub min_rooms: u32,
+    pub max_rooms: u32,
+    pub min_room_size: u32,
+    pub max_room_size: u32,
+    pub corridor_width: u32,
+    pub boss_room_probability: f32,
+    pub secret_room_probability: f32,
+    pub seed: u64,
+}
+
+impl Default for DungeonGeneratorParams {
+    fn default() -> Self {
+        DungeonGeneratorParams {
+            width: 100, height: 100,
+            min_rooms: 8, max_rooms: 20,
+            min_room_size: 5, max_room_size: 15,
+            corridor_width: 2,
+            boss_room_probability: 0.1,
+            secret_room_probability: 0.15,
+            seed: 12345,
+        }
+    }
+}
+
+pub struct DungeonGenerator {
+    pub params: DungeonGeneratorParams,
+    pub rng_state: u64,
+}
+
+impl DungeonGenerator {
+    pub fn new(params: DungeonGeneratorParams) -> Self {
+        let seed = params.seed;
+        DungeonGenerator { params, rng_state: seed }
+    }
+
+    fn next_rand(&mut self) -> u64 {
+        self.rng_state ^= self.rng_state << 13;
+        self.rng_state ^= self.rng_state >> 7;
+        self.rng_state ^= self.rng_state << 17;
+        self.rng_state
+    }
+
+    fn rand_range(&mut self, min: u32, max: u32) -> u32 {
+        if min >= max { return min; }
+        (self.next_rand() as u32 % (max - min)) + min
+    }
+
+    fn rand_f32(&mut self) -> f32 {
+        (self.next_rand() & 0xFFFFFF) as f32 / 0xFFFFFF as f32
+    }
+
+    pub fn generate(&mut self, floor_number: i32) -> DungeonFloor {
+        let mut floor = DungeonFloor::new(floor_number, self.params.width, self.params.height);
+        let num_rooms = self.rand_range(self.params.min_rooms, self.params.max_rooms);
+
+        for i in 0..num_rooms {
+            let w = self.rand_range(self.params.min_room_size, self.params.max_room_size);
+            let h = self.rand_range(self.params.min_room_size, self.params.max_room_size);
+            let x = self.rand_range(1, self.params.width.saturating_sub(w + 1));
+            let y = self.rand_range(1, self.params.height.saturating_sub(h + 1));
+            let theme_idx = (self.next_rand() % 10) as usize;
+            let themes = [
+                RoomTheme::Stone, RoomTheme::Wood, RoomTheme::Cave,
+                RoomTheme::Crypt, RoomTheme::Library, RoomTheme::Throne,
+                RoomTheme::Dungeon, RoomTheme::Sewers, RoomTheme::Ruins, RoomTheme::Temple,
+            ];
+            let mut room = DungeonRoom::new(i, RoomShape::Rectangular, themes[theme_idx].clone(), w, h);
+            room.position = Vec2::new(x as f32, y as f32);
+            room.boss_room = self.rand_f32() < self.params.boss_room_probability;
+            room.secret = self.rand_f32() < self.params.secret_room_probability;
+            floor.add_room(room);
+        }
+
+        // Connect rooms in a simple chain
+        let room_ids: Vec<u32> = floor.rooms.keys().copied().collect();
+        for i in 1..room_ids.len() {
+            floor.connect_rooms(room_ids[i-1], room_ids[i]);
+        }
+        if !room_ids.is_empty() {
+            floor.entrance_room_id = room_ids[0];
+            floor.exit_room_id = *room_ids.last().unwrap();
+        }
+        floor
+    }
+}
+
+// ============================================================
+// WORLD MAP REGION SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BiomeType {
+    Plains,
+    Forest,
+    Desert,
+    Tundra,
+    Swamp,
+    Mountains,
+    Jungle,
+    Coast,
+    Ocean,
+    Volcanic,
+    Magical,
+    Corrupted,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorldRegion {
+    pub id: u32,
+    pub name: String,
+    pub biome: BiomeType,
+    pub center: Vec2,
+    pub radius: f32,
+    pub elevation: f32,
+    pub temperature: f32,
+    pub rainfall: f32,
+    pub danger_level: u32,
+    pub discovered: bool,
+    pub controlled_by_faction: Option<u32>,
+    pub resources: HashMap<String, f32>,
+    pub adjacent_region_ids: Vec<u32>,
+    pub dungeons: Vec<u32>,
+    pub settlements: Vec<u32>,
+}
+
+impl WorldRegion {
+    pub fn new(id: u32, name: &str, biome: BiomeType) -> Self {
+        WorldRegion {
+            id, name: name.to_string(), biome,
+            center: Vec2::ZERO, radius: 50.0,
+            elevation: 0.0, temperature: 15.0, rainfall: 500.0,
+            danger_level: 1, discovered: false,
+            controlled_by_faction: None,
+            resources: HashMap::new(),
+            adjacent_region_ids: Vec::new(),
+            dungeons: Vec::new(), settlements: Vec::new(),
+        }
+    }
+
+    pub fn is_habitable(&self) -> bool {
+        self.temperature > -20.0 && self.temperature < 45.0
+            && self.rainfall > 100.0
+            && !matches!(self.biome, BiomeType::Volcanic | BiomeType::Corrupted)
+    }
+
+    pub fn traversal_cost(&self) -> f32 {
+        match self.biome {
+            BiomeType::Plains => 1.0,
+            BiomeType::Forest => 1.5,
+            BiomeType::Desert => 2.0,
+            BiomeType::Tundra => 2.5,
+            BiomeType::Swamp => 3.0,
+            BiomeType::Mountains => 4.0,
+            BiomeType::Jungle => 3.5,
+            BiomeType::Coast => 1.2,
+            BiomeType::Ocean => 5.0,
+            BiomeType::Volcanic => 6.0,
+            BiomeType::Magical => 1.8,
+            BiomeType::Corrupted => 3.0,
+        }
+    }
+
+    pub fn add_resource(&mut self, name: &str, amount: f32) {
+        *self.resources.entry(name.to_string()).or_insert(0.0) += amount;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorldMap {
+    pub name: String,
+    pub regions: HashMap<u32, WorldRegion>,
+    pub width: f32,
+    pub height: f32,
+    pub sea_level: f32,
+    pub calendar: String,
+}
+
+impl WorldMap {
+    pub fn new(name: &str, w: f32, h: f32) -> Self {
+        WorldMap {
+            name: name.to_string(),
+            regions: HashMap::new(),
+            width: w, height: h,
+            sea_level: 0.0,
+            calendar: "Imperial Calendar".to_string(),
+        }
+    }
+
+    pub fn add_region(&mut self, region: WorldRegion) {
+        self.regions.insert(region.id, region);
+    }
+
+    pub fn regions_near(&self, pos: Vec2, radius: f32) -> Vec<&WorldRegion> {
+        self.regions.values()
+            .filter(|r| (r.center - pos).length() <= radius)
+            .collect()
+    }
+
+    pub fn region_at(&self, pos: Vec2) -> Option<&WorldRegion> {
+        self.regions.values()
+            .filter(|r| (r.center - pos).length() <= r.radius)
+            .min_by(|a, b| {
+                (a.center - pos).length().partial_cmp(&(b.center - pos).length()).unwrap()
+            })
+    }
+
+    pub fn pathfind_regions(&self, from: u32, to: u32) -> Option<Vec<u32>> {
+        if from == to { return Some(vec![from]); }
+        let mut dist: HashMap<u32, f32> = HashMap::new();
+        let mut prev: HashMap<u32, u32> = HashMap::new();
+        let mut unvisited: HashSet<u32> = self.regions.keys().copied().collect();
+        dist.insert(from, 0.0);
+        for &id in &unvisited {
+            if id != from { dist.insert(id, f32::INFINITY); }
+        }
+        while !unvisited.is_empty() {
+            let curr = *unvisited.iter()
+                .min_by(|&&a, &&b| dist[&a].partial_cmp(&dist[&b]).unwrap())?;
+            if curr == to { break; }
+            let curr_dist = dist[&curr];
+            if curr_dist.is_infinite() { break; }
+            unvisited.remove(&curr);
+            if let Some(region) = self.regions.get(&curr) {
+                for &adj in &region.adjacent_region_ids {
+                    if !unvisited.contains(&adj) { continue; }
+                    if let Some(adj_region) = self.regions.get(&adj) {
+                        let new_dist = curr_dist + adj_region.traversal_cost();
+                        if new_dist < *dist.get(&adj).unwrap_or(&f32::INFINITY) {
+                            dist.insert(adj, new_dist);
+                            prev.insert(adj, curr);
+                        }
+                    }
+                }
+            }
+        }
+        let mut path = Vec::new();
+        let mut curr = to;
+        while let Some(&p) = prev.get(&curr) {
+            path.push(curr);
+            curr = p;
+        }
+        path.push(from);
+        path.reverse();
+        if path[0] == from { Some(path) } else { None }
+    }
+}
+
+// ============================================================
+// FACTION AND POLITICS SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FactionType {
+    Kingdom,
+    Empire,
+    Republic,
+    Tribe,
+    Guild,
+    Church,
+    Cult,
+    MercenaryBand,
+    WizardOrder,
+    Criminal,
+}
+
+#[derive(Debug, Clone)]
+pub struct Faction {
+    pub id: u32,
+    pub name: String,
+    pub faction_type: FactionType,
+    pub leader_name: String,
+    pub influence: f32,
+    pub military_strength: f32,
+    pub wealth: f32,
+    pub reputation: f32,
+    pub controlled_regions: Vec<u32>,
+    pub relations: HashMap<u32, f32>,
+    pub description: String,
+    pub color: Vec4,
+}
+
+impl Faction {
+    pub fn new(id: u32, name: &str, faction_type: FactionType) -> Self {
+        Faction {
+            id, name: name.to_string(), faction_type,
+            leader_name: String::new(),
+            influence: 50.0, military_strength: 50.0,
+            wealth: 1000.0, reputation: 0.0,
+            controlled_regions: Vec::new(),
+            relations: HashMap::new(),
+            description: String::new(),
+            color: Vec4::new(0.5, 0.5, 0.5, 1.0),
+        }
+    }
+
+    pub fn relation_to(&self, other_id: u32) -> f32 {
+        self.relations.get(&other_id).copied().unwrap_or(0.0)
+    }
+
+    pub fn is_allied_with(&self, other_id: u32) -> bool {
+        self.relation_to(other_id) >= 50.0
+    }
+
+    pub fn is_enemy_of(&self, other_id: u32) -> bool {
+        self.relation_to(other_id) <= -50.0
+    }
+
+    pub fn set_relation(&mut self, other_id: u32, value: f32) {
+        self.relations.insert(other_id, value.clamp(-100.0, 100.0));
+    }
+
+    pub fn total_power(&self) -> f32 {
+        self.influence * 0.3 + self.military_strength * 0.5 + self.wealth * 0.0001 * 0.2
+    }
+}
+
+// ============================================================
+// SETTLEMENT / CITY SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettlementType {
+    Hamlet,
+    Village,
+    Town,
+    City,
+    Metropolis,
+    Fortress,
+    Port,
+    Capital,
+    Ruin,
+}
+
+#[derive(Debug, Clone)]
+pub struct Settlement {
+    pub id: u32,
+    pub name: String,
+    pub settlement_type: SettlementType,
+    pub position: Vec2,
+    pub population: u32,
+    pub faction_id: Option<u32>,
+    pub services: Vec<String>,
+    pub prosperity: f32,
+    pub defense_rating: f32,
+    pub trade_goods: HashMap<String, f32>,
+    pub quests_available: u32,
+    pub inn_quality: u32,
+}
+
+impl Settlement {
+    pub fn new(id: u32, name: &str, st: SettlementType) -> Self {
+        Settlement {
+            id, name: name.to_string(), settlement_type: st,
+            position: Vec2::ZERO, population: 100,
+            faction_id: None,
+            services: Vec::new(),
+            prosperity: 50.0, defense_rating: 10.0,
+            trade_goods: HashMap::new(),
+            quests_available: 0, inn_quality: 2,
+        }
+    }
+
+    pub fn has_service(&self, service: &str) -> bool {
+        self.services.iter().any(|s| s == service)
+    }
+
+    pub fn is_major_city(&self) -> bool {
+        matches!(self.settlement_type, SettlementType::City | SettlementType::Metropolis | SettlementType::Capital)
+    }
+
+    pub fn add_service(&mut self, service: &str) {
+        if !self.has_service(service) {
+            self.services.push(service.to_string());
+        }
+    }
+}
+
+// ============================================================
+// QUEST SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuestType {
+    MainStory,
+    SideQuest,
+    Bounty,
+    Fetch,
+    Escort,
+    Explore,
+    Defend,
+    Assassinate,
+    Investigate,
+    Craft,
+    Delivery,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuestStatus {
+    NotStarted,
+    Active,
+    Completed,
+    Failed,
+    Abandoned,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuestObjective {
+    pub id: u32,
+    pub description: String,
+    pub current: u32,
+    pub required: u32,
+    pub optional: bool,
+    pub complete: bool,
+}
+
+impl QuestObjective {
+    pub fn progress_pct(&self) -> f32 {
+        if self.required == 0 { return 1.0; }
+        self.current as f32 / self.required as f32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QuestReward {
+    pub experience: u32,
+    pub gold: u32,
+    pub items: Vec<String>,
+    pub reputation_changes: HashMap<u32, f32>,
+    pub unlock_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Quest {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub quest_type: QuestType,
+    pub status: QuestStatus,
+    pub level_requirement: u32,
+    pub objectives: Vec<QuestObjective>,
+    pub rewards: QuestReward,
+    pub giver_id: Option<u32>,
+    pub location_hint: Option<Vec2>,
+    pub time_limit_seconds: Option<f32>,
+    pub prerequisite_quest_ids: Vec<u32>,
+    pub tags: Vec<String>,
+}
+
+impl Quest {
+    pub fn new(id: u32, name: &str, quest_type: QuestType) -> Self {
+        Quest {
+            id, name: name.to_string(), description: String::new(),
+            quest_type, status: QuestStatus::NotStarted,
+            level_requirement: 1,
+            objectives: Vec::new(),
+            rewards: QuestReward { experience: 0, gold: 0, items: Vec::new(), reputation_changes: HashMap::new(), unlock_ids: Vec::new() },
+            giver_id: None, location_hint: None, time_limit_seconds: None,
+            prerequisite_quest_ids: Vec::new(), tags: Vec::new(),
+        }
+    }
+
+    pub fn add_objective(&mut self, obj: QuestObjective) {
+        self.objectives.push(obj);
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.objectives.iter()
+            .filter(|o| !o.optional)
+            .all(|o| o.complete)
+    }
+
+    pub fn overall_progress(&self) -> f32 {
+        let required: Vec<&QuestObjective> = self.objectives.iter().filter(|o| !o.optional).collect();
+        if required.is_empty() { return 1.0; }
+        required.iter().map(|o| o.progress_pct()).sum::<f32>() / required.len() as f32
+    }
+
+    pub fn start(&mut self) {
+        if self.status == QuestStatus::NotStarted {
+            self.status = QuestStatus::Active;
+        }
+    }
+
+    pub fn complete_quest(&mut self) {
+        self.status = QuestStatus::Completed;
+    }
+}
+
+// ============================================================
+// ENCOUNTER / COMBAT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EncounterDifficulty {
+    Trivial, Easy, Medium, Hard, Deadly, Legendary,
+}
+
+#[derive(Debug, Clone)]
+pub struct EncounterEnemy {
+    pub monster_id: u32,
+    pub count: u32,
+    pub level_override: Option<u32>,
+    pub loot_bonus: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Encounter {
+    pub id: u32,
+    pub name: String,
+    pub difficulty: EncounterDifficulty,
+    pub enemies: Vec<EncounterEnemy>,
+    pub location_id: u32,
+    pub trigger_radius: f32,
+    pub respawn_seconds: Option<f32>,
+    pub is_scripted: bool,
+    pub ambush: bool,
+    pub xp_multiplier: f32,
+}
+
+impl Encounter {
+    pub fn new(id: u32, name: &str, difficulty: EncounterDifficulty, location_id: u32) -> Self {
+        Encounter {
+            id, name: name.to_string(), difficulty,
+            enemies: Vec::new(), location_id,
+            trigger_radius: 5.0,
+            respawn_seconds: Some(300.0),
+            is_scripted: false, ambush: false, xp_multiplier: 1.0,
+        }
+    }
+
+    pub fn total_enemy_count(&self) -> u32 {
+        self.enemies.iter().map(|e| e.count).sum()
+    }
+
+    pub fn threat_rating(&self) -> f32 {
+        let base = match self.difficulty {
+            EncounterDifficulty::Trivial => 1.0,
+            EncounterDifficulty::Easy => 2.0,
+            EncounterDifficulty::Medium => 4.0,
+            EncounterDifficulty::Hard => 8.0,
+            EncounterDifficulty::Deadly => 16.0,
+            EncounterDifficulty::Legendary => 32.0,
+        };
+        base * self.total_enemy_count() as f32 * self.xp_multiplier
+    }
+}
+
+// ============================================================
+// MAP EDITOR TOOLS
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapToolMode {
+    Select,
+    PlaceRoom,
+    PlaceCorridor,
+    PlaceObject,
+    Paint,
+    Erase,
+    FloodFill,
+    MeasureDistance,
+    PlaceSpawn,
+    PlaceWaypoint,
+    EditLight,
+    EditTrigger,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapEditorState {
+    pub tool_mode: MapToolMode,
+    pub selected_room_ids: HashSet<u32>,
+    pub brush_size: f32,
+    pub paint_tile_id: u32,
+    pub grid_size: f32,
+    pub snap_to_grid: bool,
+    pub show_grid: bool,
+    pub show_collision: bool,
+    pub show_navmesh: bool,
+    pub show_lighting: bool,
+    pub zoom: f32,
+    pub camera_pos: Vec2,
+    pub undo_stack: VecDeque<String>,
+    pub redo_stack: VecDeque<String>,
+    pub max_undo: usize,
+}
+
+impl MapEditorState {
+    pub fn new() -> Self {
+        MapEditorState {
+            tool_mode: MapToolMode::Select,
+            selected_room_ids: HashSet::new(),
+            brush_size: 1.0,
+            paint_tile_id: 0,
+            grid_size: 1.0,
+            snap_to_grid: true,
+            show_grid: true,
+            show_collision: false,
+            show_navmesh: false,
+            show_lighting: true,
+            zoom: 1.0,
+            camera_pos: Vec2::ZERO,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            max_undo: 100,
+        }
+    }
+
+    pub fn push_undo(&mut self, description: String) {
+        if self.undo_stack.len() >= self.max_undo {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(description);
+        self.redo_stack.clear();
+    }
+
+    pub fn undo(&mut self) -> Option<String> {
+        if let Some(action) = self.undo_stack.pop_back() {
+            self.redo_stack.push_back(action.clone());
+            Some(action)
+        } else {
+            None
+        }
+    }
+
+    pub fn redo(&mut self) -> Option<String> {
+        if let Some(action) = self.redo_stack.pop_back() {
+            self.undo_stack.push_back(action.clone());
+            Some(action)
+        } else {
+            None
+        }
+    }
+
+    pub fn snap_position(&self, pos: Vec2) -> Vec2 {
+        if !self.snap_to_grid { return pos; }
+        let g = self.grid_size;
+        Vec2::new((pos.x / g).round() * g, (pos.y / g).round() * g)
+    }
+
+    pub fn world_to_screen(&self, world_pos: Vec2, viewport_size: Vec2) -> Vec2 {
+        (world_pos - self.camera_pos) * self.zoom + viewport_size * 0.5
+    }
+
+    pub fn screen_to_world(&self, screen_pos: Vec2, viewport_size: Vec2) -> Vec2 {
+        (screen_pos - viewport_size * 0.5) / self.zoom + self.camera_pos
+    }
+}
+
+// ============================================================
+// NAVMESH GENERATION (SIMPLIFIED 2D)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct NavPoly {
+    pub id: u32,
+    pub vertices: Vec<Vec2>,
+    pub neighbors: Vec<u32>,
+    pub walkable: bool,
+    pub cost: f32,
+    pub flags: u32,
+}
+
+impl NavPoly {
+    pub fn new(id: u32) -> Self {
+        NavPoly { id, vertices: Vec::new(), neighbors: Vec::new(), walkable: true, cost: 1.0, flags: 0 }
+    }
+
+    pub fn center(&self) -> Vec2 {
+        if self.vertices.is_empty() { return Vec2::ZERO; }
+        let sum = self.vertices.iter().fold(Vec2::ZERO, |a, &b| a + b);
+        sum / self.vertices.len() as f32
+    }
+
+    pub fn area(&self) -> f32 {
+        let n = self.vertices.len();
+        if n < 3 { return 0.0; }
+        let mut area = 0.0;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            area += self.vertices[i].x * self.vertices[j].y;
+            area -= self.vertices[j].x * self.vertices[i].y;
+        }
+        area.abs() * 0.5
+    }
+
+    pub fn contains_point(&self, p: Vec2) -> bool {
+        let n = self.vertices.len();
+        let mut inside = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let vi = self.vertices[i];
+            let vj = self.vertices[j];
+            if ((vi.y > p.y) != (vj.y > p.y))
+                && (p.x < (vj.x - vi.x) * (p.y - vi.y) / (vj.y - vi.y) + vi.x)
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NavMesh2D {
+    pub polys: HashMap<u32, NavPoly>,
+    pub next_id: u32,
+}
+
+impl NavMesh2D {
+    pub fn new() -> Self {
+        NavMesh2D { polys: HashMap::new(), next_id: 0 }
+    }
+
+    pub fn add_poly(&mut self, poly: NavPoly) {
+        self.polys.insert(poly.id, poly);
+        if poly.id >= self.next_id { self.next_id = poly.id + 1; }
+    }
+
+    pub fn poly_at_point(&self, p: Vec2) -> Option<&NavPoly> {
+        self.polys.values().find(|poly| poly.walkable && poly.contains_point(p))
+    }
+
+    pub fn astar_path(&self, start: Vec2, end: Vec2) -> Option<Vec<Vec2>> {
+        let start_poly = self.poly_at_point(start)?;
+        let end_poly = self.poly_at_point(end)?;
+        if start_poly.id == end_poly.id {
+            return Some(vec![start, end]);
+        }
+        let mut open: Vec<u32> = vec![start_poly.id];
+        let mut came_from: HashMap<u32, u32> = HashMap::new();
+        let mut g_score: HashMap<u32, f32> = HashMap::new();
+        g_score.insert(start_poly.id, 0.0);
+        while !open.is_empty() {
+            let curr = *open.iter().min_by(|&&a, &&b| {
+                let fa = g_score.get(&a).unwrap_or(&f32::INFINITY);
+                let fb = g_score.get(&b).unwrap_or(&f32::INFINITY);
+                fa.partial_cmp(fb).unwrap()
+            })?;
+            if curr == end_poly.id {
+                let mut path_polys = vec![curr];
+                let mut c = curr;
+                while let Some(&p) = came_from.get(&c) {
+                    path_polys.push(p);
+                    c = p;
+                }
+                path_polys.reverse();
+                let mut waypoints: Vec<Vec2> = path_polys.iter()
+                    .filter_map(|id| self.polys.get(id))
+                    .map(|p| p.center())
+                    .collect();
+                if !waypoints.is_empty() { waypoints[0] = start; }
+                waypoints.push(end);
+                return Some(waypoints);
+            }
+            open.retain(|&id| id != curr);
+            if let Some(poly) = self.polys.get(&curr) {
+                let curr_g = *g_score.get(&curr).unwrap_or(&f32::INFINITY);
+                for &nbr in &poly.neighbors {
+                    let nbr_poly = match self.polys.get(&nbr) { Some(p) => p, None => continue };
+                    if !nbr_poly.walkable { continue; }
+                    let tentative = curr_g + nbr_poly.cost
+                        + (nbr_poly.center() - poly.center()).length();
+                    if tentative < *g_score.get(&nbr).unwrap_or(&f32::INFINITY) {
+                        g_score.insert(nbr, tentative);
+                        came_from.insert(nbr, curr);
+                        if !open.contains(&nbr) { open.push(nbr); }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+// ============================================================
+// TILE PALETTE AND TILESET
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TileDefinition {
+    pub id: u32,
+    pub name: String,
+    pub sprite_x: u32,
+    pub sprite_y: u32,
+    pub sprite_width: u32,
+    pub sprite_height: u32,
+    pub passable: bool,
+    pub blocks_sight: bool,
+    pub light_transmission: f32,
+    pub movement_cost: f32,
+    pub tags: Vec<String>,
+    pub autotile_group: Option<u32>,
+}
+
+impl TileDefinition {
+    pub fn new(id: u32, name: &str) -> Self {
+        TileDefinition {
+            id, name: name.to_string(),
+            sprite_x: 0, sprite_y: 0,
+            sprite_width: 16, sprite_height: 16,
+            passable: true, blocks_sight: false,
+            light_transmission: 1.0,
+            movement_cost: 1.0,
+            tags: Vec::new(),
+            autotile_group: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Tileset {
+    pub id: u32,
+    pub name: String,
+    pub texture_path: String,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub tiles: HashMap<u32, TileDefinition>,
+}
+
+impl Tileset {
+    pub fn new(id: u32, name: &str, texture: &str, tw: u32, th: u32) -> Self {
+        Tileset { id, name: name.to_string(), texture_path: texture.to_string(), tile_width: tw, tile_height: th, tiles: HashMap::new() }
+    }
+
+    pub fn add_tile(&mut self, tile: TileDefinition) {
+        self.tiles.insert(tile.id, tile);
+    }
+
+    pub fn tile_by_name(&self, name: &str) -> Option<&TileDefinition> {
+        self.tiles.values().find(|t| t.name == name)
+    }
+}
+
+// ============================================================
+// MAP OBJECT PLACEMENT
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapObjectType {
+    Door, Chest, Trap, Altar, Statue, Torch, Barrel, Bookshelf,
+    Bed, Chair, Table, Pillar, Wall, Floor, Ceiling,
+    NpcSpawn, EnemySpawn, BossSpawn, PlayerSpawn,
+    Portal, Trigger, Light, Sound, Particle,
+    Lever, Button, Pressure_Plate, Key,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapObject {
+    pub id: u32,
+    pub object_type: MapObjectType,
+    pub position: Vec3,
+    pub rotation_deg: f32,
+    pub scale: Vec3,
+    pub asset_id: String,
+    pub properties: HashMap<String, String>,
+    pub interactive: bool,
+    pub visible: bool,
+    pub layer: u32,
+}
+
+impl MapObject {
+    pub fn new(id: u32, object_type: MapObjectType, pos: Vec3, asset: &str) -> Self {
+        MapObject {
+            id, object_type, position: pos,
+            rotation_deg: 0.0, scale: Vec3::ONE,
+            asset_id: asset.to_string(),
+            properties: HashMap::new(),
+            interactive: false, visible: true, layer: 0,
+        }
+    }
+
+    pub fn set_property(&mut self, key: &str, value: &str) {
+        self.properties.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn get_property(&self, key: &str) -> Option<&str> {
+        self.properties.get(key).map(|s| s.as_str())
+    }
+
+    pub fn transform_matrix(&self) -> Mat4 {
+        let rot = Mat4::from_rotation_y(self.rotation_deg.to_radians());
+        let trans = Mat4::from_translation(self.position);
+        let scale = Mat4::from_scale(self.scale);
+        trans * rot * scale
+    }
+}
+
+// ============================================================
+// LIGHT BAKING / RADIOSITY (SIMPLIFIED)
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LightType {
+    Point, Spot, Directional, Area, Ambient,
+}
+
+#[derive(Debug, Clone)]
+pub struct SceneLight {
+    pub id: u32,
+    pub light_type: LightType,
+    pub position: Vec3,
+    pub direction: Vec3,
+    pub color: Vec3,
+    pub intensity: f32,
+    pub radius: f32,
+    pub inner_cone_deg: f32,
+    pub outer_cone_deg: f32,
+    pub cast_shadows: bool,
+    pub shadow_bias: f32,
+    pub baked: bool,
+    pub static_light: bool,
+}
+
+impl SceneLight {
+    pub fn new_point(id: u32, pos: Vec3, color: Vec3, intensity: f32, radius: f32) -> Self {
+        SceneLight {
+            id, light_type: LightType::Point, position: pos,
+            direction: Vec3::NEG_Y, color, intensity, radius,
+            inner_cone_deg: 30.0, outer_cone_deg: 45.0,
+            cast_shadows: true, shadow_bias: 0.005,
+            baked: false, static_light: false,
+        }
+    }
+
+    pub fn new_directional(id: u32, dir: Vec3, color: Vec3, intensity: f32) -> Self {
+        SceneLight {
+            id, light_type: LightType::Directional, position: Vec3::ZERO,
+            direction: dir.normalize(), color, intensity, radius: f32::INFINITY,
+            inner_cone_deg: 0.0, outer_cone_deg: 180.0,
+            cast_shadows: true, shadow_bias: 0.002,
+            baked: false, static_light: true,
+        }
+    }
+
+    pub fn attenuation(&self, distance: f32) -> f32 {
+        match self.light_type {
+            LightType::Point | LightType::Spot => {
+                let d = distance.max(0.001);
+                (1.0 - (d / self.radius).clamp(0.0, 1.0)).powi(2)
+            },
+            LightType::Directional | LightType::Ambient | LightType::Area => 1.0,
+        }
+    }
+
+    pub fn illuminate(&self, point: Vec3, normal: Vec3) -> Vec3 {
+        match self.light_type {
+            LightType::Directional => {
+                let ndotl = normal.dot(-self.direction).max(0.0);
+                self.color * self.intensity * ndotl
+            },
+            LightType::Point => {
+                let diff = self.position - point;
+                let dist = diff.length();
+                let dir = diff / dist.max(0.001);
+                let ndotl = normal.dot(dir).max(0.0);
+                let att = self.attenuation(dist);
+                self.color * self.intensity * ndotl * att
+            },
+            _ => Vec3::ZERO,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LightmapPatch {
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub baked_color: Vec3,
+    pub direct_color: Vec3,
+    pub indirect_color: Vec3,
+}
+
+pub struct LightBaker {
+    pub lights: Vec<SceneLight>,
+    pub ambient: Vec3,
+    pub num_bounces: u32,
+}
+
+impl LightBaker {
+    pub fn new(ambient: Vec3) -> Self {
+        LightBaker { lights: Vec::new(), ambient, num_bounces: 2 }
+    }
+
+    pub fn bake_patch(&self, patch: &LightmapPatch) -> Vec3 {
+        let mut total = self.ambient;
+        for light in &self.lights {
+            total += light.illuminate(patch.position, patch.normal);
+        }
+        total
+    }
+
+    pub fn bake_patches(&self, patches: &mut Vec<LightmapPatch>) {
+        for patch in patches.iter_mut() {
+            patch.baked_color = self.bake_patch(patch);
+        }
+    }
+}
+
+// ============================================================
+// TEST FUNCTIONS
+// ============================================================
+
+#[cfg(test)]
+mod tests_map_additions {
+    use super::*;
+
+    #[test]
+    fn test_dungeon_room_area() {
+        let room = DungeonRoom::new(1, RoomShape::Rectangular, RoomTheme::Stone, 10, 8);
+        assert_eq!(room.area(), 80.0);
+    }
+
+    #[test]
+    fn test_dungeon_floor_bfs() {
+        let mut floor = DungeonFloor::new(1, 100, 100);
+        floor.add_room(DungeonRoom::new(0, RoomShape::Rectangular, RoomTheme::Stone, 5, 5));
+        floor.add_room(DungeonRoom::new(1, RoomShape::Rectangular, RoomTheme::Stone, 5, 5));
+        floor.add_room(DungeonRoom::new(2, RoomShape::Rectangular, RoomTheme::Stone, 5, 5));
+        floor.connect_rooms(0, 1);
+        floor.connect_rooms(1, 2);
+        assert_eq!(floor.bfs_distance(0, 2), Some(2));
+        assert_eq!(floor.bfs_distance(0, 0), Some(0));
+    }
+
+    #[test]
+    fn test_dungeon_generator() {
+        let params = DungeonGeneratorParams { min_rooms: 5, max_rooms: 10, ..Default::default() };
+        let mut gen = DungeonGenerator::new(params);
+        let floor = gen.generate(1);
+        assert!(floor.room_count() >= 5);
+        assert!(floor.room_count() <= 10);
+    }
+
+    #[test]
+    fn test_world_region_traversal() {
+        let plains = WorldRegion::new(1, "Greenfield", BiomeType::Plains);
+        let mountains = WorldRegion::new(2, "Stonepeaks", BiomeType::Mountains);
+        assert!(plains.traversal_cost() < mountains.traversal_cost());
+        assert!(plains.is_habitable());
+    }
+
+    #[test]
+    fn test_faction_relations() {
+        let mut f = Faction::new(1, "Kingdom of Arath", FactionType::Kingdom);
+        f.set_relation(2, 75.0);
+        assert!(f.is_allied_with(2));
+        f.set_relation(3, -80.0);
+        assert!(f.is_enemy_of(3));
+    }
+
+    #[test]
+    fn test_quest_progress() {
+        let mut q = Quest::new(1, "Kill 10 Wolves", QuestType::Bounty);
+        q.add_objective(QuestObjective { id: 0, description: "Kill wolves".to_string(), current: 7, required: 10, optional: false, complete: false });
+        assert!((q.overall_progress() - 0.7).abs() < 0.01);
+        assert!(!q.is_complete());
+    }
+
+    #[test]
+    fn test_nav_poly_contains() {
+        let mut poly = NavPoly::new(0);
+        poly.vertices = vec![
+            Vec2::new(0.0, 0.0), Vec2::new(4.0, 0.0),
+            Vec2::new(4.0, 4.0), Vec2::new(0.0, 4.0),
+        ];
+        assert!(poly.contains_point(Vec2::new(2.0, 2.0)));
+        assert!(!poly.contains_point(Vec2::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_map_editor_snap() {
+        let state = MapEditorState::new();
+        let snapped = state.snap_position(Vec2::new(1.4, 2.7));
+        assert!((snapped.x - 1.0).abs() < 0.001);
+        assert!((snapped.y - 3.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_light_attenuation() {
+        let light = SceneLight::new_point(1, Vec3::ZERO, Vec3::ONE, 100.0, 10.0);
+        let att_near = light.attenuation(1.0);
+        let att_far = light.attenuation(9.0);
+        assert!(att_near > att_far);
+    }
+
+    #[test]
+    fn test_encounter_threat() {
+        let mut enc = Encounter::new(1, "Wolf Pack", EncounterDifficulty::Medium, 5);
+        enc.enemies.push(EncounterEnemy { monster_id: 10, count: 5, level_override: None, loot_bonus: 1.0 });
+        assert_eq!(enc.total_enemy_count(), 5);
+        assert!(enc.threat_rating() > 0.0);
+    }
+}
+
+pub fn map_editor_module_version() -> &'static str { "2.5.0" }
+pub fn map_editor_features() -> &'static [&'static str] {
+    &["dungeon_gen", "world_map", "factions", "quests", "encounters", "navmesh", "lighting", "tiles"]
+}
