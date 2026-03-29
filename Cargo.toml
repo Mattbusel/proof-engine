@@ -41,6 +41,9 @@ toml  = "0.8"
 log        = "0.4"
 env_logger = "0.11"
 
+# Bitflags (used by scene_io SceneFlags)
+bitflags = "2"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
@@ -105,3 +108,7 @@ name = "sculptor"
 
 [[example]]
 name = "apotheosis"
+
+[[bin]]
+name = "proof_editor"
+path = "src/bin/proof_editor.rs"
