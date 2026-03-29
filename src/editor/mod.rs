@@ -68,6 +68,7 @@ pub mod map_editor;
 pub mod particle_system_editor;
 pub mod shader_compiler;
 pub mod loot_editor;
+pub mod world_streaming_editor;
 
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::HashMap;
