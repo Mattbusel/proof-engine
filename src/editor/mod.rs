@@ -59,6 +59,9 @@ pub mod inventory_editor;
 pub mod ability_editor;
 pub mod level_streaming_editor;
 pub mod audio_mixer_editor;
+pub mod modeling_editor;
+pub mod animation_compression;
+pub mod voxel_editor;
 
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::HashMap;
