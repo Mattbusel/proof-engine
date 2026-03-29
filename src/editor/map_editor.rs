@@ -6692,3 +6692,314 @@ impl SpawnManager {
 
 impl PartialEq for TilePos { fn eq(&self, o: &Self) -> bool { self.x==o.x && self.y==o.y } }
 impl PartialEq for PatrolState { fn eq(&self, o: &Self) -> bool { std::mem::discriminant(self) == std::mem::discriminant(o) } }
+
+// ── Map Biome & Climate Extensions ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct MapBiome {
+    pub id: u32,
+    pub name: String,
+    pub biome_type: String,
+    pub temperature_range: (f32, f32),
+    pub precipitation_mm: f32,
+    pub tile_palette: Vec<u32>,
+    pub ambient_color: [f32; 3],
+    pub fog_density: f32,
+    pub music_track: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct BiomeTransition {
+    pub from_biome: u32,
+    pub to_biome: u32,
+    pub blend_width: u32,
+    pub transition_type: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapClimateZone {
+    pub id: u32,
+    pub zone_type: String,
+    pub bounds: (i32, i32, i32, i32),
+    pub wind_speed: f32,
+    pub wind_direction: f32,
+    pub humidity: f32,
+    pub season_modifier: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapNaturalFeature {
+    pub id: u32,
+    pub feature_type: String,
+    pub position: (i32, i32),
+    pub size: (u32, u32),
+    pub name: String,
+    pub is_landmark: bool,
+    pub discovery_radius: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapSettlement {
+    pub id: u32,
+    pub name: String,
+    pub position: (i32, i32),
+    pub settlement_type: String,
+    pub population: u32,
+    pub faction: String,
+    pub trade_routes: Vec<u32>,
+    pub is_capital: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapRoadNetwork {
+    pub roads: Vec<MapRoad>,
+    pub intersections: Vec<(i32, i32)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapRoad {
+    pub id: u32,
+    pub name: String,
+    pub points: Vec<(i32, i32)>,
+    pub road_type: String,
+    pub width: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapFogOfWar {
+    pub width: u32,
+    pub height: u32,
+    pub revealed: Vec<bool>,
+    pub visible: Vec<bool>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapLevelTransition {
+    pub id: u32,
+    pub from_map: String,
+    pub to_map: String,
+    pub trigger_pos: (i32, i32),
+    pub spawn_pos: (i32, i32),
+    pub transition_type: String,
+    pub requires_key: bool,
+    pub key_item_id: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapQuestMarker {
+    pub id: u32,
+    pub quest_id: u32,
+    pub position: (i32, i32),
+    pub marker_type: String,
+    pub label: String,
+    pub visible: bool,
+    pub blinking: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapObjectiveTracker {
+    pub objectives: Vec<MapQuestMarker>,
+    pub active_quest_id: Option<u32>,
+    pub show_all: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapTeleportNetwork {
+    pub nodes: Vec<TeleportNode>,
+    pub connections: Vec<(u32, u32)>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TeleportNode {
+    pub id: u32,
+    pub name: String,
+    pub position: (i32, i32),
+    pub unlocked: bool,
+    pub cost_gold: u32,
+}
+
+// ── Impl blocks ──────────────────────────────────────────────────────────────
+
+impl MapBiome {
+    pub fn new(id: u32, name: impl Into<String>, biome_type: impl Into<String>) -> Self {
+        Self {
+            id, name: name.into(), biome_type: biome_type.into(),
+            temperature_range: (10.0, 25.0), precipitation_mm: 500.0,
+            tile_palette: Vec::new(), ambient_color: [1.0, 1.0, 1.0],
+            fog_density: 0.0, music_track: String::new(),
+        }
+    }
+    pub fn is_arctic(&self) -> bool { self.temperature_range.1 < 0.0 }
+    pub fn is_tropical(&self) -> bool { self.temperature_range.0 > 20.0 && self.precipitation_mm > 1500.0 }
+    pub fn add_tile(&mut self, tile_id: u32) { self.tile_palette.push(tile_id); }
+    pub fn set_music(&mut self, track: impl Into<String>) { self.music_track = track.into(); }
+}
+
+impl Default for MapBiome {
+    fn default() -> Self { Self::new(0, "default", "temperate") }
+}
+
+impl MapClimateZone {
+    pub fn new(id: u32, zone_type: impl Into<String>, bounds: (i32, i32, i32, i32)) -> Self {
+        Self { id, zone_type: zone_type.into(), bounds, wind_speed: 5.0, wind_direction: 0.0, humidity: 0.5, season_modifier: 1.0 }
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.bounds.0 && x <= self.bounds.2 && y >= self.bounds.1 && y <= self.bounds.3
+    }
+    pub fn area(&self) -> i64 {
+        (self.bounds.2 - self.bounds.0).abs() as i64 * (self.bounds.3 - self.bounds.1).abs() as i64
+    }
+}
+
+impl Default for MapClimateZone {
+    fn default() -> Self { Self::new(0, "temperate", (0, 0, 100, 100)) }
+}
+
+impl MapNaturalFeature {
+    pub fn new(id: u32, feature_type: impl Into<String>, position: (i32, i32)) -> Self {
+        Self { id, feature_type: feature_type.into(), position, size: (1, 1), name: String::new(), is_landmark: false, discovery_radius: 5 }
+    }
+    pub fn named(mut self, name: impl Into<String>) -> Self { self.name = name.into(); self }
+    pub fn as_landmark(mut self) -> Self { self.is_landmark = true; self }
+}
+
+impl MapSettlement {
+    pub fn new(id: u32, name: impl Into<String>, position: (i32, i32), settlement_type: impl Into<String>) -> Self {
+        Self { id, name: name.into(), position, settlement_type: settlement_type.into(), population: 0, faction: String::new(), trade_routes: Vec::new(), is_capital: false }
+    }
+    pub fn with_population(mut self, pop: u32) -> Self { self.population = pop; self }
+    pub fn add_trade_route(&mut self, to_id: u32) { if !self.trade_routes.contains(&to_id) { self.trade_routes.push(to_id); } }
+    pub fn is_city(&self) -> bool { self.population >= 5000 }
+    pub fn is_village(&self) -> bool { self.population < 500 }
+}
+
+impl MapRoadNetwork {
+    pub fn new() -> Self { Self { roads: Vec::new(), intersections: Vec::new() } }
+    pub fn add_road(&mut self, road: MapRoad) { self.roads.push(road); }
+    pub fn total_length(&self) -> usize { self.roads.iter().map(|r| r.points.len().saturating_sub(1)).sum() }
+    pub fn road_count(&self) -> usize { self.roads.len() }
+}
+
+impl Default for MapRoadNetwork {
+    fn default() -> Self { Self::new() }
+}
+
+impl MapFogOfWar {
+    pub fn new(width: u32, height: u32) -> Self {
+        let size = (width * height) as usize;
+        Self { width, height, revealed: vec![false; size], visible: vec![false; size] }
+    }
+    pub fn reveal(&mut self, x: u32, y: u32) {
+        if let Some(idx) = self.idx(x, y) { self.revealed[idx] = true; self.visible[idx] = true; }
+    }
+    pub fn hide(&mut self, x: u32, y: u32) {
+        if let Some(idx) = self.idx(x, y) { self.visible[idx] = false; }
+    }
+    pub fn is_revealed(&self, x: u32, y: u32) -> bool { self.idx(x, y).map(|i| self.revealed[i]).unwrap_or(false) }
+    pub fn is_visible(&self, x: u32, y: u32) -> bool { self.idx(x, y).map(|i| self.visible[i]).unwrap_or(false) }
+    fn idx(&self, x: u32, y: u32) -> Option<usize> {
+        if x < self.width && y < self.height { Some((y * self.width + x) as usize) } else { None }
+    }
+    pub fn reveal_radius(&mut self, cx: i32, cy: i32, radius: i32) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx*dx + dy*dy <= radius*radius {
+                    let x = cx + dx; let y = cy + dy;
+                    if x >= 0 && y >= 0 { self.reveal(x as u32, y as u32); }
+                }
+            }
+        }
+    }
+    pub fn revealed_percent(&self) -> f32 {
+        let total = self.revealed.len();
+        if total == 0 { return 0.0; }
+        self.revealed.iter().filter(|&&r| r).count() as f32 / total as f32 * 100.0
+    }
+}
+
+impl MapLevelTransition {
+    pub fn new(id: u32, from_map: impl Into<String>, to_map: impl Into<String>, trigger_pos: (i32, i32), spawn_pos: (i32, i32)) -> Self {
+        Self { id, from_map: from_map.into(), to_map: to_map.into(), trigger_pos, spawn_pos, transition_type: "door".into(), requires_key: false, key_item_id: 0 }
+    }
+    pub fn locked(mut self, key_id: u32) -> Self { self.requires_key = true; self.key_item_id = key_id; self }
+}
+
+impl MapObjectiveTracker {
+    pub fn new() -> Self { Self { objectives: Vec::new(), active_quest_id: None, show_all: false } }
+    pub fn add_objective(&mut self, marker: MapQuestMarker) { self.objectives.push(marker); }
+    pub fn set_active_quest(&mut self, quest_id: u32) { self.active_quest_id = Some(quest_id); }
+    pub fn visible_objectives(&self) -> Vec<&MapQuestMarker> {
+        self.objectives.iter().filter(|o| o.visible && (self.show_all || self.active_quest_id == Some(o.quest_id))).collect()
+    }
+    pub fn complete_objective(&mut self, id: u32) { self.objectives.retain(|o| o.id != id); }
+}
+
+impl Default for MapObjectiveTracker {
+    fn default() -> Self { Self::new() }
+}
+
+impl MapTeleportNetwork {
+    pub fn new() -> Self { Self { nodes: Vec::new(), connections: Vec::new(), enabled: true } }
+    pub fn add_node(&mut self, node: TeleportNode) { self.nodes.push(node); }
+    pub fn connect(&mut self, a: u32, b: u32) {
+        if !self.connections.contains(&(a, b)) && !self.connections.contains(&(b, a)) {
+            self.connections.push((a, b));
+        }
+    }
+    pub fn unlocked_nodes(&self) -> Vec<&TeleportNode> { self.nodes.iter().filter(|n| n.unlocked).collect() }
+    pub fn can_travel(&self, from: u32, to: u32) -> bool {
+        self.enabled && self.connections.iter().any(|&(a, b)| (a == from && b == to) || (a == to && b == from))
+    }
+}
+
+impl Default for MapTeleportNetwork {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Map system constants ─────────────────────────────────────────────────────
+pub const MAP_MAX_BIOMES: usize = 64;
+pub const MAP_MAX_SETTLEMENTS: usize = 256;
+pub const MAP_MAX_TRANSITIONS: usize = 128;
+pub const MAP_FOW_CHUNK_SIZE: u32 = 16;
+pub const MAP_DEFAULT_DISCOVERY_RADIUS: u32 = 8;
+pub const MAP_TELEPORT_BASE_COST: u32 = 50;
+
+pub fn map_system_info() -> &'static str {
+    "MapSystem v2.0 — biomes, climate zones, fog-of-war, settlements, teleport network"
+}
+
+
+// ── Additional map utility types ─────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct MapEventTrigger {
+    pub id: u32,
+    pub position: (i32, i32),
+    pub radius: u32,
+    pub event_id: String,
+    pub one_shot: bool,
+    pub triggered: bool,
+}
+
+impl MapEventTrigger {
+    pub fn new(id: u32, position: (i32, i32), radius: u32, event_id: impl Into<String>) -> Self {
+        Self { id, position, radius, event_id: event_id.into(), one_shot: true, triggered: false }
+    }
+    pub fn in_range(&self, x: i32, y: i32) -> bool {
+        let dx = x - self.position.0; let dy = y - self.position.1;
+        (dx*dx + dy*dy) as u32 <= self.radius * self.radius
+    }
+    pub fn trigger(&mut self) -> bool {
+        if self.triggered && self.one_shot { return false; }
+        self.triggered = true; true
+    }
+    pub fn reset(&mut self) { self.triggered = false; }
+}
+
+pub const MAP_MAX_EVENT_TRIGGERS: usize = 512;
+pub const MAP_CHUNK_LOAD_RADIUS: u32 = 3;
+pub const MAP_CHUNK_UNLOAD_RADIUS: u32 = 5;
+pub const MAP_MIN_ROAD_WIDTH: u32 = 1;
+pub const MAP_MAX_ROAD_WIDTH: u32 = 8;
+

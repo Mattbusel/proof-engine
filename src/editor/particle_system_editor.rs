@@ -5450,3 +5450,1553 @@ impl ParticleConfig {
         Self { max_total_particles: 500000, use_gpu_simulation: true, lod_bias: 0.5, ..Default::default() }
     }
 }
+
+// ── Particle Attractor & Force Field System ───────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleAttractor {
+    pub id: u32,
+    pub position: Vec3,
+    pub strength: f32,
+    pub radius: f32,
+    pub attractor_type: AttractorType,
+    pub falloff: f32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttractorType {
+    Attract,
+    Repel,
+    Vortex,
+    Drag,
+    Gravity,
+    Wind,
+}
+
+impl ParticleAttractor {
+    pub fn new(id: u32, position: Vec3, strength: f32, radius: f32, attractor_type: AttractorType) -> Self {
+        Self { id, position, strength, radius, attractor_type, falloff: 2.0, enabled: true }
+    }
+    pub fn force_at(&self, particle_pos: Vec3) -> Vec3 {
+        let delta = self.position - particle_pos;
+        let dist = delta.length();
+        if dist > self.radius || dist < 1e-5 { return Vec3::ZERO; }
+        let factor = (1.0 - dist / self.radius).powf(self.falloff);
+        match self.attractor_type {
+            AttractorType::Attract => delta.normalize() * self.strength * factor,
+            AttractorType::Repel => -delta.normalize() * self.strength * factor,
+            AttractorType::Drag => Vec3::ZERO,
+            AttractorType::Vortex => {
+                let perp = Vec3::new(-delta.z, 0.0, delta.x).normalize();
+                perp * self.strength * factor
+            }
+            _ => delta.normalize() * self.strength * factor,
+        }
+    }
+    pub fn in_range(&self, pos: Vec3) -> bool { (self.position - pos).length() <= self.radius }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleForceField {
+    pub id: u32,
+    pub name: String,
+    pub bounds: (Vec3, Vec3),
+    pub force: Vec3,
+    pub field_type: String,
+    pub enabled: bool,
+    pub turbulence: f32,
+}
+
+impl ParticleForceField {
+    pub fn new(id: u32, name: impl Into<String>, min: Vec3, max: Vec3, force: Vec3) -> Self {
+        Self { id, name: name.into(), bounds: (min, max), force, field_type: "constant".into(), enabled: true, turbulence: 0.0 }
+    }
+    pub fn contains(&self, pos: Vec3) -> bool {
+        pos.x >= self.bounds.0.x && pos.x <= self.bounds.1.x &&
+        pos.y >= self.bounds.0.y && pos.y <= self.bounds.1.y &&
+        pos.z >= self.bounds.0.z && pos.z <= self.bounds.1.z
+    }
+    pub fn apply(&self, pos: Vec3) -> Vec3 {
+        if !self.enabled || !self.contains(pos) { Vec3::ZERO } else { self.force }
+    }
+}
+
+// ── Particle Trail System ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleTrail {
+    pub id: u32,
+    pub parent_particle_id: u32,
+    pub positions: VecDeque<Vec3>,
+    pub max_length: usize,
+    pub color_start: Vec4,
+    pub color_end: Vec4,
+    pub width_start: f32,
+    pub width_end: f32,
+    pub fade_time: f32,
+    pub emit_rate: f32,
+    pub enabled: bool,
+}
+
+impl ParticleTrail {
+    pub fn new(id: u32, parent_id: u32, max_length: usize) -> Self {
+        Self { id, parent_particle_id: parent_id, positions: VecDeque::new(), max_length, color_start: Vec4::ONE, color_end: Vec4::new(1.0, 1.0, 1.0, 0.0), width_start: 0.1, width_end: 0.01, fade_time: 1.0, emit_rate: 30.0, enabled: true }
+    }
+    pub fn update(&mut self, new_pos: Vec3) {
+        self.positions.push_back(new_pos);
+        while self.positions.len() > self.max_length { self.positions.pop_front(); }
+    }
+    pub fn length(&self) -> usize { self.positions.len() }
+    pub fn is_empty(&self) -> bool { self.positions.is_empty() }
+    pub fn clear(&mut self) { self.positions.clear(); }
+    pub fn last_pos(&self) -> Option<Vec3> { self.positions.back().copied() }
+}
+
+// ── Particle Collision System ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleCollider {
+    pub id: u32,
+    pub collider_type: ColliderShape,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub restitution: f32,
+    pub friction: f32,
+    pub kill_on_hit: bool,
+    pub spawn_on_hit: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColliderShape {
+    Sphere { radius: f32 },
+    Box { half_extents: Vec3 },
+    Plane { normal: Vec3, d: f32 },
+    Cylinder { radius: f32, height: f32 },
+}
+
+impl ParticleCollider {
+    pub fn sphere(id: u32, pos: Vec3, radius: f32) -> Self {
+        Self { id, collider_type: ColliderShape::Sphere { radius }, position: pos, rotation: Quat::IDENTITY, restitution: 0.5, friction: 0.3, kill_on_hit: false, spawn_on_hit: None }
+    }
+    pub fn plane(id: u32, normal: Vec3, d: f32) -> Self {
+        Self { id, collider_type: ColliderShape::Plane { normal, d }, position: Vec3::ZERO, rotation: Quat::IDENTITY, restitution: 0.3, friction: 0.5, kill_on_hit: false, spawn_on_hit: None }
+    }
+    pub fn test_sphere(&self, center: Vec3, radius: f32) -> bool {
+        match &self.collider_type {
+            ColliderShape::Sphere { radius: r } => (center - self.position).length() < r + radius,
+            ColliderShape::Plane { normal, d } => normal.dot(center) + d < radius,
+            ColliderShape::Box { half_extents } => {
+                let local = center - self.position;
+                local.x.abs() < half_extents.x + radius && local.y.abs() < half_extents.y + radius && local.z.abs() < half_extents.z + radius
+            }
+            _ => false,
+        }
+    }
+}
+
+// ── Particle LOD System ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleLod {
+    pub lod_level: u32,
+    pub max_distance: f32,
+    pub particle_count_mult: f32,
+    pub update_rate_hz: f32,
+    pub disable_effects: Vec<String>,
+}
+
+impl ParticleLod {
+    pub fn new(level: u32, max_dist: f32, count_mult: f32, update_rate: f32) -> Self {
+        Self { lod_level: level, max_distance: max_dist, particle_count_mult: count_mult, update_rate_hz: update_rate, disable_effects: Vec::new() }
+    }
+    pub fn disable_effect(mut self, effect: impl Into<String>) -> Self { self.disable_effects.push(effect.into()); self }
+    pub fn is_active_at_distance(&self, dist: f32) -> bool { dist <= self.max_distance }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleLodController {
+    pub lods: Vec<ParticleLod>,
+    pub camera_pos: Vec3,
+    pub current_lod: u32,
+}
+
+impl ParticleLodController {
+    pub fn new() -> Self {
+        let lods = vec![
+            ParticleLod::new(0, 10.0, 1.0, 60.0),
+            ParticleLod::new(1, 30.0, 0.5, 30.0),
+            ParticleLod::new(2, 80.0, 0.2, 15.0),
+            ParticleLod::new(3, 200.0, 0.05, 5.0),
+        ];
+        Self { lods, camera_pos: Vec3::ZERO, current_lod: 0 }
+    }
+    pub fn update_lod(&mut self, emitter_pos: Vec3) {
+        let dist = (emitter_pos - self.camera_pos).length();
+        self.current_lod = self.lods.iter().enumerate()
+            .find(|(_, lod)| lod.is_active_at_distance(dist))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(self.lods.len() as u32 - 1);
+    }
+    pub fn count_multiplier(&self) -> f32 {
+        self.lods.get(self.current_lod as usize).map(|l| l.particle_count_mult).unwrap_or(0.01)
+    }
+    pub fn update_rate(&self) -> f32 {
+        self.lods.get(self.current_lod as usize).map(|l| l.update_rate_hz).unwrap_or(1.0)
+    }
+}
+
+impl Default for ParticleLodController {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Spawner Shapes ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SpawnerShape {
+    pub shape_type: SpawnerShapeType,
+    pub scale: Vec3,
+    pub rotation: Quat,
+    pub surface_only: bool,
+    pub randomize_direction: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpawnerShapeType {
+    Point,
+    Sphere,
+    Hemisphere,
+    Box,
+    Circle,
+    Edge,
+    Cone,
+    Mesh,
+}
+
+impl SpawnerShape {
+    pub fn point() -> Self { Self { shape_type: SpawnerShapeType::Point, scale: Vec3::ONE, rotation: Quat::IDENTITY, surface_only: false, randomize_direction: true } }
+    pub fn sphere(radius: f32) -> Self { Self { shape_type: SpawnerShapeType::Sphere, scale: Vec3::splat(radius), rotation: Quat::IDENTITY, surface_only: false, randomize_direction: true } }
+    pub fn cone(angle: f32, height: f32) -> Self { Self { shape_type: SpawnerShapeType::Cone, scale: Vec3::new(angle, height, angle), rotation: Quat::IDENTITY, surface_only: false, randomize_direction: true } }
+    pub fn bounding_volume(&self) -> f32 { self.scale.x * self.scale.y * self.scale.z }
+    pub fn is_volumetric(&self) -> bool { !self.surface_only }
+}
+
+// ── Particle System Presets ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticlePreset {
+    pub id: u32,
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub thumbnail_id: u32,
+    pub is_builtin: bool,
+}
+
+impl ParticlePreset {
+    pub fn new(id: u32, name: impl Into<String>, category: impl Into<String>) -> Self {
+        Self { id, name: name.into(), category: category.into(), description: String::new(), tags: Vec::new(), thumbnail_id: 0, is_builtin: false }
+    }
+    pub fn builtin(mut self) -> Self { self.is_builtin = true; self }
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self { self.tags.push(tag.into()); self }
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self { self.description = desc.into(); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticlePresetLibrary {
+    pub presets: Vec<ParticlePreset>,
+    pub favorites: HashSet<u32>,
+    pub recently_used: VecDeque<u32>,
+}
+
+impl ParticlePresetLibrary {
+    pub fn new() -> Self { Self { presets: Vec::new(), favorites: HashSet::new(), recently_used: VecDeque::new() } }
+    pub fn add(&mut self, preset: ParticlePreset) { self.presets.push(preset); }
+    pub fn find_by_name(&self, name: &str) -> Option<&ParticlePreset> { self.presets.iter().find(|p| p.name == name) }
+    pub fn find_by_category(&self, cat: &str) -> Vec<&ParticlePreset> { self.presets.iter().filter(|p| p.category == cat).collect() }
+    pub fn find_by_tag(&self, tag: &str) -> Vec<&ParticlePreset> { self.presets.iter().filter(|p| p.tags.contains(&tag.to_string())).collect() }
+    pub fn favorite(&mut self, id: u32) { self.favorites.insert(id); }
+    pub fn unfavorite(&mut self, id: u32) { self.favorites.remove(&id); }
+    pub fn use_preset(&mut self, id: u32) {
+        self.recently_used.retain(|&r| r != id);
+        self.recently_used.push_front(id);
+        if self.recently_used.len() > 20 { self.recently_used.pop_back(); }
+    }
+    pub fn builtin_count(&self) -> usize { self.presets.iter().filter(|p| p.is_builtin).count() }
+    pub fn total(&self) -> usize { self.presets.len() }
+}
+
+impl Default for ParticlePresetLibrary {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Timeline Keyframe System ────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleKeyframe<T: Clone> {
+    pub time: f32,
+    pub value: T,
+    pub interpolation: InterpolationType,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InterpolationType { Linear, Step, Smooth, Cubic }
+
+impl<T: Clone> ParticleKeyframe<T> {
+    pub fn new(time: f32, value: T) -> Self { Self { time, value, interpolation: InterpolationType::Linear } }
+    pub fn stepped(time: f32, value: T) -> Self { Self { time, value, interpolation: InterpolationType::Step } }
+}
+
+#[derive(Clone, Debug)]
+pub struct FloatCurveEx {
+    pub keyframes: Vec<ParticleKeyframe<f32>>,
+    pub name: String,
+}
+
+impl FloatCurveEx {
+    pub fn new(name: impl Into<String>) -> Self { Self { keyframes: Vec::new(), name: name.into() } }
+    pub fn constant(name: impl Into<String>, value: f32) -> Self {
+        let mut c = Self::new(name); c.add_key(0.0, value); c
+    }
+    pub fn add_key(&mut self, time: f32, value: f32) { self.keyframes.push(ParticleKeyframe::new(time, value)); self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal)); }
+    pub fn evaluate(&self, t: f32) -> f32 {
+        if self.keyframes.is_empty() { return 0.0; }
+        if t <= self.keyframes[0].time { return self.keyframes[0].value; }
+        let last = self.keyframes.last().unwrap();
+        if t >= last.time { return last.value; }
+        let idx = self.keyframes.partition_point(|k| k.time <= t) - 1;
+        let a = &self.keyframes[idx];
+        let b = &self.keyframes[idx + 1];
+        let alpha = (t - a.time) / (b.time - a.time);
+        match a.interpolation {
+            InterpolationType::Step => a.value,
+            InterpolationType::Smooth => { let s = alpha * alpha * (3.0 - 2.0 * alpha); a.value + (b.value - a.value) * s }
+            _ => a.value + (b.value - a.value) * alpha,
+        }
+    }
+    pub fn key_count(&self) -> usize { self.keyframes.len() }
+    pub fn duration(&self) -> f32 { self.keyframes.last().map(|k| k.time).unwrap_or(0.0) }
+}
+
+// ── Particle Statistics ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleStats {
+    pub active_particles: u32,
+    pub particles_spawned_this_frame: u32,
+    pub particles_killed_this_frame: u32,
+    pub active_emitters: u32,
+    pub culled_emitters: u32,
+    pub draw_calls: u32,
+    pub vertices_rendered: u32,
+    pub simulation_time_ms: f32,
+    pub render_time_ms: f32,
+    pub peak_particles: u32,
+    pub frame_count: u64,
+}
+
+impl ParticleStats {
+    pub fn new() -> Self { Self::default() }
+    pub fn begin_frame(&mut self) {
+        self.particles_spawned_this_frame = 0;
+        self.particles_killed_this_frame = 0;
+        self.draw_calls = 0;
+        self.vertices_rendered = 0;
+        self.frame_count += 1;
+    }
+    pub fn record_spawn(&mut self, n: u32) { self.particles_spawned_this_frame += n; self.active_particles += n; if self.active_particles > self.peak_particles { self.peak_particles = self.active_particles; } }
+    pub fn record_kill(&mut self, n: u32) { self.particles_killed_this_frame += n; self.active_particles = self.active_particles.saturating_sub(n); }
+    pub fn record_draw_call(&mut self, verts: u32) { self.draw_calls += 1; self.vertices_rendered += verts; }
+    pub fn cpu_ms_total(&self) -> f32 { self.simulation_time_ms + self.render_time_ms }
+}
+
+// ── Particle System Constants ─────────────────────────────────────────────────
+
+pub const PARTICLE_MAX_EMITTERS: usize = 256;
+pub const PARTICLE_MAX_PER_EMITTER: u32 = 50000;
+pub const PARTICLE_MAX_TOTAL: u32 = 1_000_000;
+pub const PARTICLE_MAX_ATTRACTORS: usize = 32;
+pub const PARTICLE_MAX_COLLIDERS: usize = 64;
+pub const PARTICLE_LOD_LEVELS: usize = 4;
+pub const PARTICLE_TRAIL_MAX_LENGTH: usize = 256;
+pub const PARTICLE_CURVE_MAX_KEYS: usize = 64;
+pub const PARTICLE_PRESET_BUILTIN_COUNT: usize = 32;
+pub const PARTICLE_MAX_FORCE_FIELDS: usize = 16;
+
+pub fn particle_system_info() -> &'static str {
+    "ParticleSystem v2.0 — emitters, trails, LOD, attractors, force fields, presets, curves"
+}
+
+
+// ── Particle Renderer ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleRenderBatch {
+    pub emitter_id: u32,
+    pub material_id: u32,
+    pub blend_mode: BlendMode,
+    pub positions: Vec<Vec3>,
+    pub colors: Vec<Vec4>,
+    pub sizes: Vec<f32>,
+    pub rotations: Vec<f32>,
+    pub particle_count: u32,
+    pub sort_key: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlendMode { Additive, Alpha, Multiply, Screen, Premultiplied }
+
+impl ParticleRenderBatch {
+    pub fn new(emitter_id: u32, material_id: u32) -> Self {
+        Self { emitter_id, material_id, blend_mode: BlendMode::Alpha, positions: Vec::new(), colors: Vec::new(), sizes: Vec::new(), rotations: Vec::new(), particle_count: 0, sort_key: 0.0 }
+    }
+    pub fn add_particle(&mut self, pos: Vec3, color: Vec4, size: f32, rotation: f32) {
+        self.positions.push(pos); self.colors.push(color); self.sizes.push(size); self.rotations.push(rotation);
+        self.particle_count += 1;
+    }
+    pub fn clear(&mut self) { self.positions.clear(); self.colors.clear(); self.sizes.clear(); self.rotations.clear(); self.particle_count = 0; }
+    pub fn is_empty(&self) -> bool { self.particle_count == 0 }
+    pub fn vertex_count(&self) -> u32 { self.particle_count * 4 }
+    pub fn index_count(&self) -> u32 { self.particle_count * 6 }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleRendererEx {
+    pub batches: Vec<ParticleRenderBatch>,
+    pub sort_transparent: bool,
+    pub camera_pos: Vec3,
+    pub camera_forward: Vec3,
+    pub draw_call_count: u32,
+}
+
+impl ParticleRendererEx {
+    pub fn new() -> Self { Self { batches: Vec::new(), sort_transparent: true, camera_pos: Vec3::ZERO, camera_forward: Vec3::NEG_Z, draw_call_count: 0 } }
+    pub fn add_batch(&mut self, batch: ParticleRenderBatch) { self.batches.push(batch); }
+    pub fn clear(&mut self) { self.batches.clear(); self.draw_call_count = 0; }
+    pub fn sort_batches(&mut self) {
+        if self.sort_transparent { self.batches.sort_by(|a, b| b.sort_key.partial_cmp(&a.sort_key).unwrap_or(std::cmp::Ordering::Equal)); }
+    }
+    pub fn total_particles(&self) -> u32 { self.batches.iter().map(|b| b.particle_count).sum() }
+    pub fn batch_count(&self) -> usize { self.batches.len() }
+    pub fn set_camera(&mut self, pos: Vec3, forward: Vec3) { self.camera_pos = pos; self.camera_forward = forward; }
+}
+
+impl Default for ParticleRendererEx {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Spawner Pool ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticlePoolEx {
+    pub capacity: u32,
+    pub free_indices: Vec<u32>,
+    pub used_count: u32,
+    pub peak_used: u32,
+    pub recycle_count: u64,
+}
+
+impl ParticlePoolEx {
+    pub fn new(capacity: u32) -> Self {
+        let free_indices = (0..capacity).rev().collect();
+        Self { capacity, free_indices, used_count: 0, peak_used: 0, recycle_count: 0 }
+    }
+    pub fn allocate(&mut self) -> Option<u32> {
+        let idx = self.free_indices.pop()?;
+        self.used_count += 1;
+        if self.used_count > self.peak_used { self.peak_used = self.used_count; }
+        Some(idx)
+    }
+    pub fn free(&mut self, idx: u32) {
+        if idx < self.capacity { self.free_indices.push(idx); self.used_count = self.used_count.saturating_sub(1); self.recycle_count += 1; }
+    }
+    pub fn available(&self) -> u32 { self.free_indices.len() as u32 }
+    pub fn is_full(&self) -> bool { self.free_indices.is_empty() }
+    pub fn utilization(&self) -> f32 { if self.capacity == 0 { 0.0 } else { self.used_count as f32 / self.capacity as f32 } }
+    pub fn reset(&mut self) { self.free_indices = (0..self.capacity).rev().collect(); self.used_count = 0; }
+}
+
+// ── Particle Effect Asset ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleEffectAssetEx {
+    pub id: u32,
+    pub name: String,
+    pub file_path: String,
+    pub version: u32,
+    pub author: String,
+    pub tags: Vec<String>,
+    pub duration_secs: f32,
+    pub is_looping: bool,
+    pub peak_particle_count: u32,
+    pub texture_ids: Vec<u32>,
+    pub emitter_count: u32,
+    pub created_at: u64,
+    pub modified_at: u64,
+}
+
+impl ParticleEffectAssetEx {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), file_path: String::new(), version: 1, author: String::new(), tags: Vec::new(), duration_secs: 2.0, is_looping: false, peak_particle_count: 0, texture_ids: Vec::new(), emitter_count: 0, created_at: 0, modified_at: 0 }
+    }
+    pub fn with_path(mut self, path: impl Into<String>) -> Self { self.file_path = path.into(); self }
+    pub fn looping(mut self) -> Self { self.is_looping = true; self }
+    pub fn add_tag(&mut self, tag: impl Into<String>) { self.tags.push(tag.into()); }
+    pub fn add_texture(&mut self, id: u32) { self.texture_ids.push(id); }
+    pub fn is_short(&self) -> bool { self.duration_secs < 1.0 }
+    pub fn is_long(&self) -> bool { self.duration_secs > 10.0 }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleAssetLibrary {
+    pub assets: HashMap<u32, ParticleEffectAssetEx>,
+    pub next_id: u32,
+    pub search_index: HashMap<String, Vec<u32>>,
+}
+
+impl ParticleAssetLibrary {
+    pub fn new() -> Self { Self { assets: HashMap::new(), next_id: 1, search_index: HashMap::new() } }
+    pub fn add(&mut self, mut asset: ParticleEffectAssetEx) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        asset.id = id;
+        for tag in &asset.tags { self.search_index.entry(tag.clone()).or_default().push(id); }
+        self.assets.insert(id, asset);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&ParticleEffectAssetEx> { self.assets.get(&id) }
+    pub fn find_by_tag(&self, tag: &str) -> Vec<&ParticleEffectAssetEx> {
+        self.search_index.get(tag).map(|ids| ids.iter().filter_map(|id| self.assets.get(id)).collect()).unwrap_or_default()
+    }
+    pub fn find_by_name(&self, name: &str) -> Option<&ParticleEffectAssetEx> { self.assets.values().find(|a| a.name == name) }
+    pub fn count(&self) -> usize { self.assets.len() }
+}
+
+impl Default for ParticleAssetLibrary {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Simulation State ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleSimState {
+    pub time: f32,
+    pub delta_time: f32,
+    pub frame: u64,
+    pub paused: bool,
+    pub time_scale: f32,
+    pub gravity: Vec3,
+    pub wind: Vec3,
+    pub random_seed: u64,
+}
+
+impl ParticleSimState {
+    pub fn new() -> Self {
+        Self { time: 0.0, delta_time: 0.016, frame: 0, paused: false, time_scale: 1.0, gravity: Vec3::new(0.0, -9.81, 0.0), wind: Vec3::ZERO, random_seed: 42 }
+    }
+    pub fn tick(&mut self, dt: f32) {
+        if self.paused { return; }
+        let scaled_dt = dt * self.time_scale;
+        self.time += scaled_dt;
+        self.delta_time = scaled_dt;
+        self.frame += 1;
+    }
+    pub fn pause(&mut self) { self.paused = true; }
+    pub fn resume(&mut self) { self.paused = false; }
+    pub fn set_time_scale(&mut self, scale: f32) { self.time_scale = scale.max(0.0); }
+    pub fn effective_gravity(&self) -> Vec3 { self.gravity + self.wind * 0.1 }
+    pub fn is_running(&self) -> bool { !self.paused }
+}
+
+impl Default for ParticleSimState {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Debug Visualizer ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleDebugSettings {
+    pub show_bounds: bool,
+    pub show_velocity: bool,
+    pub show_force_fields: bool,
+    pub show_attractors: bool,
+    pub show_colliders: bool,
+    pub show_trail_points: bool,
+    pub show_lod_regions: bool,
+    pub show_stats_overlay: bool,
+    pub highlight_emitter_id: Option<u32>,
+    pub velocity_scale: f32,
+}
+
+impl ParticleDebugSettings {
+    pub fn new() -> Self { Self { velocity_scale: 0.1, ..Default::default() } }
+    pub fn show_all(mut self) -> Self {
+        self.show_bounds = true; self.show_velocity = true; self.show_force_fields = true;
+        self.show_attractors = true; self.show_colliders = true; self.show_trail_points = true;
+        self.show_lod_regions = true; self.show_stats_overlay = true;
+        self
+    }
+    pub fn hide_all(mut self) -> Self {
+        self.show_bounds = false; self.show_velocity = false; self.show_force_fields = false;
+        self.show_attractors = false; self.show_colliders = false; self.show_trail_points = false;
+        self.show_lod_regions = false; self.show_stats_overlay = false;
+        self
+    }
+    pub fn any_debug_active(&self) -> bool {
+        self.show_bounds || self.show_velocity || self.show_force_fields || self.show_attractors
+    }
+}
+
+// ── Particle System Manager ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleSystemManager {
+    pub active_effects: HashMap<u32, u32>,
+    pub pool: ParticlePoolEx,
+    pub sim_state: ParticleSimState,
+    pub stats: ParticleStats,
+    pub debug: ParticleDebugSettings,
+    pub lod: ParticleLodController,
+    pub renderer: ParticleRendererEx,
+    pub asset_library: ParticleAssetLibrary,
+    pub next_effect_instance: u32,
+    pub max_concurrent_effects: u32,
+}
+
+impl ParticleSystemManager {
+    pub fn new(pool_size: u32) -> Self {
+        Self {
+            active_effects: HashMap::new(),
+            pool: ParticlePoolEx::new(pool_size),
+            sim_state: ParticleSimState::new(),
+            stats: ParticleStats::new(),
+            debug: ParticleDebugSettings::new(),
+            lod: ParticleLodController::new(),
+            renderer: ParticleRendererEx::new(),
+            asset_library: ParticleAssetLibrary::new(),
+            next_effect_instance: 1,
+            max_concurrent_effects: 64,
+        }
+    }
+    pub fn spawn_effect(&mut self, asset_id: u32, _position: Vec3) -> Option<u32> {
+        if self.active_effects.len() >= self.max_concurrent_effects as usize { return None; }
+        let instance_id = self.next_effect_instance; self.next_effect_instance += 1;
+        self.active_effects.insert(instance_id, asset_id);
+        Some(instance_id)
+    }
+    pub fn kill_effect(&mut self, instance_id: u32) -> bool { self.active_effects.remove(&instance_id).is_some() }
+    pub fn kill_all(&mut self) { self.active_effects.clear(); }
+    pub fn tick(&mut self, dt: f32) { self.sim_state.tick(dt); self.stats.begin_frame(); }
+    pub fn active_count(&self) -> usize { self.active_effects.len() }
+    pub fn pause(&mut self) { self.sim_state.pause(); }
+    pub fn resume(&mut self) { self.sim_state.resume(); }
+    pub fn pool_utilization(&self) -> f32 { self.pool.utilization() }
+    pub fn is_at_capacity(&self) -> bool { self.active_effects.len() >= self.max_concurrent_effects as usize }
+}
+
+impl Default for ParticleSystemManager {
+    fn default() -> Self { Self::new(100_000) }
+}
+
+// ── Additional helpers ────────────────────────────────────────────────────────
+
+pub fn lerp_color(a: Vec4, b: Vec4, t: f32) -> Vec4 { a + (b - a) * t.clamp(0.0, 1.0) }
+pub fn lerp_size(start: f32, end: f32, t: f32) -> f32 { start + (end - start) * t.clamp(0.0, 1.0) }
+pub fn fade_in_out(t: f32, fade_in: f32, fade_out: f32) -> f32 {
+    if t < fade_in { t / fade_in.max(1e-5) }
+    else if t > 1.0 - fade_out { (1.0 - t) / fade_out.max(1e-5) }
+    else { 1.0 }
+}
+pub fn billboard_matrix(pos: Vec3, cam_pos: Vec3, up: Vec3) -> Mat4 {
+    let forward = (cam_pos - pos).normalize();
+    let right = up.cross(forward).normalize();
+    let actual_up = forward.cross(right);
+    Mat4::from_cols(right.extend(0.0), actual_up.extend(0.0), forward.extend(0.0), pos.extend(1.0))
+}
+pub fn velocity_from_angle(angle_deg: f32, speed: f32) -> Vec3 {
+    let rad = angle_deg.to_radians();
+    Vec3::new(rad.cos() * speed, 0.0, rad.sin() * speed)
+}
+pub fn random_on_sphere(u: f32, v: f32) -> Vec3 {
+    let theta = 2.0 * std::f32::consts::PI * u;
+    let phi = (1.0 - 2.0 * v).acos();
+    Vec3::new(phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin())
+}
+pub fn random_in_sphere(u: f32, v: f32, w: f32) -> Vec3 {
+    random_on_sphere(u, v) * w.cbrt()
+}
+pub fn particle_system_default_gravity() -> Vec3 { Vec3::new(0.0, -9.81, 0.0) }
+pub fn blend_mode_name(mode: &BlendMode) -> &'static str {
+    match mode { BlendMode::Additive => "Additive", BlendMode::Alpha => "Alpha", BlendMode::Multiply => "Multiply", BlendMode::Screen => "Screen", BlendMode::Premultiplied => "Premultiplied" }
+}
+
+
+// ── Particle Noise Field ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct NoiseField {
+    pub frequency: f32,
+    pub amplitude: f32,
+    pub octaves: u32,
+    pub lacunarity: f32,
+    pub persistence: f32,
+    pub offset: Vec3,
+    pub scroll_speed: Vec3,
+    pub enabled: bool,
+}
+
+impl NoiseField {
+    pub fn new(frequency: f32, amplitude: f32) -> Self {
+        Self { frequency, amplitude, octaves: 4, lacunarity: 2.0, persistence: 0.5, offset: Vec3::ZERO, scroll_speed: Vec3::ZERO, enabled: true }
+    }
+    pub fn sample(&self, pos: Vec3, time: f32) -> Vec3 {
+        let p = pos * self.frequency + self.offset + self.scroll_speed * time;
+        // Simple pseudo-noise using sin waves
+        let nx = (p.x * 1.1 + p.y * 0.7 + p.z * 0.3).sin() * self.amplitude;
+        let ny = (p.x * 0.3 + p.y * 1.3 + p.z * 0.9).sin() * self.amplitude;
+        let nz = (p.x * 0.7 + p.y * 0.5 + p.z * 1.1).sin() * self.amplitude;
+        Vec3::new(nx, ny, nz)
+    }
+    pub fn scroll(&mut self, dt: f32) { self.offset += self.scroll_speed * dt; }
+    pub fn set_turbulence(mut self, octaves: u32) -> Self { self.octaves = octaves; self }
+}
+
+impl Default for NoiseField {
+    fn default() -> Self { Self::new(0.5, 1.0) }
+}
+
+// ── Particle Spawn Burst ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SpawnBurst {
+    pub time: f32,
+    pub count_min: u32,
+    pub count_max: u32,
+    pub probability: f32,
+    pub triggered: bool,
+    pub cycles: u32,
+    pub cycle_interval: f32,
+    pub cycles_done: u32,
+}
+
+impl SpawnBurst {
+    pub fn new(time: f32, count: u32) -> Self {
+        Self { time, count_min: count, count_max: count, probability: 1.0, triggered: false, cycles: 1, cycle_interval: 0.0, cycles_done: 0 }
+    }
+    pub fn range(mut self, min: u32, max: u32) -> Self { self.count_min = min; self.count_max = max; self }
+    pub fn repeating(mut self, cycles: u32, interval: f32) -> Self { self.cycles = cycles; self.cycle_interval = interval; self }
+    pub fn should_trigger(&self, current_time: f32) -> bool {
+        !self.triggered && self.cycles_done < self.cycles &&
+        current_time >= self.time + self.cycles_done as f32 * self.cycle_interval
+    }
+    pub fn trigger(&mut self) {
+        self.triggered = self.cycles_done + 1 >= self.cycles;
+        self.cycles_done += 1;
+    }
+    pub fn is_done(&self) -> bool { self.cycles_done >= self.cycles }
+}
+
+// ── Particle Sub-Emitter ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SubEmitterEvent { Birth, Death, Collision, Manual }
+
+#[derive(Clone, Debug)]
+pub struct SubEmitter {
+    pub id: u32,
+    pub trigger_event: SubEmitterEvent,
+    pub emitter_asset_id: u32,
+    pub inherit_velocity: bool,
+    pub inherit_color: bool,
+    pub inherit_size: f32,
+    pub probability: f32,
+    pub cooldown: f32,
+    pub last_triggered: f32,
+}
+
+impl SubEmitter {
+    pub fn new(id: u32, event: SubEmitterEvent, asset_id: u32) -> Self {
+        Self { id, trigger_event: event, emitter_asset_id: asset_id, inherit_velocity: true, inherit_color: false, inherit_size: 1.0, probability: 1.0, cooldown: 0.0, last_triggered: -999.0 }
+    }
+    pub fn can_trigger(&self, time: f32, roll: f32) -> bool {
+        time - self.last_triggered >= self.cooldown && roll <= self.probability
+    }
+    pub fn record_trigger(&mut self, time: f32) { self.last_triggered = time; }
+}
+
+// ── Particle Texture Animation ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TextureSheetAnimation {
+    pub columns: u32,
+    pub rows: u32,
+    pub frame_count: u32,
+    pub animation_speed: f32,
+    pub loop_animation: bool,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub random_start_frame: bool,
+}
+
+impl TextureSheetAnimation {
+    pub fn new(columns: u32, rows: u32) -> Self {
+        let total = columns * rows;
+        Self { columns, rows, frame_count: total, animation_speed: 30.0, loop_animation: true, start_frame: 0, end_frame: total.saturating_sub(1), random_start_frame: false }
+    }
+    pub fn frame_at_time(&self, time: f32, lifetime: f32) -> u32 {
+        if self.frame_count == 0 { return 0; }
+        let t = if lifetime > 0.0 { time / lifetime } else { time * self.animation_speed / self.frame_count as f32 };
+        let t = if self.loop_animation { t.fract() } else { t.clamp(0.0, 1.0) };
+        let range = self.end_frame - self.start_frame + 1;
+        self.start_frame + (t * range as f32) as u32 % range
+    }
+    pub fn uv_for_frame(&self, frame: u32) -> (f32, f32, f32, f32) {
+        let frame = frame.min(self.frame_count.saturating_sub(1));
+        let col = frame % self.columns;
+        let row = frame / self.columns;
+        let w = 1.0 / self.columns as f32;
+        let h = 1.0 / self.rows as f32;
+        (col as f32 * w, row as f32 * h, w, h)
+    }
+    pub fn total_frames(&self) -> u32 { self.frame_count }
+    pub fn duration(&self) -> f32 { self.frame_count as f32 / self.animation_speed.max(1.0) }
+}
+
+impl Default for TextureSheetAnimation {
+    fn default() -> Self { Self::new(1, 1) }
+}
+
+// ── Particle Color Over Lifetime ──────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ColorOverLifetime {
+    pub gradient: Vec<(f32, Vec4)>,
+    pub mode: ColorMode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColorMode { Single, Gradient, RandomBetweenTwo, RandomColor }
+
+impl ColorOverLifetime {
+    pub fn constant(color: Vec4) -> Self { Self { gradient: vec![(0.0, color), (1.0, color)], mode: ColorMode::Single } }
+    pub fn gradient(colors: Vec<(f32, Vec4)>) -> Self { Self { gradient: colors, mode: ColorMode::Gradient } }
+    pub fn fade_out(color: Vec4) -> Self {
+        let transparent = Vec4::new(color.x, color.y, color.z, 0.0);
+        Self { gradient: vec![(0.0, color), (1.0, transparent)], mode: ColorMode::Gradient }
+    }
+    pub fn evaluate(&self, t: f32) -> Vec4 {
+        if self.gradient.is_empty() { return Vec4::ONE; }
+        if self.gradient.len() == 1 { return self.gradient[0].1; }
+        let t = t.clamp(0.0, 1.0);
+        let idx = self.gradient.partition_point(|(time, _)| *time <= t).saturating_sub(1);
+        if idx + 1 >= self.gradient.len() { return self.gradient.last().unwrap().1; }
+        let (t0, c0) = self.gradient[idx];
+        let (t1, c1) = self.gradient[idx + 1];
+        let alpha = if (t1 - t0).abs() < 1e-6 { 0.0 } else { (t - t0) / (t1 - t0) };
+        lerp_color(c0, c1, alpha)
+    }
+    pub fn add_stop(&mut self, time: f32, color: Vec4) {
+        self.gradient.push((time, color));
+        self.gradient.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+
+// ── Particle Size Over Lifetime ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SizeOverLifetime {
+    pub curve: FloatCurveEx,
+    pub base_size: f32,
+}
+
+impl SizeOverLifetime {
+    pub fn constant(size: f32) -> Self { Self { curve: FloatCurveEx::constant("size", 1.0), base_size: size } }
+    pub fn shrink(start: f32, end: f32) -> Self {
+        let mut curve = FloatCurveEx::new("size");
+        curve.add_key(0.0, start / start.max(1e-5));
+        curve.add_key(1.0, end / start.max(1e-5));
+        Self { curve, base_size: start }
+    }
+    pub fn evaluate(&self, t: f32) -> f32 { self.base_size * self.curve.evaluate(t) }
+}
+
+// ── Velocity Over Lifetime ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VelocityOverLifetime {
+    pub x_curve: FloatCurveEx,
+    pub y_curve: FloatCurveEx,
+    pub z_curve: FloatCurveEx,
+    pub space: VelocitySpace,
+    pub speed_modifier: FloatCurveEx,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum VelocitySpace { Local, World }
+
+impl VelocityOverLifetime {
+    pub fn constant(vel: Vec3) -> Self {
+        Self {
+            x_curve: FloatCurveEx::constant("vx", vel.x),
+            y_curve: FloatCurveEx::constant("vy", vel.y),
+            z_curve: FloatCurveEx::constant("vz", vel.z),
+            space: VelocitySpace::World,
+            speed_modifier: FloatCurveEx::constant("speed", 1.0),
+        }
+    }
+    pub fn evaluate(&self, t: f32) -> Vec3 {
+        let speed = self.speed_modifier.evaluate(t);
+        Vec3::new(self.x_curve.evaluate(t), self.y_curve.evaluate(t), self.z_curve.evaluate(t)) * speed
+    }
+    pub fn zero() -> Self { Self::constant(Vec3::ZERO) }
+}
+
+// ── Extended Particle Constants ───────────────────────────────────────────────
+
+pub const PARTICLE_MAX_BURST_EVENTS: usize = 8;
+pub const PARTICLE_MAX_SUB_EMITTERS: usize = 4;
+pub const PARTICLE_TEXTURE_SHEET_MAX_FRAMES: u32 = 256;
+pub const PARTICLE_COLOR_GRADIENT_MAX_STOPS: usize = 8;
+pub const PARTICLE_NOISE_OCTAVES_MAX: u32 = 8;
+pub const PARTICLE_MAX_TRAIL_EMITTERS: usize = 16;
+pub const PARTICLE_RENDERER_MAX_BATCHES: usize = 512;
+pub const PARTICLE_POOL_OVERCOMMIT: f32 = 0.1;
+pub const PARTICLE_ASSET_LIBRARY_MAX: usize = 1024;
+pub const PARTICLE_SIMULATION_STEP_MAX: f32 = 0.033;
+
+pub fn particle_feature_list() -> &'static [&'static str] {
+    &[
+        "emitters", "trails", "attractors", "force_fields",
+        "colliders", "lod", "presets", "curves", "noise",
+        "bursts", "sub_emitters", "texture_animation",
+        "color_lifetime", "size_lifetime", "velocity_lifetime",
+        "renderer", "pool", "assets", "sim_state", "debug",
+        "statistics", "spawner_shapes",
+    ]
+}
+
+pub fn particle_module_count() -> usize { particle_feature_list().len() }
+pub fn particle_system_full_info() -> String {
+    format!("ParticleSystemEditor v2.0 — {} modules, max {} total particles", particle_module_count(), PARTICLE_MAX_TOTAL)
+}
+
+
+// ── Particle Editor UI State ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleEditorState {
+    pub selected_emitter: Option<u32>,
+    pub selected_effect: Option<u32>,
+    pub viewport_camera_pos: Vec3,
+    pub viewport_camera_rot: Quat,
+    pub preview_playing: bool,
+    pub preview_time: f32,
+    pub show_grid: bool,
+    pub grid_size: f32,
+    pub background_color: Vec4,
+    pub zoom_level: f32,
+    pub panel_sizes: HashMap<String, f32>,
+    pub undo_stack: VecDeque<String>,
+    pub redo_stack: Vec<String>,
+    pub max_undo: usize,
+    pub modified: bool,
+}
+
+impl ParticleEditorState {
+    pub fn new() -> Self {
+        Self {
+            selected_emitter: None, selected_effect: None,
+            viewport_camera_pos: Vec3::new(0.0, 2.0, 5.0),
+            viewport_camera_rot: Quat::IDENTITY,
+            preview_playing: false, preview_time: 0.0,
+            show_grid: true, grid_size: 1.0,
+            background_color: Vec4::new(0.1, 0.1, 0.15, 1.0),
+            zoom_level: 1.0,
+            panel_sizes: HashMap::new(),
+            undo_stack: VecDeque::new(), redo_stack: Vec::new(),
+            max_undo: 100, modified: false,
+        }
+    }
+    pub fn play(&mut self) { self.preview_playing = true; }
+    pub fn stop(&mut self) { self.preview_playing = false; self.preview_time = 0.0; }
+    pub fn pause(&mut self) { self.preview_playing = false; }
+    pub fn tick_preview(&mut self, dt: f32) { if self.preview_playing { self.preview_time += dt; } }
+    pub fn select_emitter(&mut self, id: u32) { self.selected_emitter = Some(id); }
+    pub fn deselect(&mut self) { self.selected_emitter = None; }
+    pub fn push_undo(&mut self, desc: impl Into<String>) {
+        if self.undo_stack.len() >= self.max_undo { self.undo_stack.pop_front(); }
+        self.undo_stack.push_back(desc.into()); self.redo_stack.clear(); self.modified = true;
+    }
+    pub fn undo(&mut self) -> Option<String> { let v = self.undo_stack.pop_back()?; self.redo_stack.push(v.clone()); Some(v) }
+    pub fn redo(&mut self) -> Option<String> { let v = self.redo_stack.pop()?; self.undo_stack.push_back(v.clone()); Some(v) }
+    pub fn can_undo(&self) -> bool { !self.undo_stack.is_empty() }
+    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+    pub fn mark_saved(&mut self) { self.modified = false; }
+}
+
+impl Default for ParticleEditorState {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Effect Exporter ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleExportSettings {
+    pub format: String,
+    pub include_textures: bool,
+    pub compress: bool,
+    pub min_emit_rate: Option<f32>,
+    pub bake_curves: bool,
+    pub target_platform: String,
+    pub output_dir: String,
+}
+
+impl ParticleExportSettings {
+    pub fn new(format: impl Into<String>, output_dir: impl Into<String>) -> Self {
+        Self { format: format.into(), include_textures: true, compress: false, min_emit_rate: None, bake_curves: false, target_platform: "pc".into(), output_dir: output_dir.into() }
+    }
+    pub fn compressed(mut self) -> Self { self.compress = true; self }
+    pub fn baked(mut self) -> Self { self.bake_curves = true; self }
+    pub fn for_platform(mut self, platform: impl Into<String>) -> Self { self.target_platform = platform.into(); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleExportResult {
+    pub success: bool,
+    pub files_written: Vec<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub total_bytes: u64,
+    pub duration_ms: f32,
+}
+
+impl ParticleExportResult {
+    pub fn ok(files: Vec<String>, bytes: u64) -> Self {
+        Self { success: true, files_written: files, errors: Vec::new(), warnings: Vec::new(), total_bytes: bytes, duration_ms: 0.0 }
+    }
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self { success: false, files_written: Vec::new(), errors: vec![msg.into()], warnings: Vec::new(), total_bytes: 0, duration_ms: 0.0 }
+    }
+    pub fn add_warning(&mut self, w: impl Into<String>) { self.warnings.push(w.into()); }
+    pub fn file_count(&self) -> usize { self.files_written.len() }
+}
+
+// ── Particle System Benchmark ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleBenchmarkResult {
+    pub scenario_name: String,
+    pub particle_count: u32,
+    pub emitter_count: u32,
+    pub avg_fps: f32,
+    pub min_fps: f32,
+    pub max_fps: f32,
+    pub avg_sim_ms: f32,
+    pub avg_render_ms: f32,
+    pub frame_count: u64,
+}
+
+impl ParticleBenchmarkResult {
+    pub fn new(name: impl Into<String>) -> Self { Self { scenario_name: name.into(), min_fps: f32::MAX, ..Default::default() } }
+    pub fn record_frame(&mut self, fps: f32, sim_ms: f32, render_ms: f32) {
+        if fps < self.min_fps { self.min_fps = fps; }
+        if fps > self.max_fps { self.max_fps = fps; }
+        self.avg_fps = (self.avg_fps * self.frame_count as f32 + fps) / (self.frame_count + 1) as f32;
+        self.avg_sim_ms = (self.avg_sim_ms * self.frame_count as f32 + sim_ms) / (self.frame_count + 1) as f32;
+        self.avg_render_ms = (self.avg_render_ms * self.frame_count as f32 + render_ms) / (self.frame_count + 1) as f32;
+        self.frame_count += 1;
+    }
+    pub fn total_ms(&self) -> f32 { self.avg_sim_ms + self.avg_render_ms }
+    pub fn passed_60fps(&self) -> bool { self.avg_fps >= 60.0 }
+    pub fn grade(&self) -> &'static str {
+        if self.avg_fps >= 120.0 { "Excellent" } else if self.avg_fps >= 60.0 { "Good" } else if self.avg_fps >= 30.0 { "Acceptable" } else { "Poor" }
+    }
+}
+
+// ── Particle Simulation Scenarios ────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleScenario {
+    pub name: String,
+    pub description: String,
+    pub emitter_configs: Vec<String>,
+    pub duration_secs: f32,
+    pub expected_peak_particles: u32,
+    pub benchmark: Option<ParticleBenchmarkResult>,
+}
+
+impl ParticleScenario {
+    pub fn new(name: impl Into<String>, desc: impl Into<String>) -> Self {
+        Self { name: name.into(), description: desc.into(), emitter_configs: Vec::new(), duration_secs: 10.0, expected_peak_particles: 1000, benchmark: None }
+    }
+    pub fn add_emitter_config(&mut self, config: impl Into<String>) { self.emitter_configs.push(config.into()); }
+    pub fn set_expected_peak(&mut self, n: u32) { self.expected_peak_particles = n; }
+    pub fn has_benchmark(&self) -> bool { self.benchmark.is_some() }
+    pub fn benchmark_grade(&self) -> Option<&'static str> { self.benchmark.as_ref().map(|b| b.grade()) }
+}
+
+pub fn build_stress_test_scenarios() -> Vec<ParticleScenario> {
+    let mut s1 = ParticleScenario::new("Low Load", "Single small emitter");
+    s1.set_expected_peak(500);
+    let mut s2 = ParticleScenario::new("Medium Load", "Multiple emitters");
+    s2.set_expected_peak(10000);
+    let mut s3 = ParticleScenario::new("High Load", "Many emitters with trails");
+    s3.set_expected_peak(100000);
+    let mut s4 = ParticleScenario::new("Extreme Load", "Maximum particle count stress test");
+    s4.set_expected_peak(500000);
+    vec![s1, s2, s3, s4]
+}
+
+// ── Final particle constants ──────────────────────────────────────────────────
+
+pub const PARTICLE_EDITOR_UNDO_MAX: usize = 100;
+pub const PARTICLE_EXPORT_FORMATS: &[&str] = &["json", "binary", "xml", "custom"];
+pub const PARTICLE_BENCH_FRAME_MIN: u64 = 300;
+pub const PARTICLE_SCENARIO_MAX: usize = 16;
+pub const PARTICLE_EMITTER_GRID_DEFAULT_SIZE: f32 = 1.0;
+pub const PARTICLE_VIEWPORT_FAR_PLANE: f32 = 1000.0;
+pub const PARTICLE_VIEWPORT_NEAR_PLANE: f32 = 0.01;
+
+pub fn particle_editor_full_info() -> String {
+    format!(
+        "ParticleSystemEditor — {} feature modules, editor + runtime + benchmark pipeline",
+        particle_module_count()
+    )
+}
+
+
+// ── Particle Rotation Over Lifetime ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RotationOverLifetime {
+    pub curve: FloatCurveEx,
+    pub start_rotation: f32,
+    pub randomize_start: bool,
+    pub angular_velocity: f32,
+}
+
+impl RotationOverLifetime {
+    pub fn constant(angular_vel: f32) -> Self {
+        Self { curve: FloatCurveEx::constant("rot", angular_vel), start_rotation: 0.0, randomize_start: false, angular_velocity: angular_vel }
+    }
+    pub fn evaluate_angle(&self, t: f32, lifetime: f32) -> f32 {
+        self.start_rotation + self.curve.evaluate(t) * lifetime
+    }
+    pub fn random_start(mut self) -> Self { self.randomize_start = true; self }
+}
+
+impl Default for RotationOverLifetime {
+    fn default() -> Self { Self::constant(0.0) }
+}
+
+// ── Particle Gravity Modifier ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GravityModifier {
+    pub scale: FloatCurveEx,
+    pub direction: Vec3,
+}
+
+impl GravityModifier {
+    pub fn new(scale: f32) -> Self { Self { scale: FloatCurveEx::constant("gravity", scale), direction: Vec3::new(0.0, -1.0, 0.0) } }
+    pub fn no_gravity() -> Self { Self::new(0.0) }
+    pub fn reverse_gravity() -> Self { Self { scale: FloatCurveEx::constant("gravity", -1.0), direction: Vec3::new(0.0, -1.0, 0.0) } }
+    pub fn evaluate(&self, t: f32) -> Vec3 { self.direction * self.scale.evaluate(t) * 9.81 }
+}
+
+impl Default for GravityModifier {
+    fn default() -> Self { Self::new(1.0) }
+}
+
+// ── Particle Emission Shape Sampler ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShapeSampler {
+    pub shape: SpawnerShape,
+    pub align_to_normal: bool,
+    pub random_direction_amount: f32,
+}
+
+impl ShapeSampler {
+    pub fn new(shape: SpawnerShape) -> Self { Self { shape, align_to_normal: false, random_direction_amount: 1.0 } }
+    pub fn point_sampler() -> Self { Self::new(SpawnerShape::point()) }
+    pub fn sphere_sampler(radius: f32) -> Self { Self::new(SpawnerShape::sphere(radius)) }
+    pub fn sample_position(&self, u: f32, v: f32, w: f32) -> Vec3 {
+        match &self.shape.shape_type {
+            SpawnerShapeType::Point => Vec3::ZERO,
+            SpawnerShapeType::Sphere => random_in_sphere(u, v, w) * self.shape.scale.x,
+            SpawnerShapeType::Circle => Vec3::new((u * 2.0 - 1.0) * self.shape.scale.x, 0.0, (v * 2.0 - 1.0) * self.shape.scale.z),
+            SpawnerShapeType::Box => Vec3::new((u * 2.0 - 1.0) * self.shape.scale.x, (v * 2.0 - 1.0) * self.shape.scale.y, (w * 2.0 - 1.0) * self.shape.scale.z),
+            SpawnerShapeType::Cone => {
+                let angle = self.shape.scale.x.to_radians();
+                let h = v * self.shape.scale.y;
+                let r = h * angle.tan();
+                Vec3::new((u * 2.0 - 1.0) * r, h, (w * 2.0 - 1.0) * r)
+            }
+            _ => Vec3::ZERO,
+        }
+    }
+    pub fn sample_direction(&self, pos: Vec3) -> Vec3 {
+        match self.shape.shape_type {
+            SpawnerShapeType::Sphere => if pos.length() > 1e-6 { pos.normalize() } else { Vec3::Y },
+            SpawnerShapeType::Cone => Vec3::new(pos.x, self.shape.scale.y, pos.z).normalize(),
+            _ => Vec3::Y,
+        }
+    }
+}
+
+// ── Particle Render Mode ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParticleRenderModeEx {
+    Billboard,
+    StretchedBillboard { velocity_scale: f32, length_scale: f32 },
+    HorizontalBillboard,
+    VerticalBillboard,
+    Mesh { mesh_id: u32 },
+    Trail,
+}
+
+impl ParticleRenderModeEx {
+    pub fn is_billboard(&self) -> bool {
+        matches!(self, ParticleRenderModeEx::Billboard | ParticleRenderModeEx::HorizontalBillboard | ParticleRenderModeEx::VerticalBillboard | ParticleRenderModeEx::StretchedBillboard { .. })
+    }
+    pub fn is_mesh(&self) -> bool { matches!(self, ParticleRenderModeEx::Mesh { .. }) }
+    pub fn name(&self) -> &'static str {
+        match self {
+            ParticleRenderModeEx::Billboard => "Billboard",
+            ParticleRenderModeEx::StretchedBillboard { .. } => "Stretched Billboard",
+            ParticleRenderModeEx::HorizontalBillboard => "Horizontal Billboard",
+            ParticleRenderModeEx::VerticalBillboard => "Vertical Billboard",
+            ParticleRenderModeEx::Mesh { .. } => "Mesh",
+            ParticleRenderModeEx::Trail => "Trail",
+        }
+    }
+}
+
+// ── Particle System Profiler ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleProfilerFrame {
+    pub frame_id: u64,
+    pub sim_ms: f32,
+    pub render_ms: f32,
+    pub cull_ms: f32,
+    pub sort_ms: f32,
+    pub total_ms: f32,
+    pub particle_count: u32,
+    pub draw_calls: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleProfilerEx {
+    pub frames: VecDeque<ParticleProfilerFrame>,
+    pub max_frames: usize,
+    pub enabled: bool,
+}
+
+impl ParticleProfilerEx {
+    pub fn new(max_frames: usize) -> Self { Self { frames: VecDeque::new(), max_frames, enabled: true } }
+    pub fn record(&mut self, frame: ParticleProfilerFrame) {
+        if !self.enabled { return; }
+        if self.frames.len() >= self.max_frames { self.frames.pop_front(); }
+        self.frames.push_back(frame);
+    }
+    pub fn avg_total_ms(&self) -> f32 {
+        if self.frames.is_empty() { return 0.0; }
+        self.frames.iter().map(|f| f.total_ms).sum::<f32>() / self.frames.len() as f32
+    }
+    pub fn avg_fps(&self) -> f32 { let ms = self.avg_total_ms(); if ms < 1e-6 { 9999.0 } else { 1000.0 / ms } }
+    pub fn peak_particle_count(&self) -> u32 { self.frames.iter().map(|f| f.particle_count).max().unwrap_or(0) }
+    pub fn clear(&mut self) { self.frames.clear(); }
+    pub fn frame_count(&self) -> usize { self.frames.len() }
+}
+
+impl Default for ParticleProfilerEx {
+    fn default() -> Self { Self::new(300) }
+}
+
+// ── More Particle Constants ───────────────────────────────────────────────────
+
+pub const PARTICLE_PROFILER_FRAME_BUFFER: usize = 300;
+pub const PARTICLE_RENDER_MODE_COUNT: usize = 6;
+pub const PARTICLE_GRAVITY_MODIFIER_DEFAULT: f32 = 1.0;
+pub const PARTICLE_ROTATION_MAX_DEG_PER_SEC: f32 = 3600.0;
+pub const PARTICLE_EMISSION_RATE_MAX: f32 = 100_000.0;
+pub const PARTICLE_LIFETIME_MIN: f32 = 0.01;
+pub const PARTICLE_LIFETIME_MAX: f32 = 300.0;
+pub const PARTICLE_SIZE_MIN: f32 = 0.001;
+pub const PARTICLE_SIZE_MAX: f32 = 100.0;
+pub const PARTICLE_SPEED_MAX: f32 = 1_000.0;
+
+pub fn validate_particle_lifetime(lifetime: f32) -> f32 { lifetime.clamp(PARTICLE_LIFETIME_MIN, PARTICLE_LIFETIME_MAX) }
+pub fn validate_particle_size(size: f32) -> f32 { size.clamp(PARTICLE_SIZE_MIN, PARTICLE_SIZE_MAX) }
+pub fn validate_emission_rate(rate: f32) -> f32 { rate.clamp(0.0, PARTICLE_EMISSION_RATE_MAX) }
+pub fn validate_particle_speed(speed: f32) -> f32 { speed.clamp(-PARTICLE_SPEED_MAX, PARTICLE_SPEED_MAX) }
+pub fn is_valid_particle_config(lifetime: f32, size: f32, rate: f32) -> bool {
+    lifetime >= PARTICLE_LIFETIME_MIN && size >= PARTICLE_SIZE_MIN && rate >= 0.0
+}
+
+
+// ── Particle Spatial Hash ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleSpatialHash {
+    pub cell_size: f32,
+    pub cells: HashMap<(i32, i32, i32), Vec<u32>>,
+    pub particle_count: u32,
+}
+
+impl ParticleSpatialHash {
+    pub fn new(cell_size: f32) -> Self { Self { cell_size, cells: HashMap::new(), particle_count: 0 } }
+    fn cell_key(&self, pos: Vec3) -> (i32, i32, i32) {
+        ((pos.x / self.cell_size).floor() as i32, (pos.y / self.cell_size).floor() as i32, (pos.z / self.cell_size).floor() as i32)
+    }
+    pub fn insert(&mut self, id: u32, pos: Vec3) {
+        let key = self.cell_key(pos);
+        self.cells.entry(key).or_default().push(id);
+        self.particle_count += 1;
+    }
+    pub fn query_radius(&self, center: Vec3, radius: f32) -> Vec<u32> {
+        let r = (radius / self.cell_size).ceil() as i32 + 1;
+        let cx = (center.x / self.cell_size).floor() as i32;
+        let cy = (center.y / self.cell_size).floor() as i32;
+        let cz = (center.z / self.cell_size).floor() as i32;
+        let mut result = Vec::new();
+        for dx in -r..=r { for dy in -r..=r { for dz in -r..=r {
+            if let Some(ids) = self.cells.get(&(cx+dx, cy+dy, cz+dz)) { result.extend_from_slice(ids); }
+        }}}
+        result
+    }
+    pub fn clear(&mut self) { self.cells.clear(); self.particle_count = 0; }
+    pub fn cell_count(&self) -> usize { self.cells.len() }
+}
+
+// ── Particle Boundary Volume ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleAabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl ParticleAabb {
+    pub fn new(min: Vec3, max: Vec3) -> Self { Self { min, max } }
+    pub fn empty() -> Self { Self { min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN) } }
+    pub fn extend(&mut self, p: Vec3) {
+        self.min = Vec3::new(self.min.x.min(p.x), self.min.y.min(p.y), self.min.z.min(p.z));
+        self.max = Vec3::new(self.max.x.max(p.x), self.max.y.max(p.y), self.max.z.max(p.z));
+    }
+    pub fn center(&self) -> Vec3 { (self.min + self.max) * 0.5 }
+    pub fn size(&self) -> Vec3 { self.max - self.min }
+    pub fn volume(&self) -> f32 { let s = self.size(); s.x * s.y * s.z }
+    pub fn contains(&self, p: Vec3) -> bool { p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y && p.z >= self.min.z && p.z <= self.max.z }
+    pub fn intersects(&self, other: &Self) -> bool { self.min.x <= other.max.x && self.max.x >= other.min.x && self.min.y <= other.max.y && self.max.y >= other.min.y && self.min.z <= other.max.z && self.max.z >= other.min.z }
+    pub fn is_valid(&self) -> bool { self.min.x <= self.max.x && self.min.y <= self.max.y && self.min.z <= self.max.z }
+    pub fn expand(&self, amount: f32) -> Self { Self { min: self.min - Vec3::splat(amount), max: self.max + Vec3::splat(amount) } }
+}
+
+// ── Particle Camera Culling ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleFrustumCuller {
+    pub planes: Vec<Vec4>,
+    pub cull_count_last_frame: u32,
+    pub pass_count_last_frame: u32,
+}
+
+impl ParticleFrustumCuller {
+    pub fn new() -> Self { Self { planes: vec![Vec4::ZERO; 6], cull_count_last_frame: 0, pass_count_last_frame: 0 } }
+    pub fn set_frustum(&mut self, planes: Vec<Vec4>) { self.planes = planes; }
+    pub fn test_aabb(&self, aabb: &ParticleAabb) -> bool {
+        for plane in &self.planes {
+            let px = if plane.x > 0.0 { aabb.max.x } else { aabb.min.x };
+            let py = if plane.y > 0.0 { aabb.max.y } else { aabb.min.y };
+            let pz = if plane.z > 0.0 { aabb.max.z } else { aabb.min.z };
+            if plane.x * px + plane.y * py + plane.z * pz + plane.w < 0.0 { return false; }
+        }
+        true
+    }
+    pub fn begin_frame(&mut self) { self.cull_count_last_frame = 0; self.pass_count_last_frame = 0; }
+    pub fn record_cull(&mut self) { self.cull_count_last_frame += 1; }
+    pub fn record_pass(&mut self) { self.pass_count_last_frame += 1; }
+    pub fn cull_rate(&self) -> f32 {
+        let total = self.cull_count_last_frame + self.pass_count_last_frame;
+        if total == 0 { 0.0 } else { self.cull_count_last_frame as f32 / total as f32 }
+    }
+}
+
+impl Default for ParticleFrustumCuller {
+    fn default() -> Self { Self::new() }
+}
+
+pub const PARTICLE_SPATIAL_HASH_DEFAULT_CELL: f32 = 2.0;
+pub const PARTICLE_AABB_MARGIN: f32 = 0.1;
+pub const PARTICLE_CULL_BACKFACE: bool = false;
+pub const PARTICLE_SORT_BACK_TO_FRONT: bool = true;
+pub const PARTICLE_GPU_INSTANCING_MAX: u32 = 65536;
+
+pub fn particle_system_capabilities() -> HashMap<&'static str, bool> {
+    let mut caps = HashMap::new();
+    caps.insert("gpu_simulation", false);
+    caps.insert("compute_shaders", false);
+    caps.insert("instanced_rendering", true);
+    caps.insert("trail_rendering", true);
+    caps.insert("texture_animation", true);
+    caps.insert("lod", true);
+    caps.insert("frustum_culling", true);
+    caps.insert("spatial_hashing", true);
+    caps
+}
+
+
+// ── Particle Warm-Up & Pre-Simulation ────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleWarmUp {
+    pub duration_secs: f32,
+    pub dt: f32,
+    pub enabled: bool,
+}
+
+impl ParticleWarmUp {
+    pub fn new(duration: f32, dt: f32) -> Self { Self { duration_secs: duration, dt: dt.max(0.001), enabled: true } }
+    pub fn steps(&self) -> u32 { (self.duration_secs / self.dt) as u32 }
+    pub fn disable(mut self) -> Self { self.enabled = false; self }
+    pub fn one_second() -> Self { Self::new(1.0, 0.033) }
+}
+
+impl Default for ParticleWarmUp {
+    fn default() -> Self { Self::new(0.0, 0.033) }
+}
+
+// ── Particle Data Buffer ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleDataBuffer {
+    pub positions: Vec<Vec3>,
+    pub velocities: Vec<Vec3>,
+    pub colors: Vec<Vec4>,
+    pub sizes: Vec<f32>,
+    pub lifetimes: Vec<f32>,
+    pub ages: Vec<f32>,
+    pub rotations: Vec<f32>,
+    pub capacity: u32,
+    pub active_count: u32,
+}
+
+impl ParticleDataBuffer {
+    pub fn new(capacity: u32) -> Self {
+        let n = capacity as usize;
+        Self { positions: vec![Vec3::ZERO; n], velocities: vec![Vec3::ZERO; n], colors: vec![Vec4::ONE; n], sizes: vec![1.0; n], lifetimes: vec![1.0; n], ages: vec![0.0; n], rotations: vec![0.0; n], capacity, active_count: 0 }
+    }
+    pub fn is_alive(&self, idx: usize) -> bool { idx < self.active_count as usize && self.ages[idx] < self.lifetimes[idx] }
+    pub fn age_normalized(&self, idx: usize) -> f32 {
+        let lt = self.lifetimes[idx];
+        if lt <= 0.0 { 1.0 } else { (self.ages[idx] / lt).clamp(0.0, 1.0) }
+    }
+    pub fn active_count(&self) -> u32 { self.active_count }
+    pub fn capacity(&self) -> u32 { self.capacity }
+    pub fn utilization(&self) -> f32 { if self.capacity == 0 { 0.0 } else { self.active_count as f32 / self.capacity as f32 } }
+    pub fn clear(&mut self) { self.active_count = 0; }
+    pub fn tick_ages(&mut self, dt: f32) { for i in 0..self.active_count as usize { self.ages[i] += dt; } }
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const PARTICLE_WARMUP_MAX_SECS: f32 = 30.0;
+pub const PARTICLE_DATA_BUFFER_DEFAULT: u32 = 65536;
+pub const PARTICLE_MAX_ACTIVE_SYSTEMS: u32 = 128;
+pub const PARTICLE_TICK_RATE_DEFAULT: f32 = 60.0;
+
+pub fn particle_data_buffer_size_bytes(capacity: u32) -> u64 {
+    let n = capacity as u64;
+    n * (12 + 12 + 16 + 4 + 4 + 4 + 4)  // vec3 + vec3 + vec4 + f32*4
+}
+
+pub fn describe_blend_mode(mode: &BlendMode) -> &'static str {
+    match mode {
+        BlendMode::Additive => "Adds particle color to background — bright, glowing look",
+        BlendMode::Alpha => "Standard transparency — alpha channel used",
+        BlendMode::Multiply => "Darkens background — shadows, stains",
+        BlendMode::Screen => "Lightens background — soft glows",
+        BlendMode::Premultiplied => "Alpha pre-multiplied — avoids fringing",
+    }
+}
+
+
+// ── Particle Effect Summary ───────────────────────────────────────────────────
+
+pub struct ParticleEffectSummary {
+    pub name: String,
+    pub emitter_count: u32,
+    pub max_particles: u32,
+    pub duration: f32,
+    pub looping: bool,
+    pub has_trails: bool,
+    pub has_sub_emitters: bool,
+    pub texture_count: u32,
+    pub blend_mode: String,
+    pub lod_levels: u32,
+    pub estimated_cost: f32,
+}
+
+impl ParticleEffectSummary {
+    pub fn estimate_cost(particles: u32, has_trails: bool, has_sub_emitters: bool) -> f32 {
+        let base = particles as f32 * 0.001;
+        let trail_mult = if has_trails { 2.0 } else { 1.0 };
+        let sub_mult = if has_sub_emitters { 1.5 } else { 1.0 };
+        base * trail_mult * sub_mult
+    }
+    pub fn is_expensive(&self) -> bool { self.estimated_cost > 10.0 }
+    pub fn is_cheap(&self) -> bool { self.estimated_cost < 1.0 }
+    pub fn performance_grade(&self) -> &'static str {
+        if self.is_cheap() { "Light" } else if self.is_expensive() { "Heavy" } else { "Medium" }
+    }
+}
+
+pub fn particle_system_ready() -> bool { true }
+pub fn particle_version() -> &'static str { "ParticleSystemEditor v2.0" }
+pub fn max_safe_particles_for_target_fps(target_fps: f32, ms_budget: f32) -> u32 { ((ms_budget / (1000.0 / target_fps)) * 50000.0) as u32 }
+pub fn particles_60fps_budget() -> u32 { max_safe_particles_for_target_fps(60.0, 3.0) }
+pub fn describe_attractor_type(t: &AttractorType) -> &'static str {
+    match t {
+        AttractorType::Attract => "Pulls particles toward center",
+        AttractorType::Repel => "Pushes particles away from center",
+        AttractorType::Vortex => "Spins particles in a spiral",
+        AttractorType::Drag => "Slows particle movement",
+        AttractorType::Gravity => "Directional gravity pull",
+        AttractorType::Wind => "Steady wind force",
+    }
+}
+
+
+pub const PARTICLE_EFFECT_COST_LIGHT_THRESHOLD: f32 = 1.0;
+pub const PARTICLE_EFFECT_COST_MEDIUM_THRESHOLD: f32 = 10.0;
+pub const PARTICLE_EFFECT_COST_HEAVY_THRESHOLD: f32 = 50.0;
+pub const PARTICLE_MS_BUDGET_60FPS: f32 = 16.666;
+pub const PARTICLE_MS_BUDGET_30FPS: f32 = 33.333;
+pub const PARTICLE_SIMULATION_SAFE_BUDGET_MS: f32 = 3.0;
+pub const PARTICLE_RENDER_SAFE_BUDGET_MS: f32 = 2.0;
+pub fn particle_budget_ok(sim_ms: f32, render_ms: f32) -> bool {
+    sim_ms <= PARTICLE_SIMULATION_SAFE_BUDGET_MS && render_ms <= PARTICLE_RENDER_SAFE_BUDGET_MS
+}
+pub fn particle_quality_from_budget(ms_available: f32) -> &'static str {
+    if ms_available >= 8.0 { "Ultra" } else if ms_available >= 4.0 { "High" } else if ms_available >= 2.0 { "Medium" } else { "Low" }
+}
+pub fn particle_count_for_quality(quality: &str) -> u32 {
+    match quality { "Ultra" => 500_000, "High" => 100_000, "Medium" => 25_000, _ => 5_000 }
+}
+
+
+pub fn emitter_type_name(is_burst: bool, is_looping: bool) -> &'static str {
+    match (is_burst, is_looping) {
+        (true, _) => "Burst",
+        (false, true) => "Continuous Looping",
+        (false, false) => "Continuous One-Shot",
+    }
+}
+pub fn particle_system_build_info() -> String {
+    format!("Build: ParticleSystemEditor, modules={}, max_particles={}", particle_module_count(), PARTICLE_MAX_TOTAL)
+}
+
