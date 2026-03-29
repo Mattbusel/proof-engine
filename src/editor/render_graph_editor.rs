@@ -1593,12 +1593,12 @@ impl ToneMappingPassDesc {
 
     pub fn apply_aces(&self, color: Vec3) -> Vec3 {
         // ACES fitted by Stephen Hill
-        let m1 = Mat3_f32([
+        let m1 = Mat3F32([
             [0.59719, 0.35458, 0.04823],
             [0.07600, 0.90834, 0.01566],
             [0.02840, 0.13383, 0.83777],
         ]);
-        let m2 = Mat3_f32([
+        let m2 = Mat3F32([
             [ 1.60475, -0.53108, -0.07367],
             [-0.10208,  1.10813, -0.00605],
             [-0.00327, -0.07276,  1.07602],
@@ -1695,8 +1695,8 @@ impl ToneMappingPassDesc {
 }
 
 // Helper 3x3 matrix (glam Mat4 is 4x4, we need a small 3x3 for ACES)
-struct Mat3_f32([[f32; 3]; 3]);
-impl Mat3_f32 {
+struct Mat3F32([[f32; 3]; 3]);
+impl Mat3F32 {
     fn mul_vec3(&self, v: Vec3) -> Vec3 {
         Vec3::new(
             self.0[0][0]*v.x + self.0[0][1]*v.y + self.0[0][2]*v.z,

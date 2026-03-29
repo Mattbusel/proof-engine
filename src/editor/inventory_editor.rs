@@ -359,7 +359,7 @@ impl AliasTable {
 // STAT MODIFIERS
 // ============================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StatType {
     Strength,
     Dexterity,
@@ -2856,7 +2856,7 @@ impl InventoryEditor {
         if !query.is_empty() {
             self.search_history.push_front(query.clone());
             if self.search_history.len() > 20 { self.search_history.pop_back(); }
-            self.search_history.make_contiguous().dedup();
+            self.search_history = self.search_history.drain(..).collect::<Vec<_>>().into_iter().fold(std::collections::VecDeque::new(), |mut acc, x| { if acc.back() != Some(&x) { acc.push_back(x); } acc });
         }
         self.browser.filter.name_query = query;
         self.browser.refresh(&self.database);
@@ -3813,28 +3813,30 @@ impl EconomySimulator {
 
             // Simulate random player transactions
             let mut seed: u64 = (self.time * 1000.0) as u64 ^ vendor.id;
+            let mut buy_events: Vec<(u64, u32)> = Vec::new();
             for entry in &vendor.inventory {
                 let buy_p = lcg_f32(&mut seed);
                 if buy_p < 0.1 && entry.stock > 0 {
-                    // Simulate a buy event
-                    let qty = 1u32;
-                    if let Some(def) = item_defs.get(&entry.item_id) {
-                        let price = vendor.buy_price(def);
-                        self.price_history
-                            .entry(entry.item_id)
-                            .or_insert_with(Vec::new)
-                            .push((self.time, price));
-                        self.transaction_log.push_back(EconomyEvent {
-                            time: self.time,
-                            vendor_id: vendor.id,
-                            item_id: entry.item_id,
-                            transaction: EconomyTransaction::PlayerBought { quantity: qty },
-                            price,
-                            quantity: qty,
-                        });
-                    }
-                    vendor.adjust_supply_demand(EconomyTransaction::PlayerBought { quantity: qty });
+                    buy_events.push((entry.item_id, 1u32));
                 }
+            }
+            for (item_id, qty) in buy_events {
+                if let Some(def) = item_defs.get(&item_id) {
+                    let price = vendor.buy_price(def);
+                    self.price_history
+                        .entry(item_id)
+                        .or_insert_with(Vec::new)
+                        .push((self.time, price));
+                    self.transaction_log.push_back(EconomyEvent {
+                        time: self.time,
+                        vendor_id: vendor.id,
+                        item_id,
+                        transaction: EconomyTransaction::PlayerBought { quantity: qty },
+                        price,
+                        quantity: qty,
+                    });
+                }
+                vendor.adjust_supply_demand(EconomyTransaction::PlayerBought { quantity: qty });
             }
         }
 
@@ -4449,6 +4451,3052 @@ impl RarityDropTable {
     pub fn sample(&self, u1: f64, u2: f64) -> Rarity {
         let idx = self.alias.sample(u1, u2);
         self.rarities[idx]
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM POWER CURVE ANALYSIS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct PowerCurvePoint {
+    pub item_level: u32,
+    pub rarity: Rarity,
+    pub expected_dps: f32,
+    pub expected_armor: f32,
+    pub expected_stat_budget: f32,
+}
+
+pub fn generate_power_curve(min_level: u32, max_level: u32) -> Vec<PowerCurvePoint> {
+    let rarities = [Rarity::Common, Rarity::Uncommon, Rarity::Rare, Rarity::Epic, Rarity::Legendary, Rarity::Mythic];
+    let mut points = Vec::new();
+    for level in min_level..=max_level {
+        for &rarity in &rarities {
+            let cfg = RarityConfig::for_rarity(rarity);
+            let expected_dps = (5.0 + level as f32 * 2.0) * cfg.stat_multiplier;
+            let expected_armor = (10.0 + level as f32 * 3.0) * cfg.stat_multiplier;
+            let expected_budget = budget_expectation(level, rarity);
+            points.push(PowerCurvePoint {
+                item_level: level,
+                rarity,
+                expected_dps,
+                expected_armor,
+                expected_stat_budget: expected_budget,
+            });
+        }
+    }
+    points
+}
+
+pub fn item_level_from_dps(dps: f32, rarity: Rarity) -> u32 {
+    let cfg = RarityConfig::for_rarity(rarity);
+    let base_dps_at_1 = 5.0 * cfg.stat_multiplier;
+    let dps_per_level = 2.0 * cfg.stat_multiplier;
+    if dps_per_level <= 0.0 { return 1; }
+    let level = (dps - base_dps_at_1) / dps_per_level;
+    (level.max(1.0) as u32).min(100)
+}
+
+pub fn recommended_item_level_for_zone(zone_difficulty: u32) -> u32 {
+    let base = (zone_difficulty.saturating_sub(1)) * 10 + 1;
+    base
+}
+
+// ============================================================
+// EXTENDED: ITEM ENCHANTMENT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct EnchantmentDefinition {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub modifier: StatModifier,
+    pub cost_gold: u64,
+    pub cost_materials: Vec<(u64, u32)>,
+    pub applicable_slots: Vec<EquipmentSlot>,
+    pub max_enchant_level: u32,
+    pub scaling_per_level: f32,
+    pub visual_glow_color: Vec4,
+    pub incompatible_with: Vec<u64>,
+}
+
+impl EnchantmentDefinition {
+    pub fn modifier_at_level(&self, level: u32) -> StatModifier {
+        let mul = self.scaling_per_level.powf(level.saturating_sub(1) as f32);
+        let mut m = self.modifier.clone();
+        m.flat_value *= mul;
+        m.percent_value *= mul;
+        m
+    }
+
+    pub fn cost_at_level(&self, level: u32) -> u64 {
+        let mul = (2.0f32).powf(level as f32 - 1.0);
+        (self.cost_gold as f32 * mul) as u64
+    }
+
+    pub fn expected_dps_bonus(&self, attack_speed: f32) -> f32 {
+        if self.modifier.stat == StatType::PhysicalDamage {
+            self.modifier.flat_value * attack_speed
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemEnchantment {
+    pub enchant_id: u64,
+    pub level: u32,
+    pub applied_at_item_level: u32,
+}
+
+impl ItemEnchantment {
+    pub fn new(enchant_id: u64, level: u32, item_level: u32) -> Self {
+        ItemEnchantment { enchant_id, level, applied_at_item_level: item_level }
+    }
+
+    pub fn effective_modifier(&self, def: &EnchantmentDefinition) -> StatModifier {
+        def.modifier_at_level(self.level)
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM SOCKET SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SocketColor {
+    Red,
+    Blue,
+    Yellow,
+    Green,
+    White,
+    Black,
+}
+
+impl SocketColor {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SocketColor::Red => "Red",
+            SocketColor::Blue => "Blue",
+            SocketColor::Yellow => "Yellow",
+            SocketColor::Green => "Green",
+            SocketColor::White => "White",
+            SocketColor::Black => "Black",
+        }
+    }
+
+    pub fn color(&self) -> Vec4 {
+        match self {
+            SocketColor::Red => Vec4::new(1.0, 0.1, 0.1, 1.0),
+            SocketColor::Blue => Vec4::new(0.1, 0.3, 1.0, 1.0),
+            SocketColor::Yellow => Vec4::new(1.0, 0.9, 0.0, 1.0),
+            SocketColor::Green => Vec4::new(0.1, 0.8, 0.1, 1.0),
+            SocketColor::White => Vec4::new(0.9, 0.9, 0.9, 1.0),
+            SocketColor::Black => Vec4::new(0.1, 0.0, 0.2, 1.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GemDefinition {
+    pub id: u64,
+    pub name: String,
+    pub socket_color: SocketColor,
+    pub modifier: StatModifier,
+    pub quality: f32,
+    pub item_level_requirement: u32,
+    pub icon_path: String,
+}
+
+impl GemDefinition {
+    pub fn effective_modifier(&self) -> StatModifier {
+        let mut m = self.modifier.clone();
+        m.flat_value *= self.quality;
+        m.percent_value *= self.quality;
+        m
+    }
+
+    pub fn stat_value(&self) -> f32 {
+        (self.modifier.flat_value.abs() + self.modifier.percent_value.abs()) * self.quality
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemSocket {
+    pub color: SocketColor,
+    pub gem_id: Option<u64>,
+}
+
+impl ItemSocket {
+    pub fn empty(color: SocketColor) -> Self {
+        ItemSocket { color, gem_id: None }
+    }
+
+    pub fn is_filled(&self) -> bool {
+        self.gem_id.is_some()
+    }
+
+    pub fn can_accept(&self, gem: &GemDefinition) -> bool {
+        self.color == SocketColor::White
+            || gem.socket_color == SocketColor::White
+            || self.color == gem.socket_color
+    }
+
+    pub fn insert_gem(&mut self, gem_id: u64) -> Option<u64> {
+        let old = self.gem_id;
+        self.gem_id = Some(gem_id);
+        old
+    }
+
+    pub fn remove_gem(&mut self) -> Option<u64> {
+        self.gem_id.take()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SocketBonus {
+    pub description: String,
+    pub modifier: StatModifier,
+    pub requires_all_matching: bool,
+}
+
+pub fn compute_socket_bonus(sockets: &[ItemSocket], gems: &HashMap<u64, GemDefinition>, bonus: &SocketBonus) -> Option<StatModifier> {
+    if bonus.requires_all_matching {
+        let all_match = sockets.iter().all(|s| {
+            if let Some(gem_id) = s.gem_id {
+                gems.get(&gem_id)
+                    .map(|g| g.socket_color == s.color || g.socket_color == SocketColor::White || s.color == SocketColor::White)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
+        if all_match { Some(bonus.modifier.clone()) } else { None }
+    } else {
+        let any_filled = sockets.iter().any(|s| s.gem_id.is_some());
+        if any_filled { Some(bonus.modifier.clone()) } else { None }
+    }
+}
+
+pub fn compute_all_gem_bonuses(sockets: &[ItemSocket], gems: &HashMap<u64, GemDefinition>) -> Vec<StatModifier> {
+    sockets.iter()
+        .filter_map(|s| s.gem_id.and_then(|id| gems.get(&id)))
+        .map(|g| g.effective_modifier())
+        .collect()
+}
+
+// ============================================================
+// EXTENDED: ITEM UPGRADE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct UpgradePath {
+    pub source_item_id: u64,
+    pub result_item_id: u64,
+    pub required_materials: Vec<(u64, u32)>,
+    pub gold_cost: u64,
+    pub required_smith_level: u32,
+    pub preserves_affixes: bool,
+    pub preserves_quality: bool,
+    pub success_chance: f32,
+    pub failure_downgrade: Option<u64>,
+}
+
+impl UpgradePath {
+    pub fn success_probability_with_level(&self, smith_level: u32) -> f32 {
+        let bonus = ((smith_level as f32 - self.required_smith_level as f32).max(0.0)) * 0.01;
+        (self.success_chance + bonus).min(0.99)
+    }
+
+    pub fn expected_attempts_to_succeed(&self, smith_level: u32) -> f32 {
+        let p = self.success_probability_with_level(smith_level);
+        if p <= 0.0 { return f32::INFINITY; }
+        1.0 / p
+    }
+
+    pub fn expected_gold_cost_per_success(&self, smith_level: u32) -> u64 {
+        let attempts = self.expected_attempts_to_succeed(smith_level);
+        (self.gold_cost as f32 * attempts) as u64
+    }
+}
+
+// ============================================================
+// EXTENDED: DISENCHANTING SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DisenchantOutcome {
+    pub material_id: u64,
+    pub min_quantity: u32,
+    pub max_quantity: u32,
+    pub chance: f32,
+}
+
+pub fn disenchant_item(item: &ItemDefinition, rolls: &[f32]) -> Vec<(u64, u32)> {
+    let outcomes: Vec<DisenchantOutcome> = match item.rarity {
+        Rarity::Common => vec![
+            DisenchantOutcome { material_id: 1001, min_quantity: 1, max_quantity: 3, chance: 1.0 },
+        ],
+        Rarity::Uncommon => vec![
+            DisenchantOutcome { material_id: 1002, min_quantity: 1, max_quantity: 2, chance: 0.8 },
+            DisenchantOutcome { material_id: 1001, min_quantity: 2, max_quantity: 5, chance: 0.2 },
+        ],
+        Rarity::Rare => vec![
+            DisenchantOutcome { material_id: 1003, min_quantity: 1, max_quantity: 2, chance: 0.7 },
+            DisenchantOutcome { material_id: 1002, min_quantity: 2, max_quantity: 4, chance: 0.3 },
+        ],
+        Rarity::Epic => vec![
+            DisenchantOutcome { material_id: 1004, min_quantity: 1, max_quantity: 1, chance: 0.6 },
+            DisenchantOutcome { material_id: 1003, min_quantity: 1, max_quantity: 3, chance: 0.4 },
+        ],
+        Rarity::Legendary => vec![
+            DisenchantOutcome { material_id: 1005, min_quantity: 1, max_quantity: 1, chance: 0.5 },
+            DisenchantOutcome { material_id: 1004, min_quantity: 1, max_quantity: 2, chance: 0.5 },
+        ],
+        Rarity::Mythic => vec![
+            DisenchantOutcome { material_id: 1006, min_quantity: 1, max_quantity: 1, chance: 1.0 },
+        ],
+    };
+
+    let mut results = Vec::new();
+    let mut roll_idx = 0usize;
+
+    for outcome in &outcomes {
+        let roll = if roll_idx < rolls.len() { rolls[roll_idx] } else { 0.5 };
+        roll_idx += 1;
+        if roll < outcome.chance {
+            let qty_roll = if roll_idx < rolls.len() { rolls[roll_idx] } else { 0.5 };
+            roll_idx += 1;
+            let range = outcome.max_quantity - outcome.min_quantity;
+            let qty = outcome.min_quantity + (qty_roll * (range + 1) as f32) as u32;
+            results.push((outcome.material_id, qty.min(outcome.max_quantity)));
+        }
+    }
+
+    results
+}
+
+pub fn disenchant_expected_value(item: &ItemDefinition, material_prices: &HashMap<u64, u64>) -> f64 {
+    let rolls: Vec<f32> = vec![0.5; 20];
+    let outcomes = disenchant_item(item, &rolls);
+    outcomes.iter().map(|(mat_id, qty)| {
+        let price = material_prices.get(mat_id).copied().unwrap_or(1);
+        price as f64 * *qty as f64
+    }).sum()
+}
+
+// ============================================================
+// EXTENDED: WORLD DROP SCHEDULER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct WorldDropSchedule {
+    pub zone_id: u64,
+    pub zone_name: String,
+    pub loot_table_id: u64,
+    pub boss_loot_table_id: Option<u64>,
+    pub respawn_time_minutes: f32,
+    pub is_boss_zone: bool,
+    pub min_player_level: u32,
+    pub max_player_level: u32,
+    pub guaranteed_drops: Vec<(u64, f32)>,
+}
+
+impl WorldDropSchedule {
+    pub fn should_reward(&self, player_level: u32) -> bool {
+        player_level >= self.min_player_level && player_level <= self.max_player_level
+    }
+
+    pub fn get_loot_table<'a>(&self, is_boss: bool, loot_tables: &'a HashMap<u64, LootTable>) -> Option<&'a LootTable> {
+        if is_boss {
+            self.boss_loot_table_id
+                .and_then(|id| loot_tables.get(&id))
+                .or_else(|| loot_tables.get(&self.loot_table_id))
+        } else {
+            loot_tables.get(&self.loot_table_id)
+        }
+    }
+
+    pub fn zone_difficulty(&self) -> u32 {
+        (self.min_player_level + self.max_player_level) / 2
+    }
+
+    pub fn is_level_appropriate(&self, level: u32) -> bool {
+        let mid = self.zone_difficulty();
+        let delta = if level > mid { level - mid } else { mid - level };
+        delta <= 5
+    }
+}
+
+// ============================================================
+// EXTENDED: MERCHANT HAGGLING
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct HaggleState {
+    pub base_price: u64,
+    pub current_offer: u64,
+    pub minimum_accept_price: u64,
+    pub rounds_remaining: u32,
+    pub vendor_patience: f32,
+    pub player_charisma: u32,
+    pub outcome: HaggleOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HaggleOutcome {
+    InProgress,
+    Accepted,
+    Rejected,
+    Abandoned,
+}
+
+impl HaggleState {
+    pub fn new(base_price: u64, player_charisma: u32) -> Self {
+        let charm_discount = 1.0 - (player_charisma as f32 * 0.01).min(0.3);
+        let minimum = (base_price as f32 * charm_discount) as u64;
+        HaggleState {
+            base_price,
+            current_offer: base_price,
+            minimum_accept_price: minimum,
+            rounds_remaining: 3 + player_charisma / 10,
+            vendor_patience: 1.0,
+            player_charisma,
+            outcome: HaggleOutcome::InProgress,
+        }
+    }
+
+    pub fn make_offer(&mut self, offered_price: u64) -> HaggleResponse {
+        if self.outcome != HaggleOutcome::InProgress {
+            return HaggleResponse::AlreadyConcluded;
+        }
+        self.rounds_remaining = self.rounds_remaining.saturating_sub(1);
+        let offer_ratio = offered_price as f32 / self.base_price as f32;
+        let aggression = 1.0 - offer_ratio;
+        self.vendor_patience -= aggression * 0.4;
+        self.vendor_patience = self.vendor_patience.max(0.0);
+
+        if offered_price >= self.minimum_accept_price && self.vendor_patience > 0.1 {
+            self.current_offer = offered_price;
+            self.outcome = HaggleOutcome::Accepted;
+            return HaggleResponse::Accept { final_price: offered_price };
+        }
+        if self.vendor_patience < 0.2 || self.rounds_remaining == 0 {
+            self.outcome = HaggleOutcome::Rejected;
+            return HaggleResponse::Reject { final_price: self.base_price };
+        }
+        let counter = ((offered_price as f32 + self.minimum_accept_price as f32) / 2.0) as u64;
+        self.current_offer = counter;
+        HaggleResponse::Counter { counter_price: counter, rounds_left: self.rounds_remaining }
+    }
+
+    pub fn abandon(&mut self) {
+        self.outcome = HaggleOutcome::Abandoned;
+    }
+
+    pub fn savings_if_accepted(&self) -> i64 {
+        self.base_price as i64 - self.current_offer as i64
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum HaggleResponse {
+    Accept { final_price: u64 },
+    Reject { final_price: u64 },
+    Counter { counter_price: u64, rounds_left: u32 },
+    AlreadyConcluded,
+}
+
+// ============================================================
+// EXTENDED: ITEM HISTORY AND PROVENANCE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemHistoryEntry {
+    pub timestamp: f32,
+    pub event: ItemEvent,
+    pub player_id: Option<u64>,
+    pub location: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ItemEvent {
+    Generated { seed: u64 },
+    Dropped { from_mob: String },
+    Purchased { from_vendor: String, price: u64 },
+    Crafted { recipe_name: String },
+    Enchanted { enchant_name: String },
+    Upgraded { from_tier: u32, to_tier: u32 },
+    Repaired { cost: u64 },
+    SocketGemInserted { gem_name: String },
+    AffixRerolled { old_affix: String, new_affix: String },
+    Identified,
+    Destroyed,
+    Traded { to_player: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemProvenance {
+    pub instance_id: u64,
+    pub history: Vec<ItemHistoryEntry>,
+}
+
+impl ItemProvenance {
+    pub fn new(instance_id: u64) -> Self {
+        ItemProvenance { instance_id, history: Vec::new() }
+    }
+
+    pub fn record(&mut self, event: ItemEvent, time: f32) {
+        self.history.push(ItemHistoryEntry {
+            timestamp: time,
+            event,
+            player_id: None,
+            location: None,
+        });
+    }
+
+    pub fn origin_event(&self) -> Option<&ItemHistoryEntry> {
+        self.history.first()
+    }
+
+    pub fn times_repaired(&self) -> u32 {
+        self.history.iter().filter(|e| matches!(e.event, ItemEvent::Repaired { .. })).count() as u32
+    }
+
+    pub fn times_traded(&self) -> u32 {
+        self.history.iter().filter(|e| matches!(e.event, ItemEvent::Traded { .. })).count() as u32
+    }
+
+    pub fn age(&self, current_time: f32) -> f32 {
+        self.history.first().map(|e| current_time - e.timestamp).unwrap_or(0.0)
+    }
+}
+
+// ============================================================
+// EXTENDED: MATERIAL COST TABLES
+// ============================================================
+
+pub fn material_cost_for_upgrade(item_level: u32, rarity: Rarity) -> HashMap<String, u32> {
+    let mut costs = HashMap::new();
+    let base = item_level;
+    match rarity {
+        Rarity::Common => {
+            costs.insert("Iron Ore".to_string(), base * 3);
+        }
+        Rarity::Uncommon => {
+            costs.insert("Iron Ore".to_string(), base * 5);
+            costs.insert("Magic Dust".to_string(), base);
+        }
+        Rarity::Rare => {
+            costs.insert("Mithril Ore".to_string(), base * 3);
+            costs.insert("Arcane Shard".to_string(), base * 2);
+        }
+        Rarity::Epic => {
+            costs.insert("Adamantite".to_string(), base * 2);
+            costs.insert("Soul Fragment".to_string(), base);
+            costs.insert("Arcane Shard".to_string(), base * 3);
+        }
+        Rarity::Legendary => {
+            costs.insert("Void Steel".to_string(), base);
+            costs.insert("Primordial Essence".to_string(), base);
+            costs.insert("Dragon Scale".to_string(), base / 2 + 1);
+        }
+        Rarity::Mythic => {
+            costs.insert("Aether Core".to_string(), base);
+            costs.insert("Chaos Crystal".to_string(), base * 2);
+        }
+    }
+    costs
+}
+
+pub fn crafting_material_value(mat_name: &str, quantity: u32) -> u64 {
+    let per_unit: u64 = match mat_name {
+        "Iron Ore" => 2,
+        "Magic Dust" => 8,
+        "Mithril Ore" => 15,
+        "Arcane Shard" => 25,
+        "Adamantite" => 50,
+        "Soul Fragment" => 75,
+        "Void Steel" => 200,
+        "Primordial Essence" => 350,
+        "Dragon Scale" => 500,
+        "Aether Core" => 1000,
+        "Chaos Crystal" => 800,
+        _ => 5,
+    };
+    per_unit * quantity as u64
+}
+
+// ============================================================
+// EXTENDED: INVENTORY TRANSACTION LOG
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct InventoryTransaction {
+    pub id: u64,
+    pub timestamp: f32,
+    pub transaction_type: TransactionType,
+    pub item_instance_id: u64,
+    pub item_def_id: u64,
+    pub quantity: u32,
+    pub source_container: Option<u64>,
+    pub dest_container: Option<u64>,
+    pub gold_delta: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionType {
+    Pickup,
+    Drop,
+    VendorBuy,
+    VendorSell,
+    Craft,
+    Disenchant,
+    Upgrade,
+    Enchant,
+    SocketGem,
+    Move,
+    Split,
+    Merge,
+    Destroy,
+    QuestTurn,
+    Trade,
+    Loot,
+}
+
+#[derive(Debug, Clone)]
+pub struct InventoryTransactionLog {
+    pub entries: VecDeque<InventoryTransaction>,
+    pub max_entries: usize,
+    pub next_id: u64,
+    pub total_gold_earned: u64,
+    pub total_gold_spent: u64,
+    pub items_looted: u64,
+    pub items_crafted: u64,
+    pub items_sold: u64,
+}
+
+impl InventoryTransactionLog {
+    pub fn new() -> Self {
+        InventoryTransactionLog {
+            entries: VecDeque::new(),
+            max_entries: 1000,
+            next_id: 1,
+            total_gold_earned: 0,
+            total_gold_spent: 0,
+            items_looted: 0,
+            items_crafted: 0,
+            items_sold: 0,
+        }
+    }
+
+    pub fn record(&mut self, txn: InventoryTransaction) {
+        if txn.gold_delta > 0 {
+            self.total_gold_earned += txn.gold_delta as u64;
+        } else {
+            self.total_gold_spent += (-txn.gold_delta) as u64;
+        }
+        match txn.transaction_type {
+            TransactionType::Loot | TransactionType::Pickup => {
+                self.items_looted += txn.quantity as u64;
+            }
+            TransactionType::Craft => {
+                self.items_crafted += txn.quantity as u64;
+            }
+            TransactionType::VendorSell => {
+                self.items_sold += txn.quantity as u64;
+            }
+            _ => {}
+        }
+        self.entries.push_back(txn);
+        while self.entries.len() > self.max_entries {
+            self.entries.pop_front();
+        }
+    }
+
+    pub fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    pub fn filter_by_type(&self, tt: TransactionType) -> Vec<&InventoryTransaction> {
+        self.entries.iter().filter(|e| e.transaction_type == tt).collect()
+    }
+
+    pub fn net_gold(&self) -> i64 {
+        self.total_gold_earned as i64 - self.total_gold_spent as i64
+    }
+
+    pub fn total_for_item(&self, item_def_id: u64) -> (u32, u32) {
+        let gained: u32 = self.entries.iter()
+            .filter(|e| e.item_def_id == item_def_id && matches!(
+                e.transaction_type,
+                TransactionType::Loot | TransactionType::VendorBuy |
+                TransactionType::Craft | TransactionType::Pickup
+            ))
+            .map(|e| e.quantity).sum();
+        let lost: u32 = self.entries.iter()
+            .filter(|e| e.item_def_id == item_def_id && matches!(
+                e.transaction_type,
+                TransactionType::VendorSell | TransactionType::Disenchant |
+                TransactionType::Destroy | TransactionType::Drop
+            ))
+            .map(|e| e.quantity).sum();
+        (gained, lost)
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM CATALOG (sorted views)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemCatalog {
+    pub by_id: BTreeMap<u64, ItemDefinition>,
+    pub by_name: BTreeMap<String, u64>,
+    pub by_category_and_level: BTreeMap<(String, u32), Vec<u64>>,
+    pub by_rarity_and_level: BTreeMap<(u8, u32), Vec<u64>>,
+}
+
+impl ItemCatalog {
+    pub fn build(db: &ItemDatabase) -> Self {
+        let mut catalog = ItemCatalog {
+            by_id: BTreeMap::new(),
+            by_name: BTreeMap::new(),
+            by_category_and_level: BTreeMap::new(),
+            by_rarity_and_level: BTreeMap::new(),
+        };
+        for (id, def) in &db.definitions {
+            catalog.by_id.insert(*id, def.clone());
+            catalog.by_name.insert(def.name.clone(), *id);
+            catalog.by_category_and_level
+                .entry((def.category.display_name().to_string(), def.item_level))
+                .or_insert_with(Vec::new)
+                .push(*id);
+            let rarity_ord: u8 = match def.rarity {
+                Rarity::Common => 0, Rarity::Uncommon => 1, Rarity::Rare => 2,
+                Rarity::Epic => 3, Rarity::Legendary => 4, Rarity::Mythic => 5,
+            };
+            catalog.by_rarity_and_level
+                .entry((rarity_ord, def.item_level))
+                .or_insert_with(Vec::new)
+                .push(*id);
+        }
+        catalog
+    }
+
+    pub fn items_in_level_range(&self, min: u32, max: u32, category: Option<&str>) -> Vec<&ItemDefinition> {
+        let mut results = Vec::new();
+        for ((cat, level), ids) in &self.by_category_and_level {
+            if *level < min || *level > max { continue; }
+            if let Some(c) = category { if cat != c { continue; } }
+            for id in ids {
+                if let Some(def) = self.by_id.get(id) { results.push(def); }
+            }
+        }
+        results.sort_by_key(|d| d.item_level);
+        results
+    }
+
+    pub fn items_by_rarity(&self, rarity: Rarity) -> Vec<&ItemDefinition> {
+        let rarity_ord: u8 = match rarity {
+            Rarity::Common => 0, Rarity::Uncommon => 1, Rarity::Rare => 2,
+            Rarity::Epic => 3, Rarity::Legendary => 4, Rarity::Mythic => 5,
+        };
+        let mut results = Vec::new();
+        for ((r, _), ids) in &self.by_rarity_and_level {
+            if *r != rarity_ord { continue; }
+            for id in ids {
+                if let Some(def) = self.by_id.get(id) { results.push(def); }
+            }
+        }
+        results
+    }
+
+    pub fn find_by_name_prefix(&self, prefix: &str) -> Vec<&ItemDefinition> {
+        let lower = prefix.to_lowercase();
+        self.by_name.iter()
+            .filter(|(name, _)| name.to_lowercase().starts_with(&lower))
+            .filter_map(|(_, id)| self.by_id.get(id))
+            .collect()
+    }
+
+    pub fn total_catalog_value(&self) -> u64 {
+        self.by_id.values().map(|d| d.base_price).sum()
+    }
+
+    pub fn most_valuable_items(&self, n: usize) -> Vec<&ItemDefinition> {
+        let mut items: Vec<&ItemDefinition> = self.by_id.values().collect();
+        items.sort_by(|a, b| b.base_price.cmp(&a.base_price));
+        items.truncate(n);
+        items
+    }
+
+    pub fn average_item_level_by_rarity(&self) -> HashMap<u8, f32> {
+        let mut sums: HashMap<u8, (u64, u32)> = HashMap::new();
+        for (_, def) in &self.by_id {
+            let r = match def.rarity {
+                Rarity::Common => 0u8, Rarity::Uncommon => 1, Rarity::Rare => 2,
+                Rarity::Epic => 3, Rarity::Legendary => 4, Rarity::Mythic => 5,
+            };
+            let e = sums.entry(r).or_insert((0, 0));
+            e.0 += def.item_level as u64;
+            e.1 += 1;
+        }
+        sums.iter().map(|(r, (s, c))| (*r, *s as f32 / (*c).max(1) as f32)).collect()
+    }
+}
+
+// ============================================================
+// EXTENDED: LOOT FILTER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LootFilterRule {
+    pub id: u64,
+    pub name: String,
+    pub priority: u32,
+    pub conditions: Vec<LootFilterCondition>,
+    pub action: LootFilterAction,
+    pub highlight_color: Option<Vec4>,
+    pub play_sound: Option<String>,
+    pub label_override: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LootFilterCondition {
+    Rarity(Rarity),
+    Category(ItemCategory),
+    ItemLevelAbove(u32),
+    ItemLevelBelow(u32),
+    BasePriceAbove(u64),
+    StatAbove { stat: StatType, value: f32 },
+    DPSAbove(f32),
+    WeightBelow(f32),
+    IsBoundOnPickup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LootFilterAction {
+    Show,
+    Hide,
+    Highlight,
+    AutoPickup,
+}
+
+impl LootFilterRule {
+    pub fn matches(&self, item: &ItemDefinition) -> bool {
+        self.conditions.iter().all(|cond| match cond {
+            LootFilterCondition::Rarity(r) => item.rarity == *r,
+            LootFilterCondition::Category(c) => item.category == *c,
+            LootFilterCondition::ItemLevelAbove(l) => item.item_level > *l,
+            LootFilterCondition::ItemLevelBelow(l) => item.item_level < *l,
+            LootFilterCondition::BasePriceAbove(p) => item.base_price > *p,
+            LootFilterCondition::StatAbove { stat, value } => {
+                let total: f32 = item.explicit_modifiers.iter()
+                    .chain(item.implicit_modifiers.iter())
+                    .filter(|m| &m.stat == stat)
+                    .map(|m| m.flat_value + m.percent_value)
+                    .sum();
+                total > *value
+            }
+            LootFilterCondition::DPSAbove(dps) => item.total_damage_per_second() > *dps,
+            LootFilterCondition::WeightBelow(w) => item.weight < *w,
+            LootFilterCondition::IsBoundOnPickup => item.bind_on_pickup,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LootFilterProfile {
+    pub id: u64,
+    pub name: String,
+    pub rules: Vec<LootFilterRule>,
+    pub default_action: LootFilterAction,
+}
+
+impl LootFilterProfile {
+    pub fn evaluate(&self, item: &ItemDefinition) -> LootFilterAction {
+        let mut sorted_rules: Vec<&LootFilterRule> = self.rules.iter().collect();
+        sorted_rules.sort_by_key(|r| r.priority);
+        for rule in sorted_rules {
+            if rule.matches(item) {
+                return rule.action;
+            }
+        }
+        self.default_action
+    }
+
+    pub fn all_shown_items<'a>(&self, items: &'a [&ItemDefinition]) -> Vec<&'a ItemDefinition> {
+        items.iter().filter(|&&item| {
+            !matches!(self.evaluate(item), LootFilterAction::Hide)
+        }).copied().collect()
+    }
+
+    pub fn autopickup_items<'a>(&self, items: &'a [&ItemDefinition]) -> Vec<&'a ItemDefinition> {
+        items.iter().filter(|&&item| {
+            matches!(self.evaluate(item), LootFilterAction::AutoPickup)
+        }).copied().collect()
+    }
+}
+
+// ============================================================
+// EXTENDED: MULTI-PLAYER TRADE WINDOW
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TradeWindow {
+    pub trade_id: u64,
+    pub player_a_id: u64,
+    pub player_b_id: u64,
+    pub player_a_items: Vec<ItemInstance>,
+    pub player_b_items: Vec<ItemInstance>,
+    pub player_a_gold: u64,
+    pub player_b_gold: u64,
+    pub player_a_confirmed: bool,
+    pub player_b_confirmed: bool,
+    pub state: TradeState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeState {
+    Open,
+    Confirmed,
+    Completed,
+    Cancelled,
+}
+
+impl TradeWindow {
+    pub fn new(trade_id: u64, player_a: u64, player_b: u64) -> Self {
+        TradeWindow {
+            trade_id,
+            player_a_id: player_a,
+            player_b_id: player_b,
+            player_a_items: Vec::new(),
+            player_b_items: Vec::new(),
+            player_a_gold: 0,
+            player_b_gold: 0,
+            player_a_confirmed: false,
+            player_b_confirmed: false,
+            state: TradeState::Open,
+        }
+    }
+
+    pub fn add_item_a(&mut self, item: ItemInstance, def: &ItemDefinition) -> bool {
+        if def.bind_on_pickup { return false; }
+        self.player_a_confirmed = false;
+        self.player_b_confirmed = false;
+        self.player_a_items.push(item);
+        true
+    }
+
+    pub fn add_item_b(&mut self, item: ItemInstance, def: &ItemDefinition) -> bool {
+        if def.bind_on_pickup { return false; }
+        self.player_a_confirmed = false;
+        self.player_b_confirmed = false;
+        self.player_b_items.push(item);
+        true
+    }
+
+    pub fn set_gold_a(&mut self, gold: u64) {
+        self.player_a_gold = gold;
+        self.player_a_confirmed = false;
+        self.player_b_confirmed = false;
+    }
+
+    pub fn set_gold_b(&mut self, gold: u64) {
+        self.player_b_gold = gold;
+        self.player_a_confirmed = false;
+        self.player_b_confirmed = false;
+    }
+
+    pub fn confirm(&mut self, player_id: u64) {
+        if player_id == self.player_a_id { self.player_a_confirmed = true; }
+        if player_id == self.player_b_id { self.player_b_confirmed = true; }
+        if self.player_a_confirmed && self.player_b_confirmed {
+            self.state = TradeState::Confirmed;
+        }
+    }
+
+    pub fn complete(&mut self) -> bool {
+        if self.state == TradeState::Confirmed {
+            self.state = TradeState::Completed;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        self.state = TradeState::Cancelled;
+        self.player_a_confirmed = false;
+        self.player_b_confirmed = false;
+    }
+
+    pub fn value_a(&self, defs: &HashMap<u64, ItemDefinition>) -> u64 {
+        let item_value: u64 = self.player_a_items.iter()
+            .filter_map(|i| defs.get(&i.definition_id))
+            .map(|d| d.base_price).sum();
+        item_value + self.player_a_gold
+    }
+
+    pub fn value_b(&self, defs: &HashMap<u64, ItemDefinition>) -> u64 {
+        let item_value: u64 = self.player_b_items.iter()
+            .filter_map(|i| defs.get(&i.definition_id))
+            .map(|d| d.base_price).sum();
+        item_value + self.player_b_gold
+    }
+
+    pub fn value_ratio(&self, defs: &HashMap<u64, ItemDefinition>) -> f32 {
+        let va = self.value_a(defs) as f32;
+        let vb = self.value_b(defs) as f32;
+        if vb < 1.0 { return f32::INFINITY; }
+        va / vb
+    }
+
+    pub fn is_fair_trade(&self, defs: &HashMap<u64, ItemDefinition>, tolerance: f32) -> bool {
+        let ratio = self.value_ratio(defs);
+        (ratio - 1.0).abs() <= tolerance
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM STATISTICS GRAPHS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemStatGraph {
+    pub stat_type: StatType,
+    pub data_points: Vec<(f32, f32)>,
+    pub regression_slope: f32,
+    pub regression_intercept: f32,
+    pub r_squared: f32,
+}
+
+impl ItemStatGraph {
+    pub fn from_database(db: &ItemDatabase, stat_type: StatType) -> Self {
+        let mut points: Vec<(f32, f32)> = Vec::new();
+        for def in db.definitions.values() {
+            let value: f32 = def.explicit_modifiers.iter()
+                .chain(def.implicit_modifiers.iter())
+                .filter(|m| m.stat == stat_type)
+                .map(|m| m.flat_value + m.percent_value)
+                .sum();
+            if value > 0.0 {
+                points.push((def.item_level as f32, value));
+            }
+        }
+        let (slope, intercept, r2) = linear_regression(&points);
+        ItemStatGraph {
+            stat_type,
+            data_points: points,
+            regression_slope: slope,
+            regression_intercept: intercept,
+            r_squared: r2,
+        }
+    }
+
+    pub fn predict(&self, item_level: f32) -> f32 {
+        self.regression_slope * item_level + self.regression_intercept
+    }
+
+    pub fn outliers(&self, z_threshold: f32) -> Vec<(f32, f32)> {
+        if self.data_points.len() < 3 { return Vec::new(); }
+        let mean: f32 = self.data_points.iter().map(|(_, v)| v).sum::<f32>() / self.data_points.len() as f32;
+        let variance: f32 = self.data_points.iter().map(|(_, v)| (v - mean).powi(2)).sum::<f32>() / self.data_points.len() as f32;
+        let stddev = variance.sqrt();
+        if stddev < 1e-6 { return Vec::new(); }
+        self.data_points.iter().filter(|(_, v)| {
+            ((v - mean) / stddev).abs() > z_threshold
+        }).copied().collect()
+    }
+
+    pub fn trend_description(&self) -> String {
+        if self.regression_slope > 1.0 {
+            format!("Strongly increasing: +{:.2} per level", self.regression_slope)
+        } else if self.regression_slope > 0.1 {
+            format!("Gently increasing: +{:.2} per level", self.regression_slope)
+        } else if self.regression_slope < -1.0 {
+            format!("Strongly decreasing: {:.2} per level", self.regression_slope)
+        } else {
+            format!("Roughly flat: {:.2} per level", self.regression_slope)
+        }
+    }
+}
+
+fn linear_regression(points: &[(f32, f32)]) -> (f32, f32, f32) {
+    let n = points.len() as f32;
+    if n < 2.0 { return (0.0, 0.0, 0.0); }
+    let sum_x: f32 = points.iter().map(|(x, _)| x).sum();
+    let sum_y: f32 = points.iter().map(|(_, y)| y).sum();
+    let sum_xx: f32 = points.iter().map(|(x, _)| x * x).sum();
+    let sum_xy: f32 = points.iter().map(|(x, y)| x * y).sum();
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() < 1e-9 { return (0.0, sum_y / n, 0.0); }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    let mean_y = sum_y / n;
+    let ss_tot: f32 = points.iter().map(|(_, y)| (y - mean_y).powi(2)).sum();
+    let ss_res: f32 = points.iter().map(|(x, y)| (y - (slope * x + intercept)).powi(2)).sum();
+    let r2 = if ss_tot < 1e-9 { 1.0 } else { 1.0 - ss_res / ss_tot };
+    (slope, intercept, r2)
+}
+
+// ============================================================
+// EXTENDED: CRAFTING QUEUE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CraftingQueueEntry {
+    pub recipe_id: u64,
+    pub quantity: u32,
+    pub started_at: f32,
+    pub estimated_finish: f32,
+    pub progress: f32,
+    pub worker_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CraftingQueue {
+    pub entries: VecDeque<CraftingQueueEntry>,
+    pub completed: Vec<CraftingQueueEntry>,
+    pub max_concurrent: u32,
+    pub current_time: f32,
+}
+
+impl CraftingQueue {
+    pub fn new(max_concurrent: u32) -> Self {
+        CraftingQueue {
+            entries: VecDeque::new(),
+            completed: Vec::new(),
+            max_concurrent,
+            current_time: 0.0,
+        }
+    }
+
+    pub fn queue_recipe(&mut self, recipe_id: u64, quantity: u32, crafting_time: f32) -> bool {
+        if self.entries.len() >= 20 { return false; }
+        let start = self.current_time;
+        let finish = start + crafting_time * quantity as f32;
+        self.entries.push_back(CraftingQueueEntry {
+            recipe_id,
+            quantity,
+            started_at: start,
+            estimated_finish: finish,
+            progress: 0.0,
+            worker_id: None,
+        });
+        true
+    }
+
+    pub fn tick(&mut self, dt: f32) -> Vec<CraftingQueueEntry> {
+        self.current_time += dt;
+        let active = self.max_concurrent as usize;
+        for entry in self.entries.iter_mut().take(active) {
+            let total_time = entry.estimated_finish - entry.started_at;
+            if total_time > 0.0 {
+                entry.progress = ((self.current_time - entry.started_at) / total_time).min(1.0);
+            }
+        }
+        let mut finished = Vec::new();
+        while let Some(front) = self.entries.front() {
+            if self.current_time >= front.estimated_finish {
+                if let Some(done) = self.entries.pop_front() {
+                    self.completed.push(done.clone());
+                    finished.push(done);
+                }
+            } else {
+                break;
+            }
+        }
+        finished
+    }
+
+    pub fn estimated_completion_time(&self) -> f32 {
+        self.entries.back().map(|e| e.estimated_finish).unwrap_or(self.current_time)
+    }
+
+    pub fn total_remaining_time(&self) -> f32 {
+        (self.estimated_completion_time() - self.current_time).max(0.0)
+    }
+
+    pub fn cancel_recipe(&mut self, recipe_id: u64) -> bool {
+        if let Some(pos) = self.entries.iter().position(|e| e.recipe_id == recipe_id) {
+            self.entries.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+// ============================================================
+// EXTENDED: DROP ANALYTICS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DropAnalytics {
+    pub item_id: u64,
+    pub times_seen: u32,
+    pub times_picked_up: u32,
+    pub times_sold: u32,
+    pub times_crafted: u32,
+    pub times_disenchanted: u32,
+    pub average_item_level: f32,
+    pub rarity_distribution: HashMap<Rarity, u32>,
+    pub first_seen: f32,
+    pub last_seen: f32,
+}
+
+impl DropAnalytics {
+    pub fn new(item_id: u64) -> Self {
+        DropAnalytics {
+            item_id,
+            times_seen: 0,
+            times_picked_up: 0,
+            times_sold: 0,
+            times_crafted: 0,
+            times_disenchanted: 0,
+            average_item_level: 0.0,
+            rarity_distribution: HashMap::new(),
+            first_seen: 0.0,
+            last_seen: 0.0,
+        }
+    }
+
+    pub fn pickup_rate(&self) -> f32 {
+        if self.times_seen == 0 { return 0.0; }
+        self.times_picked_up as f32 / self.times_seen as f32
+    }
+
+    pub fn keep_rate(&self) -> f32 {
+        let disposed = self.times_sold + self.times_disenchanted;
+        if self.times_picked_up == 0 { return 0.0; }
+        1.0 - disposed as f32 / self.times_picked_up as f32
+    }
+
+    pub fn predominant_rarity(&self) -> Option<Rarity> {
+        self.rarity_distribution.iter()
+            .max_by_key(|(_, &v)| v)
+            .map(|(r, _)| *r)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DropAnalyticsRegistry {
+    pub data: HashMap<u64, DropAnalytics>,
+    pub total_drops_processed: u64,
+}
+
+impl DropAnalyticsRegistry {
+    pub fn new() -> Self {
+        DropAnalyticsRegistry { data: HashMap::new(), total_drops_processed: 0 }
+    }
+
+    pub fn record_drop(&mut self, item_id: u64, item_level: f32, rarity: Rarity, time: f32) {
+        self.total_drops_processed += 1;
+        let entry = self.data.entry(item_id).or_insert_with(|| {
+            let mut a = DropAnalytics::new(item_id);
+            a.first_seen = time;
+            a
+        });
+        entry.times_seen += 1;
+        entry.last_seen = time;
+        let n = entry.times_seen as f32;
+        entry.average_item_level = entry.average_item_level * (n - 1.0) / n + item_level / n;
+        *entry.rarity_distribution.entry(rarity).or_insert(0) += 1;
+    }
+
+    pub fn record_pickup(&mut self, item_id: u64) {
+        if let Some(entry) = self.data.get_mut(&item_id) {
+            entry.times_picked_up += 1;
+        }
+    }
+
+    pub fn most_common_drops(&self, top_n: usize) -> Vec<(u64, u32)> {
+        let mut sorted: Vec<(u64, u32)> = self.data.iter()
+            .map(|(id, a)| (*id, a.times_seen)).collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.truncate(top_n);
+        sorted
+    }
+
+    pub fn rarest_drops(&self, top_n: usize) -> Vec<(u64, u32)> {
+        let mut sorted: Vec<(u64, u32)> = self.data.iter()
+            .filter(|(_, a)| a.times_seen > 0)
+            .map(|(id, a)| (*id, a.times_seen)).collect();
+        sorted.sort_by(|a, b| a.1.cmp(&b.1));
+        sorted.truncate(top_n);
+        sorted
+    }
+
+    pub fn average_pickup_rate(&self) -> f32 {
+        if self.data.is_empty() { return 0.0; }
+        let sum: f32 = self.data.values().map(|a| a.pickup_rate()).sum();
+        sum / self.data.len() as f32
+    }
+}
+
+// ============================================================
+// EXTENDED: NAMING HELPERS
+// ============================================================
+
+pub fn generate_unique_item_name(base_name: &str, _suffix_tables: &[&str]) -> String {
+    let titles = [
+        "the Forsaken", "of Doom", "the Eternal", "of Legends", "the Undying",
+        "of Chaos", "the Ancient", "the Merciless", "of the Fallen King",
+        "of Twilight", "the Immortal", "of the Void", "the Cursed", "the Divine",
+        "of the First Age", "the Reborn", "of Ruin", "the Unbroken", "of the Storm",
+        "of Shadows",
+    ];
+    let idx = base_name.len() % titles.len();
+    format!("{}, {}", base_name, titles[idx])
+}
+
+pub fn apply_name_title(name: &str, title: &str) -> String {
+    format!("{} {}", title, name)
+}
+
+pub fn is_name_unique_in_database(name: &str, db: &ItemDatabase) -> bool {
+    !db.definitions.values().any(|d| d.name == name)
+}
+
+pub fn suggest_item_name(category: ItemCategory, rarity: Rarity, db: &ItemDatabase) -> String {
+    let seed = category as u64 * 1000 + rarity as u64 * 100 + db.definitions.len() as u64;
+    let name = generate_item_name(
+        (seed as usize) % WEAPON_PREFIXES.len(),
+        ((seed / 2) + 1) as usize % WEAPON_BASES.len(),
+        ((seed / 4) + 3) as usize % WEAPON_SUFFIXES.len(),
+    );
+    if is_name_unique_in_database(&name, db) {
+        name
+    } else {
+        format!("{} ({})", name, db.definitions.len())
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM TAG SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemTagSystem {
+    pub tags: HashMap<String, HashSet<u64>>,
+    pub item_tags: HashMap<u64, HashSet<String>>,
+}
+
+impl ItemTagSystem {
+    pub fn new() -> Self {
+        ItemTagSystem {
+            tags: HashMap::new(),
+            item_tags: HashMap::new(),
+        }
+    }
+
+    pub fn tag_item(&mut self, item_id: u64, tag: String) {
+        self.tags.entry(tag.clone()).or_insert_with(HashSet::new).insert(item_id);
+        self.item_tags.entry(item_id).or_insert_with(HashSet::new).insert(tag);
+    }
+
+    pub fn untag_item(&mut self, item_id: u64, tag: &str) {
+        if let Some(set) = self.tags.get_mut(tag) { set.remove(&item_id); }
+        if let Some(set) = self.item_tags.get_mut(&item_id) { set.remove(tag); }
+    }
+
+    pub fn items_with_tag(&self, tag: &str) -> Vec<u64> {
+        self.tags.get(tag).map(|s| s.iter().copied().collect()).unwrap_or_default()
+    }
+
+    pub fn tags_for_item(&self, item_id: u64) -> Vec<String> {
+        self.item_tags.get(&item_id).map(|s| s.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    pub fn items_with_all_tags(&self, tags: &[&str]) -> Vec<u64> {
+        if tags.is_empty() { return Vec::new(); }
+        let mut result: Option<HashSet<u64>> = None;
+        for &tag in tags {
+            let set: HashSet<u64> = self.tags.get(tag).map(|s| s.clone()).unwrap_or_default();
+            result = Some(match result {
+                None => set,
+                Some(prev) => prev.intersection(&set).copied().collect(),
+            });
+        }
+        result.map(|s| s.into_iter().collect()).unwrap_or_default()
+    }
+
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut tags: Vec<String> = self.tags.keys().cloned().collect();
+        tags.sort();
+        tags
+    }
+
+    pub fn rename_tag(&mut self, old: &str, new: String) {
+        if let Some(items) = self.tags.remove(old) {
+            for &item_id in &items {
+                if let Some(item_tags) = self.item_tags.get_mut(&item_id) {
+                    item_tags.remove(old);
+                    item_tags.insert(new.clone());
+                }
+            }
+            self.tags.insert(new, items);
+        }
+    }
+}
+
+// ============================================================
+// FINAL ENTRY POINT
+// ============================================================
+
+pub fn inventory_editor_main() {
+    let mut editor = build_editor();
+
+    // Generate random items
+    for i in 0..5u64 {
+        editor.generation_params.seed = i * 1337 + 42;
+        editor.generation_params.item_level = (i * 3 + 1) as u32;
+        editor.generate_random_item();
+    }
+
+    // Power curve analysis
+    let _curve = generate_power_curve(1, 20);
+
+    // Build a catalog
+    let catalog = ItemCatalog::build(&editor.database);
+    let _common_items = catalog.items_by_rarity(Rarity::Common);
+
+    // Test loot table
+    let ctx = LootContext::default();
+    let random_values: Vec<f32> = (0..40).map(|i| (i as f32 * 0.617) % 1.0).collect();
+    let tables: Vec<&LootTable> = editor.database.loot_tables.values().collect();
+    for table in &tables {
+        let _drops = table.roll_drops(&ctx, &random_values);
+    }
+
+    // Stat comparison
+    let all_defs: Vec<&ItemDefinition> = editor.database.definitions.values().collect();
+    if all_defs.len() >= 2 {
+        let _table = stat_comparison_table(&all_defs[..2]);
+    }
+
+    // Rarity table test
+    let rarity_table = RarityDropTable::standard();
+    let mf_table = RarityDropTable::magic_find_adjusted(100.0);
+    for i in 0u64..10 {
+        let _r = rarity_table.sample(i as f64 / 10.0, (i as f64 + 0.5) / 10.0);
+    }
+
+    // Tag system usage
+    let mut tags = ItemTagSystem::new();
+    for (id, def) in &editor.database.definitions {
+        if def.rarity >= Rarity::Rare {
+            tags.tag_item(*id, "high-value".to_string());
+        }
+        if def.category.is_weapon() {
+            tags.tag_item(*id, "weapon".to_string());
+        }
+    }
+
+    // Crafting queue simulation
+    let mut queue = CraftingQueue::new(2);
+    for (id, recipe) in &editor.database.recipes {
+        queue.queue_recipe(*id, 1, recipe.crafting_time_seconds);
+    }
+    for _ in 0..10 {
+        let _finished = queue.tick(1.0);
+    }
+
+    // Drop analytics
+    let mut analytics = DropAnalyticsRegistry::new();
+    for (id, def) in &editor.database.definitions {
+        analytics.record_drop(*id, def.item_level as f32, def.rarity, 0.0);
+    }
+    let _most_common = analytics.most_common_drops(5);
+}
+
+// ============================================================
+// EXTENDED: ITEM MODIFIER REROLL SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RerollCost {
+    pub gold: u64,
+    pub materials: Vec<(u64, u32)>,
+    pub randomizer_item_id: Option<u64>,
+}
+
+impl RerollCost {
+    pub fn for_item(def: &ItemDefinition) -> Self {
+        let base = (def.base_price as f32 * 0.3) as u64;
+        let mat_count = match def.rarity {
+            Rarity::Common => 1,
+            Rarity::Uncommon => 2,
+            Rarity::Rare => 3,
+            Rarity::Epic => 5,
+            Rarity::Legendary => 8,
+            Rarity::Mythic => 15,
+        };
+        RerollCost {
+            gold: base,
+            materials: vec![(2001, mat_count)],
+            randomizer_item_id: None,
+        }
+    }
+}
+
+pub fn reroll_explicit_modifiers(
+    item: &mut ItemDefinition,
+    affix_pool: &AffixPool,
+    seed: u64,
+) {
+    let rarity_cfg = RarityConfig::for_rarity(item.rarity);
+    item.explicit_modifiers.clear();
+
+    let mut s = seed;
+    let num_affixes = rarity_cfg.min_affixes
+        + (lcg_f32_local(&mut s) * (rarity_cfg.max_affixes - rarity_cfg.min_affixes + 1) as f32) as u32;
+
+    let eligible_prefixes = affix_pool.eligible(item.category, item.item_level, AffixType::Prefix);
+    let eligible_suffixes = affix_pool.eligible(item.category, item.item_level, AffixType::Suffix);
+
+    let half = num_affixes / 2;
+    let mut selected_ids: Vec<u64> = Vec::new();
+    roll_affixes_into(&mut item.explicit_modifiers, &mut selected_ids, &eligible_prefixes, half, &mut s, affix_pool);
+    roll_affixes_into(&mut item.explicit_modifiers, &mut selected_ids, &eligible_suffixes, num_affixes - half, &mut s, affix_pool);
+}
+
+fn lcg_f32_local(seed: &mut u64) -> f32 {
+    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    ((*seed >> 32) as f32) / (u32::MAX as f32)
+}
+
+pub fn reroll_single_modifier(
+    item: &mut ItemDefinition,
+    modifier_index: usize,
+    affix_pool: &AffixPool,
+    seed: u64,
+) -> bool {
+    if modifier_index >= item.explicit_modifiers.len() { return false; }
+
+    let mut s = seed;
+    let eligible = affix_pool.eligible(item.category, item.item_level, AffixType::Suffix);
+    if eligible.is_empty() { return false; }
+
+    let weights: Vec<f64> = eligible.iter().map(|d| d.weight as f64).collect();
+    let alias = AliasTable::new(&weights);
+    let u1 = lcg_f32_local(&mut s) as f64;
+    let u2 = lcg_f32_local(&mut s) as f64;
+    let idx = alias.sample(u1, u2);
+    let affix = eligible[idx];
+
+    let roll_t = lcg_f32_local(&mut s);
+    let mut m = affix.modifier_template.clone();
+    m.flat_value = affix.roll_flat_value(roll_t);
+    m.percent_value = affix.roll_percent_value(roll_t);
+    item.explicit_modifiers[modifier_index] = m;
+    true
+}
+
+// ============================================================
+// EXTENDED: ITEM CORRUPTION SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CorruptionType {
+    StatBuff,
+    StatNerf,
+    AddSocket,
+    ChangeRarity,
+    AddImplicit,
+    CorruptedBlood, // ongoing damage penalty
+    ChaosDamageBonus,
+    BreakItem,
+}
+
+#[derive(Debug, Clone)]
+pub struct CorruptionOutcome {
+    pub corruption_type: CorruptionType,
+    pub weight: f32,
+    pub description: String,
+}
+
+pub fn corrupt_item(item: &mut ItemDefinition, seed: u64) -> CorruptionType {
+    let outcomes = vec![
+        CorruptionOutcome { corruption_type: CorruptionType::StatBuff, weight: 25.0, description: "One modifier is enhanced by 20-30%".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::StatNerf, weight: 25.0, description: "One modifier is reduced by 20-30%".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::AddSocket, weight: 15.0, description: "An additional socket is added".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::ChangeRarity, weight: 10.0, description: "Rarity shifts up or down one tier".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::AddImplicit, weight: 10.0, description: "A powerful but dangerous implicit is added".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::CorruptedBlood, weight: 8.0, description: "Wearer takes 1% of max health per second as damage".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::ChaosDamageBonus, weight: 5.0, description: "Adds 10-20% chaos damage bonus to all attacks".to_string() },
+        CorruptionOutcome { corruption_type: CorruptionType::BreakItem, weight: 2.0, description: "Item is destroyed".to_string() },
+    ];
+
+    let weights: Vec<f64> = outcomes.iter().map(|o| o.weight as f64).collect();
+    let alias = AliasTable::new(&weights);
+    let mut s = seed;
+    let u1 = lcg_f32_local(&mut s) as f64;
+    let u2 = lcg_f32_local(&mut s) as f64;
+    let idx = alias.sample(u1, u2);
+    let ct = outcomes[idx].corruption_type;
+
+    let roll = lcg_f32_local(&mut s);
+    match ct {
+        CorruptionType::StatBuff => {
+            if let Some(m) = item.explicit_modifiers.first_mut() {
+                let boost = 1.2 + roll * 0.1;
+                m.flat_value *= boost;
+                m.percent_value *= boost;
+            }
+        }
+        CorruptionType::StatNerf => {
+            if let Some(m) = item.explicit_modifiers.first_mut() {
+                let reduce = 0.7 + roll * 0.1;
+                m.flat_value *= reduce;
+                m.percent_value *= reduce;
+            }
+        }
+        CorruptionType::ChangeRarity => {
+            item.rarity = if roll < 0.5 {
+                match item.rarity {
+                    Rarity::Common => Rarity::Uncommon,
+                    Rarity::Uncommon => Rarity::Rare,
+                    Rarity::Rare => Rarity::Epic,
+                    Rarity::Epic => Rarity::Legendary,
+                    Rarity::Legendary => Rarity::Mythic,
+                    Rarity::Mythic => Rarity::Mythic,
+                }
+            } else {
+                match item.rarity {
+                    Rarity::Mythic => Rarity::Legendary,
+                    Rarity::Legendary => Rarity::Epic,
+                    Rarity::Epic => Rarity::Rare,
+                    Rarity::Rare => Rarity::Uncommon,
+                    Rarity::Uncommon => Rarity::Common,
+                    Rarity::Common => Rarity::Common,
+                }
+            };
+        }
+        CorruptionType::AddImplicit => {
+            item.implicit_modifiers.push(StatModifier::percent(StatType::CritChance, 5.0));
+            // Add a downside
+            item.implicit_modifiers.push(StatModifier::percent(StatType::LifeMax, -10.0));
+        }
+        CorruptionType::ChaosDamageBonus => {
+            item.implicit_modifiers.push(StatModifier::percent(StatType::PhysicalDamage, 10.0 + roll * 10.0));
+        }
+        _ => {}
+    }
+
+    ct
+}
+
+// ============================================================
+// EXTENDED: ITEM TRANSMUTATION TABLE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TransmutationRule {
+    pub source_category: ItemCategory,
+    pub target_category: ItemCategory,
+    pub cost_items: Vec<(u64, u32)>,
+    pub success_rate: f32,
+    pub preserves_level: bool,
+    pub preserves_modifiers: bool,
+    pub station_required: Option<String>,
+}
+
+impl TransmutationRule {
+    pub fn can_apply(&self, item: &ItemDefinition, station: Option<&str>) -> bool {
+        if item.category != self.source_category { return false; }
+        if let Some(req) = &self.station_required {
+            if station.map(|s| s != req.as_str()).unwrap_or(true) { return false; }
+        }
+        true
+    }
+
+    pub fn transmute(&self, item: &ItemDefinition, new_id: u64, seed: u64) -> ItemDefinition {
+        let mut new_item = ItemDefinition::new(new_id, &item.name, self.target_category);
+        if self.preserves_level {
+            new_item.item_level = item.item_level;
+            new_item.required_level = item.required_level;
+        }
+        new_item.rarity = item.rarity;
+        if self.preserves_modifiers {
+            new_item.explicit_modifiers = item.explicit_modifiers.clone();
+            new_item.implicit_modifiers = item.implicit_modifiers.clone();
+        }
+        new_item
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM DROP SOUND MAPPING
+// ============================================================
+
+pub fn drop_sound_for_item(item: &ItemDefinition) -> &'static str {
+    match item.category {
+        ItemCategory::Currency => "drop_coin",
+        ItemCategory::Gem => "drop_gem",
+        ItemCategory::Potion => "drop_potion",
+        ItemCategory::Sword | ItemCategory::Dagger | ItemCategory::Axe => "drop_blade",
+        ItemCategory::Greatsword | ItemCategory::Greataxe | ItemCategory::Hammer => "drop_heavy_weapon",
+        ItemCategory::Bow | ItemCategory::Crossbow => "drop_bow",
+        ItemCategory::Staff | ItemCategory::Wand | ItemCategory::Orb | ItemCategory::Tome => "drop_magic",
+        ItemCategory::Chestplate | ItemCategory::Helmet | ItemCategory::Greaves => "drop_armor_heavy",
+        ItemCategory::Robe | ItemCategory::Hood | ItemCategory::Leggings => "drop_cloth",
+        ItemCategory::Ring | ItemCategory::Amulet => "drop_jewel",
+        _ => "drop_generic",
+    }
+}
+
+pub fn drop_visual_for_rarity(rarity: Rarity) -> (Vec4, f32, &'static str) {
+    // (glow_color, glow_intensity, particle_vfx)
+    match rarity {
+        Rarity::Common => (Vec4::new(0.8, 0.8, 0.8, 0.3), 0.2, "drop_common"),
+        Rarity::Uncommon => (Vec4::new(0.2, 0.8, 0.2, 0.5), 0.4, "drop_uncommon"),
+        Rarity::Rare => (Vec4::new(0.2, 0.4, 1.0, 0.7), 0.6, "drop_rare"),
+        Rarity::Epic => (Vec4::new(0.6, 0.1, 0.9, 0.8), 0.8, "drop_epic"),
+        Rarity::Legendary => (Vec4::new(1.0, 0.5, 0.0, 1.0), 1.0, "drop_legendary"),
+        Rarity::Mythic => (Vec4::new(1.0, 0.0, 0.3, 1.0), 1.5, "drop_mythic"),
+    }
+}
+
+// ============================================================
+// EXTENDED: INVENTORY WEIGHT SIMULATION
+// ============================================================
+
+pub fn simulate_inventory_weight(
+    containers: &[&Container],
+    travel_speed_normal: f32,
+) -> InventoryWeightReport {
+    let total_weight: f32 = containers.iter().map(|c| c.current_weight).sum();
+    let max_weight: f32 = containers.iter().map(|c| c.max_weight).sum();
+    let fraction = if max_weight > 0.0 { total_weight / max_weight } else { 0.0 };
+
+    // Speed penalty formula: linear drop, 50% speed at 100% encumbrance, 0% at 150%
+    let speed_multiplier = if fraction <= 0.5 {
+        1.0
+    } else if fraction <= 1.0 {
+        1.0 - (fraction - 0.5) * 0.5 / 0.5
+    } else {
+        0.0 // immobile
+    };
+
+    let effective_speed = travel_speed_normal * speed_multiplier;
+    let heavy_items: Vec<usize> = containers.iter().enumerate()
+        .flat_map(|(i, c)| c.items.values().map(move |inst| i))
+        .collect();
+
+    InventoryWeightReport {
+        total_weight,
+        max_weight,
+        weight_fraction: fraction,
+        speed_multiplier,
+        effective_speed,
+        is_encumbered: fraction > 0.7,
+        is_overloaded: fraction > 1.0,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InventoryWeightReport {
+    pub total_weight: f32,
+    pub max_weight: f32,
+    pub weight_fraction: f32,
+    pub speed_multiplier: f32,
+    pub effective_speed: f32,
+    pub is_encumbered: bool,
+    pub is_overloaded: bool,
+}
+
+// ============================================================
+// EXTENDED: ITEM ATTRIBUTE INHERITANCE (set crafting)
+// ============================================================
+
+pub fn inherit_attributes_from_parent(
+    child: &mut ItemDefinition,
+    parent: &ItemDefinition,
+    inherit_mask: AttributeInheritMask,
+) {
+    if inherit_mask.rarity { child.rarity = parent.rarity; }
+    if inherit_mask.item_level { child.item_level = parent.item_level; }
+    if inherit_mask.implicit_modifiers { child.implicit_modifiers = parent.implicit_modifiers.clone(); }
+    if inherit_mask.explicit_modifiers { child.explicit_modifiers = parent.explicit_modifiers.clone(); }
+    if inherit_mask.sockets { /* would copy sockets */ }
+    if inherit_mask.enchantments { /* would copy enchants */ }
+    if inherit_mask.quality_tier {
+        // Inherit quality via sell price ratio
+        child.sell_price_ratio = parent.sell_price_ratio;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AttributeInheritMask {
+    pub rarity: bool,
+    pub item_level: bool,
+    pub implicit_modifiers: bool,
+    pub explicit_modifiers: bool,
+    pub sockets: bool,
+    pub enchantments: bool,
+    pub quality_tier: bool,
+}
+
+impl AttributeInheritMask {
+    pub fn all() -> Self {
+        AttributeInheritMask {
+            rarity: true, item_level: true, implicit_modifiers: true,
+            explicit_modifiers: true, sockets: true, enchantments: true,
+            quality_tier: true,
+        }
+    }
+
+    pub fn none() -> Self {
+        AttributeInheritMask {
+            rarity: false, item_level: false, implicit_modifiers: false,
+            explicit_modifiers: false, sockets: false, enchantments: false,
+            quality_tier: false,
+        }
+    }
+
+    pub fn affixes_only() -> Self {
+        let mut m = AttributeInheritMask::none();
+        m.implicit_modifiers = true;
+        m.explicit_modifiers = true;
+        m
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM SEARCH TOKENIZER
+// ============================================================
+
+pub struct ItemSearchTokenizer {
+    pub stopwords: HashSet<String>,
+}
+
+impl ItemSearchTokenizer {
+    pub fn new() -> Self {
+        let stops = ["the", "of", "a", "an", "and", "or", "in", "on", "at"]
+            .iter().map(|s| s.to_string()).collect();
+        ItemSearchTokenizer { stopwords: stops }
+    }
+
+    pub fn tokenize(&self, text: &str) -> Vec<String> {
+        text.split_whitespace()
+            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .filter(|w| !w.is_empty() && !self.stopwords.contains(w))
+            .collect()
+    }
+
+    pub fn build_index(&self, defs: &HashMap<u64, ItemDefinition>) -> HashMap<String, Vec<u64>> {
+        let mut idx: HashMap<String, Vec<u64>> = HashMap::new();
+        for (id, def) in defs {
+            for token in self.tokenize(&def.name) {
+                idx.entry(token).or_insert_with(Vec::new).push(*id);
+            }
+            for token in self.tokenize(&def.description) {
+                idx.entry(token).or_insert_with(Vec::new).push(*id);
+            }
+        }
+        // Remove duplicates
+        for list in idx.values_mut() {
+            list.sort_unstable();
+            list.dedup();
+        }
+        idx
+    }
+
+    pub fn search_index(&self, index: &HashMap<String, Vec<u64>>, query: &str) -> Vec<u64> {
+        let tokens = self.tokenize(query);
+        if tokens.is_empty() { return Vec::new(); }
+
+        let sets: Vec<&Vec<u64>> = tokens.iter()
+            .filter_map(|t| index.get(t))
+            .collect();
+        if sets.is_empty() { return Vec::new(); }
+
+        // Intersection
+        let mut result: HashSet<u64> = sets[0].iter().copied().collect();
+        for set in &sets[1..] {
+            let s: HashSet<u64> = set.iter().copied().collect();
+            result = result.intersection(&s).copied().collect();
+        }
+        let mut v: Vec<u64> = result.into_iter().collect();
+        v.sort();
+        v
+    }
+
+    pub fn fuzzy_search(&self, index: &HashMap<String, Vec<u64>>, query: &str, max_edit_dist: usize) -> Vec<u64> {
+        let query_tokens = self.tokenize(query);
+        let mut results: HashSet<u64> = HashSet::new();
+        for token in &query_tokens {
+            for (key, ids) in index {
+                if edit_distance(token, key) <= max_edit_dist {
+                    results.extend(ids.iter().copied());
+                }
+            }
+        }
+        let mut v: Vec<u64> = results.into_iter().collect();
+        v.sort();
+        v
+    }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let n = a.len();
+    let m = b.len();
+    if n == 0 { return m; }
+    if m == 0 { return n; }
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 0..=n { dp[i][0] = i; }
+    for j in 0..=m { dp[0][j] = j; }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
+            dp[i][j] = (dp[i-1][j] + 1).min(dp[i][j-1] + 1).min(dp[i-1][j-1] + cost);
+        }
+    }
+    dp[n][m]
+}
+
+// ============================================================
+// EXTENDED: VENDOR PRICE SIMULATION OVER TIME
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct PriceSimPoint {
+    pub time: f32,
+    pub price: u64,
+    pub supply: f32,
+    pub demand: f32,
+}
+
+pub fn simulate_vendor_prices(
+    vendor: &mut VendorDefinition,
+    item: &ItemDefinition,
+    duration_hours: f32,
+    events: &[(f32, EconomyTransaction)], // (time, event)
+) -> Vec<PriceSimPoint> {
+    let mut history = Vec::new();
+    let step = 1.0f32;
+    let steps = (duration_hours / step) as u32;
+    let mut event_idx = 0;
+
+    for s in 0..steps {
+        let t = s as f32 * step;
+
+        // Process events at this time
+        while event_idx < events.len() && events[event_idx].0 <= t {
+            vendor.adjust_supply_demand(events[event_idx].1.clone());
+            event_idx += 1;
+        }
+
+        vendor.refresh_inventory(t);
+        let price = vendor.buy_price(item);
+        history.push(PriceSimPoint {
+            time: t,
+            price,
+            supply: vendor.supply,
+            demand: vendor.demand,
+        });
+    }
+
+    history
+}
+
+// ============================================================
+// EXTENDED: ITEM DURABILITY DEGRADATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DurabilitySystem {
+    pub base_loss_per_hit: f32,
+    pub base_loss_per_death: f32,
+    pub level_scaling: f32,  // higher level items lose less per hit
+    pub repair_efficiency: f32, // fraction of max durability restored per repair
+    pub indestructible_threshold: f32, // below this % the item breaks but isn't destroyed
+}
+
+impl DurabilitySystem {
+    pub fn standard() -> Self {
+        DurabilitySystem {
+            base_loss_per_hit: 0.01,
+            base_loss_per_death: 5.0,
+            level_scaling: 0.02,
+            repair_efficiency: 1.0,
+            indestructible_threshold: 0.0,
+        }
+    }
+
+    pub fn hit_damage(&self, item_level: u32) -> f32 {
+        self.base_loss_per_hit * (1.0 - self.level_scaling * item_level as f32 * 0.01).max(0.1)
+    }
+
+    pub fn apply_hit(&self, instance: &mut ItemInstance, item_level: u32) {
+        let loss = self.hit_damage(item_level);
+        instance.durability = (instance.durability - loss).max(0.0);
+    }
+
+    pub fn apply_death(&self, instance: &mut ItemInstance) {
+        instance.durability = (instance.durability - self.base_loss_per_death).max(0.0);
+    }
+
+    pub fn repair(&self, instance: &mut ItemInstance) {
+        instance.durability = (instance.durability + 100.0 * self.repair_efficiency).min(100.0);
+    }
+
+    pub fn partial_repair(&self, instance: &mut ItemInstance, fraction: f32) {
+        let gain = 100.0 * self.repair_efficiency * fraction.clamp(0.0, 1.0);
+        instance.durability = (instance.durability + gain).min(100.0);
+    }
+}
+
+// ============================================================
+// EXTENDED: CRAFTING SKILL PROGRESSION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CraftingSkill {
+    pub name: String,
+    pub current_level: u32,
+    pub current_xp: u64,
+    pub xp_to_next_level: u64,
+    pub total_xp: u64,
+    pub max_level: u32,
+    pub recipes_unlocked_at: HashMap<u32, Vec<u64>>, // level -> recipe ids
+    pub special_perks_at: HashMap<u32, String>, // level -> perk description
+}
+
+impl CraftingSkill {
+    pub fn new(name: impl Into<String>) -> Self {
+        let mut skill = CraftingSkill {
+            name: name.into(),
+            current_level: 1,
+            current_xp: 0,
+            xp_to_next_level: 100,
+            total_xp: 0,
+            max_level: 100,
+            recipes_unlocked_at: HashMap::new(),
+            special_perks_at: HashMap::new(),
+        };
+        skill.special_perks_at.insert(10, "+5% crafting success rate".to_string());
+        skill.special_perks_at.insert(25, "Can craft Rare quality items".to_string());
+        skill.special_perks_at.insert(50, "+10% crafting speed".to_string());
+        skill.special_perks_at.insert(75, "Can craft Epic quality items".to_string());
+        skill.special_perks_at.insert(100, "Grandmaster: Can craft Legendary quality items".to_string());
+        skill
+    }
+
+    pub fn xp_required_for_level(level: u32) -> u64 {
+        // Exponential growth: xp = 100 * 1.15^(level-1)
+        (100.0 * (1.15f64).powi(level as i32 - 1)) as u64
+    }
+
+    pub fn add_xp(&mut self, xp: u64) -> Vec<u32> {
+        let mut levels_gained = Vec::new();
+        self.current_xp += xp;
+        self.total_xp += xp;
+
+        while self.current_xp >= self.xp_to_next_level && self.current_level < self.max_level {
+            self.current_xp -= self.xp_to_next_level;
+            self.current_level += 1;
+            levels_gained.push(self.current_level);
+            self.xp_to_next_level = Self::xp_required_for_level(self.current_level + 1);
+        }
+
+        levels_gained
+    }
+
+    pub fn level_fraction(&self) -> f32 {
+        if self.xp_to_next_level == 0 { return 1.0; }
+        self.current_xp as f32 / self.xp_to_next_level as f32
+    }
+
+    pub fn success_rate_bonus(&self) -> f32 {
+        // +0.5% per 10 levels
+        (self.current_level as f32 / 10.0) * 0.5
+    }
+
+    pub fn quality_bonus(&self) -> f32 {
+        // +1% quality multiplier per 5 levels
+        self.current_level as f32 * 0.01
+    }
+}
+
+// ============================================================
+// EXTENDED: LOADOUT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct EquipmentLoadout {
+    pub id: u64,
+    pub name: String,
+    pub slots: HashMap<EquipmentSlot, Option<ItemInstance>>,
+    pub total_weight: f32,
+    pub stat_totals: HashMap<StatType, f32>,
+    pub active_set_piece_counts: HashMap<u64, u32>,
+}
+
+impl EquipmentLoadout {
+    pub fn new(id: u64, name: impl Into<String>) -> Self {
+        let mut slots = HashMap::new();
+        for &slot in EquipmentSlot::all() {
+            slots.insert(slot, None);
+        }
+        EquipmentLoadout {
+            id,
+            name: name.into(),
+            slots,
+            total_weight: 0.0,
+            stat_totals: HashMap::new(),
+            active_set_piece_counts: HashMap::new(),
+        }
+    }
+
+    pub fn equip(&mut self, slot: EquipmentSlot, inst: ItemInstance, def: &ItemDefinition) -> Option<ItemInstance> {
+        let old = self.slots.insert(slot, Some(inst));
+        self.recalculate_totals_simple(def);
+        old.flatten()
+    }
+
+    pub fn unequip(&mut self, slot: EquipmentSlot) -> Option<ItemInstance> {
+        self.slots.get_mut(&slot).and_then(|s| s.take())
+    }
+
+    pub fn recalculate_totals_simple(&mut self, last_def: &ItemDefinition) {
+        // Simplified: just add the last def's modifiers
+        for m in &last_def.explicit_modifiers {
+            *self.stat_totals.entry(m.stat.clone()).or_insert(0.0) += m.flat_value;
+        }
+        self.total_weight += last_def.weight;
+    }
+
+    pub fn is_slot_filled(&self, slot: EquipmentSlot) -> bool {
+        self.slots.get(&slot).and_then(|s| s.as_ref()).is_some()
+    }
+
+    pub fn empty_slots(&self) -> Vec<EquipmentSlot> {
+        EquipmentSlot::all().iter()
+            .filter(|&&slot| !self.is_slot_filled(slot))
+            .copied()
+            .collect()
+    }
+
+    pub fn equipped_count(&self) -> u32 {
+        self.slots.values().filter(|s| s.is_some()).count() as u32
+    }
+
+    pub fn loadout_score(&self, defs: &HashMap<u64, ItemDefinition>) -> f32 {
+        let mut score = 0.0f32;
+        for inst in self.slots.values().filter_map(|s| s.as_ref()) {
+            if let Some(def) = defs.get(&inst.definition_id) {
+                score += item_power_score(def) * inst.quality;
+            }
+        }
+        score
+    }
+}
+
+// ============================================================
+// EXTENDED: LOOT TABLE VISUAL EDITOR HELPERS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LootTableEditorLayout {
+    pub entry_rects: Vec<Vec4>,       // one per entry
+    pub probability_bars: Vec<Vec4>,  // visual bar for each entry's probability
+    pub add_button_rect: Vec4,
+    pub simulate_button_rect: Vec4,
+    pub total_weight: f32,
+}
+
+impl LootTableEditorLayout {
+    pub fn compute(table: &LootTable, panel_rect: Vec4) -> Self {
+        let x = panel_rect.x + 8.0;
+        let mut y = panel_rect.y + 40.0;
+        let row_h = 30.0;
+        let w = panel_rect.z - 16.0;
+        let total_weight: f32 = table.entries.iter().filter(|e| !e.guaranteed).map(|e| e.weight).sum();
+
+        let mut entry_rects = Vec::new();
+        let mut prob_bars = Vec::new();
+
+        for entry in &table.entries {
+            entry_rects.push(Vec4::new(x, y, w, row_h));
+            let prob = if entry.guaranteed { 1.0 } else if total_weight > 0.0 { entry.weight / total_weight } else { 0.0 };
+            let bar_w = (w - 120.0) * prob;
+            prob_bars.push(Vec4::new(x + 120.0, y + 8.0, bar_w, row_h - 16.0));
+            y += row_h + 4.0;
+        }
+
+        let add_btn = Vec4::new(x, y + 8.0, 80.0, 24.0);
+        let sim_btn = Vec4::new(x + 90.0, y + 8.0, 100.0, 24.0);
+
+        LootTableEditorLayout {
+            entry_rects,
+            probability_bars: prob_bars,
+            add_button_rect: add_btn,
+            simulate_button_rect: sim_btn,
+            total_weight,
+        }
+    }
+}
+
+// ============================================================
+// EXTENDED: STAT PROGRESSION PREVIEW
+// ============================================================
+
+pub fn stat_projection_over_levels(
+    stat: StatType,
+    min_level: u32,
+    max_level: u32,
+    rarity: Rarity,
+) -> Vec<(u32, f32)> {
+    (min_level..=max_level).map(|lvl| {
+        let expected = budget_expectation(lvl, rarity);
+        let cost = stat_budget_cost(&stat);
+        let allocated_to_stat = expected / (4.0 * cost); // rough portion
+        (lvl, allocated_to_stat)
+    }).collect()
+}
+
+pub fn compute_ideal_item_set_for_level(level: u32) -> HashMap<EquipmentSlot, (Rarity, f32)> {
+    // Returns (rarity, expected_power) for each slot at given level
+    let mut recommendation = HashMap::new();
+    let rarity = if level < 10 { Rarity::Common }
+        else if level < 25 { Rarity::Uncommon }
+        else if level < 50 { Rarity::Rare }
+        else if level < 75 { Rarity::Epic }
+        else { Rarity::Legendary };
+
+    for &slot in EquipmentSlot::all() {
+        let power = budget_expectation(level, rarity);
+        recommendation.insert(slot, (rarity, power));
+    }
+    recommendation
+}
+
+// ============================================================
+// EXTENDED: GOLD SINK SIMULATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct GoldSinkSimulator {
+    pub repair_cost_per_session: u64,
+    pub vendor_purchases_per_session: u64,
+    pub crafting_cost_per_session: u64,
+    pub enchanting_cost_per_session: u64,
+    pub trading_fees_per_session: u64,
+    pub tax_rate: f32, // fraction of vendor sales taken as tax
+}
+
+impl GoldSinkSimulator {
+    pub fn default_economy() -> Self {
+        GoldSinkSimulator {
+            repair_cost_per_session: 50,
+            vendor_purchases_per_session: 200,
+            crafting_cost_per_session: 150,
+            enchanting_cost_per_session: 100,
+            trading_fees_per_session: 30,
+            tax_rate: 0.05,
+        }
+    }
+
+    pub fn total_gold_sunk_per_session(&self, vendor_sales: u64) -> u64 {
+        let tax = (vendor_sales as f32 * self.tax_rate) as u64;
+        self.repair_cost_per_session
+            + self.vendor_purchases_per_session
+            + self.crafting_cost_per_session
+            + self.enchanting_cost_per_session
+            + self.trading_fees_per_session
+            + tax
+    }
+
+    pub fn gold_income_per_session(&self, mobs_killed: u32, avg_gold_per_mob: u64, vendor_sales: u64) -> u64 {
+        mobs_killed as u64 * avg_gold_per_mob + vendor_sales
+    }
+
+    pub fn net_gold_per_session(&self, mobs_killed: u32, avg_gold_per_mob: u64, vendor_sales: u64) -> i64 {
+        let income = self.gold_income_per_session(mobs_killed, avg_gold_per_mob, vendor_sales) as i64;
+        let sunk = self.total_gold_sunk_per_session(vendor_sales) as i64;
+        income - sunk
+    }
+
+    pub fn inflation_factor(&self, sessions: u32, mobs_per_session: u32, avg_gold: u64, vendor_sales: u64) -> f32 {
+        let net = self.net_gold_per_session(mobs_per_session, avg_gold, vendor_sales);
+        // Positive net = inflation over time
+        let total_net = net * sessions as i64;
+        if total_net > 0 {
+            1.0 + (total_net as f32 / (1_000_000.0 * sessions as f32)).min(2.0)
+        } else {
+            1.0
+        }
+    }
+}
+
+// ============================================================
+// EXTENDED: ITEM COMPARISON MATRIX
+// ============================================================
+
+pub fn build_comparison_matrix(items: &[&ItemDefinition]) -> Vec<Vec<f32>> {
+    let n = items.len();
+    let mut matrix = vec![vec![0.0f32; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i == j { matrix[i][j] = 1.0; continue; }
+            let score_i = item_power_score(items[i]);
+            let score_j = item_power_score(items[j]);
+            if score_j > 0.0 {
+                matrix[i][j] = score_i / score_j; // ratio > 1 means i is better than j
+            }
+        }
+    }
+    matrix
+}
+
+pub fn best_item_for_slot<'a>(
+    slot: EquipmentSlot,
+    available: &[&'a ItemDefinition],
+    player_level: u32,
+) -> Option<&'a ItemDefinition> {
+    available.iter()
+        .filter(|&&def| {
+            slot.is_compatible(def.category) &&
+            def.requirements.level <= player_level
+        })
+        .max_by(|a, b| {
+            item_power_score(a).partial_cmp(&item_power_score(b)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+}
+
+// ============================================================
+// EXTENDED: FULL DATABASE PERSISTENCE HELPERS
+// ============================================================
+
+pub fn serialize_item_to_string(item: &ItemDefinition) -> String {
+    let mods: String = item.explicit_modifiers.iter().map(|m| {
+        format!("{}:{}:{}", m.stat.display_name(), m.flat_value, m.percent_value)
+    }).collect::<Vec<_>>().join(",");
+
+    format!(
+        "id={};name={};cat={};rarity={};ilvl={};price={};weight={};w={};h={};mods=[{}]",
+        item.id,
+        item.name,
+        item.category.display_name(),
+        RarityConfig::for_rarity(item.rarity).display_name(),
+        item.item_level,
+        item.base_price,
+        item.weight,
+        item.width,
+        item.height,
+        mods
+    )
+}
+
+pub fn count_items_by_slot_compatibility(db: &ItemDatabase) -> HashMap<String, u32> {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for def in db.definitions.values() {
+        for &slot in EquipmentSlot::all() {
+            if slot.is_compatible(def.category) {
+                *counts.entry(slot.display_name().to_string()).or_insert(0) += 1;
+                break;
+            }
+        }
+    }
+    counts
+}
+
+pub fn database_integrity_check(db: &ItemDatabase) -> Vec<String> {
+    let mut issues = Vec::new();
+
+    // Check recipes reference valid items
+    for recipe in db.recipes.values() {
+        if !db.definitions.contains_key(&recipe.output_item_id) {
+            issues.push(format!("Recipe {} references non-existent output item {}", recipe.name, recipe.output_item_id));
+        }
+        for ing in &recipe.ingredients {
+            if !db.definitions.contains_key(&ing.item_id) {
+                issues.push(format!("Recipe {} references non-existent ingredient {}", recipe.name, ing.item_id));
+            }
+        }
+    }
+
+    // Check loot tables reference valid items
+    for table in db.loot_tables.values() {
+        for entry in &table.entries {
+            if !db.definitions.contains_key(&entry.item_id) {
+                issues.push(format!("Loot table {} references non-existent item {}", table.name, entry.item_id));
+            }
+        }
+    }
+
+    // Check item sets reference valid items
+    for set in db.item_sets.values() {
+        for &item_id in &set.item_ids {
+            if !db.definitions.contains_key(&item_id) {
+                issues.push(format!("Set {} references non-existent item {}", set.name, item_id));
+            }
+        }
+    }
+
+    // Check item ID uniqueness
+    let mut ids: HashSet<u64> = HashSet::new();
+    for &id in db.definitions.keys() {
+        if !ids.insert(id) {
+            issues.push(format!("Duplicate item ID: {}", id));
+        }
+    }
+
+    issues
+}
+
+// ============================================================
+// EXTENDED: ITEM LOCALIZATION SUPPORT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemLocalization {
+    pub item_id: u64,
+    pub locale: String,
+    pub name: String,
+    pub description: String,
+    pub flavor_text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalizationDatabase {
+    pub entries: HashMap<(u64, String), ItemLocalization>,
+    pub supported_locales: Vec<String>,
+    pub fallback_locale: String,
+}
+
+impl LocalizationDatabase {
+    pub fn new() -> Self {
+        LocalizationDatabase {
+            entries: HashMap::new(),
+            supported_locales: vec!["en".to_string(), "fr".to_string(), "de".to_string(), "ja".to_string()],
+            fallback_locale: "en".to_string(),
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: ItemLocalization) {
+        self.entries.insert((entry.item_id, entry.locale.clone()), entry);
+    }
+
+    pub fn get_name(&self, item_id: u64, locale: &str) -> Option<&str> {
+        self.entries.get(&(item_id, locale.to_string()))
+            .map(|e| e.name.as_str())
+    }
+
+    pub fn get_localized_name(&self, item: &ItemDefinition, locale: &str) -> String {
+        self.get_name(item.id, locale)
+            .or_else(|| self.get_name(item.id, &self.fallback_locale))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| item.name.clone())
+    }
+
+    pub fn missing_translations(&self, db: &ItemDatabase, locale: &str) -> Vec<u64> {
+        db.definitions.keys()
+            .filter(|&&id| !self.entries.contains_key(&(id, locale.to_string())))
+            .copied()
+            .collect()
+    }
+
+    pub fn localization_coverage(&self, db: &ItemDatabase, locale: &str) -> f32 {
+        let missing = self.missing_translations(db, locale).len();
+        let total = db.definitions.len();
+        if total == 0 { return 1.0; }
+        1.0 - missing as f32 / total as f32
+    }
+}
+
+// ============================================================
+// EXTENDED: BATCH IMPORT VALIDATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct BatchImportRecord {
+    pub row_index: usize,
+    pub raw_data: String,
+    pub parsed_item: Option<ItemDefinition>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn validate_batch_import(records: &mut Vec<BatchImportRecord>, db: &ItemDatabase) {
+    for record in records.iter_mut() {
+        if let Some(ref item) = record.parsed_item {
+            // Check for duplicate IDs
+            if db.definitions.contains_key(&item.id) {
+                record.warnings.push(format!("Item ID {} already exists — will overwrite", item.id));
+            }
+            // Run item validation
+            let errs = item.validate();
+            record.errors.extend(errs);
+            // Check balance
+            let report = validate_item_balance(item);
+            if report.is_overpowered {
+                record.warnings.push(format!("Item appears overpowered: budget={:.1}, expected={:.1}", report.total_budget, report.budget_level_expected));
+            }
+            if report.is_underpowered {
+                record.warnings.push(format!("Item appears underpowered: budget={:.1}, expected={:.1}", report.total_budget, report.budget_level_expected));
+            }
+        } else {
+            record.errors.push("Failed to parse item data".to_string());
+        }
+    }
+}
+
+pub fn batch_import_summary(records: &[BatchImportRecord]) -> BatchImportSummary {
+    let total = records.len();
+    let valid = records.iter().filter(|r| r.errors.is_empty() && r.parsed_item.is_some()).count();
+    let with_warnings = records.iter().filter(|r| !r.warnings.is_empty()).count();
+    let failed = records.iter().filter(|r| !r.errors.is_empty()).count();
+
+    BatchImportSummary { total, valid, with_warnings, failed }
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchImportSummary {
+    pub total: usize,
+    pub valid: usize,
+    pub with_warnings: usize,
+    pub failed: usize,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct EnchantmentRegistry {
+    pub enchantments: HashMap<u64, EnchantmentDefinition>,
+}
+
+impl EnchantmentRegistry {
+    pub fn new() -> Self { Self { enchantments: HashMap::new() } }
+
+    pub fn register(&mut self, enchant: EnchantmentDefinition) {
+        self.enchantments.insert(enchant.id, enchant);
+    }
+
+    pub fn applicable_to_slot(&self, slot: &EquipmentSlot) -> Vec<&EnchantmentDefinition> {
+        self.enchantments.values().filter(|e| e.applicable_slots.contains(slot)).collect()
+    }
+
+    pub fn can_apply(&self, enchant_id: u64, current_enchants: &[u64]) -> bool {
+        let enchant = match self.enchantments.get(&enchant_id) { Some(e) => e, None => return false };
+        for existing_id in current_enchants {
+            if enchant.incompatible_with.contains(existing_id) { return false; }
+            if let Some(existing) = self.enchantments.get(existing_id) {
+                if existing.incompatible_with.contains(&enchant_id) { return false; }
+            }
+        }
+        true
+    }
+
+    pub fn total_cost(&self, enchant_ids: &[u64]) -> f32 {
+        enchant_ids.iter().filter_map(|id| self.enchantments.get(id)).map(|e| e.cost_gold as f32).sum()
+    }
+}
+
+// ============================================================
+// SECTION: ITEM AUDIT LOG
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub enum ItemHistoryEvent {
+    Created { seed: u64 },
+    ModifiedField { field: String, old_value: String, new_value: String },
+    Corrupted { corruption_type: String },
+    Enchanted { enchant_id: u64 },
+    Socketed { socket_index: usize, gem_id: u64 },
+    Repaired { durability_restored: f32 },
+    Upgraded { upgrade_level: u32 },
+    Traded { from_player: u64, to_player: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemAuditEntry {
+    pub timestamp: u64,
+    pub event: ItemHistoryEvent,
+    pub actor_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemAuditLog {
+    pub item_id: u64,
+    pub entries: Vec<ItemAuditEntry>,
+}
+
+impl ItemAuditLog {
+    pub fn new(item_id: u64) -> Self { Self { item_id, entries: Vec::new() } }
+
+    pub fn record(&mut self, timestamp: u64, event: ItemHistoryEvent, actor_id: u64) {
+        self.entries.push(ItemAuditEntry { timestamp, event, actor_id });
+    }
+
+    pub fn count_event_type(&self, event_type: &str) -> usize {
+        self.entries.iter().filter(|e| {
+            let ty = match &e.event {
+                ItemHistoryEvent::Created { .. } => "Created",
+                ItemHistoryEvent::ModifiedField { .. } => "ModifiedField",
+                ItemHistoryEvent::Corrupted { .. } => "Corrupted",
+                ItemHistoryEvent::Enchanted { .. } => "Enchanted",
+                ItemHistoryEvent::Socketed { .. } => "Socketed",
+                ItemHistoryEvent::Repaired { .. } => "Repaired",
+                ItemHistoryEvent::Upgraded { .. } => "Upgraded",
+                ItemHistoryEvent::Traded { .. } => "Traded",
+            };
+            ty == event_type
+        }).count()
+    }
+
+    pub fn last_traded(&self) -> Option<(u64, u64)> {
+        self.entries.iter().rev().find_map(|e| {
+            if let ItemHistoryEvent::Traded { from_player, to_player } = &e.event {
+                Some((*from_player, *to_player))
+            } else { None }
+        })
+    }
+}
+
+// ============================================================
+// SECTION: ARMOR NAME GENERATION TABLES
+// ============================================================
+
+pub const ARMOR_PREFIXES: &[&str] = &[
+    "Adamantine", "Ancient", "Arcane", "Astral", "Awakened", "Azure", "Battleforged",
+    "Blessed", "Bound", "Brilliant", "Bronze", "Burning", "Carved", "Celestial",
+    "Chained", "Chromatic", "Cobalt", "Consecrated", "Corrupted", "Crystalline",
+    "Cursed", "Dark", "Dawnforged", "Deadened", "Defiant", "Dense", "Divine",
+    "Draconic", "Dread", "Dusk", "Echoing", "Elder", "Embossed", "Empowered",
+    "Enchanted", "Ethereal", "Exalted", "Fabled", "Fallen", "Flared", "Flickering",
+    "Forged", "Frostborn", "Ghostly", "Gilded", "Glorious", "Glowing", "Golden",
+    "Granite", "Hallowed", "Hardened", "Haunted", "Heavy", "Heralded", "Hollow",
+    "Holy", "Honored", "Horned", "Imbued", "Immortal", "Imperial", "Infernal",
+    "Inlaid", "Iron", "Jade", "Jagged", "Jeweled", "Kingly", "Lacquered",
+    "Layered", "Leathered", "Light", "Lightning", "Linked", "Living", "Lunar",
+    "Lustrous", "Mageweaved", "Marbled", "Marked", "Massive", "Merciless",
+    "Metallic", "Midnight", "Misted", "Moonlit", "Mottled", "Mystic",
+    "Nimble", "Noble", "Oaken", "Obsidian", "Opal", "Ornate", "Overlaid",
+    "Pale", "Patched", "Phantom", "Plated", "Polished", "Pristine", "Radiant",
+    "Raging", "Refined", "Reinforced", "Resplendent", "Rimed", "Rippling",
+    "Risen", "Rooted", "Royal", "Runed", "Sacred", "Sainted", "Scaled",
+    "Scorched", "Searing", "Shadow", "Shattered", "Shielded", "Shining",
+    "Silver", "Singed", "Skeletal", "Spiked", "Spirit", "Stalwart", "Steel",
+    "Stoneborn", "Storm", "Sturdy", "Sublime", "Sunforged", "Tempest",
+    "Tempered", "Thorned", "Thunder", "Titanium", "Torn", "Towering",
+    "Tranquil", "True", "Twisted", "Umbral", "Undead", "Unholy", "Unrelenting",
+    "Verdant", "Vesper", "Vibrant", "Vile", "Violet", "Void", "Volcanic",
+    "Warded", "Warlord", "Wicked", "Wild", "Woven", "Wyrmscale", "Zenith",
+];
+
+pub const ARMOR_BASES: &[&str] = &[
+    "Breastplate", "Chainmail", "Coat", "Cowl", "Cuirass", "Doublet", "Gambeson",
+    "Gauntlets", "Gorget", "Greaves", "Hauberk", "Helm", "Hood", "Jacket",
+    "Jerkin", "Kite Shield", "Lamellar", "Leggings", "Lorica", "Mantle",
+    "Pauldrons", "Pavise", "Plate Armor", "Robe", "Round Shield", "Sabatons",
+    "Scale Mail", "Sallet", "Sash", "Shoulderguards", "Skirt", "Skull Cap",
+    "Splint Mail", "Surcoat", "Tower Shield", "Tunic", "Vambraces", "Vest",
+    "Visage", "Warplate", "Wrap", "Brigandine", "Barbute", "Buckler",
+    "Camail", "Chausses", "Coif", "Cuisse", "Elbow Cops", "Fauld",
+    "Full Plate", "Harness", "Haubergeon", "Kettle Hat", "Knee Cops",
+    "Lames", "Laminar", "Mail Coif", "Mitten Gauntlets", "Nasal Helm",
+    "Pavis", "Poleyn", "Pot Helm", "Rerebrace", "Roundel", "Sabaton",
+    "Spangenhelm", "Spaulders", "Tasset", "Vambrace", "War Mask",
+    "Winged Helm", "Wyrm Coil", "Leather Vest", "Silk Robe", "Wool Cloak",
+];
+
+pub const ARMOR_SUFFIXES: &[&str] = &[
+    "of Absorption", "of Aegis", "of Agility", "of Atonement", "of Aversion",
+    "of Bravery", "of Bulwark", "of Calm", "of Castigation", "of Clarity",
+    "of Composure", "of Conviction", "of Courage", "of Dauntlessness", "of Defense",
+    "of Deflection", "of Denial", "of Devotion", "of Dominance", "of Durability",
+    "of Endurance", "of Fortification", "of Fortitude", "of Fury", "of Grace",
+    "of Hardiness", "of Immunity", "of Impenetrability", "of Indomitability",
+    "of Iron Will", "of Justice", "of Might", "of Persistence", "of Power",
+    "of Protection", "of Purity", "of Readiness", "of Recovery", "of Resilience",
+    "of Resolve", "of Retaliation", "of Retribution", "of Salvation", "of Sanctity",
+    "of Serenity", "of Shelter", "of Shielding", "of Solace", "of Solidarity",
+    "of Stability", "of Steadfastness", "of Stone", "of Strength", "of Stubbornness",
+    "of Tenacity", "of the Bear", "of the Bull", "of the Colossus", "of the Defender",
+    "of the Dragon", "of the Earth", "of the Fortress", "of the Giant", "of the Guardian",
+    "of the Iron Giant", "of the Knight", "of the Leviathan", "of the Lion",
+    "of the Mountain", "of the Paladin", "of the Rampart", "of the Rock",
+    "of the Sentinel", "of the Titan", "of the Tortoise", "of the Unyielding",
+    "of the Vanguard", "of the Wall", "of the Warden", "of the Warrior",
+    "of Toughness", "of Valor", "of Vengeance", "of Vigilance", "of Vitality",
+    "of Ward", "of Warding", "of Will", "of Withstanding", "of Wrath", "of Zeal",
+];
+
+pub fn generate_armor_name(seed: &mut u64) -> String {
+    let prefix_idx = (lcg_next(seed) as usize) % ARMOR_PREFIXES.len();
+    let base_idx = (lcg_next(seed) as usize) % ARMOR_BASES.len();
+    let suffix_roll = lcg_next(seed) % 3;
+    if suffix_roll == 0 {
+        let suffix_idx = (lcg_next(seed) as usize) % ARMOR_SUFFIXES.len();
+        format!("{} {} {}", ARMOR_PREFIXES[prefix_idx], ARMOR_BASES[base_idx], ARMOR_SUFFIXES[suffix_idx])
+    } else {
+        format!("{} {}", ARMOR_PREFIXES[prefix_idx], ARMOR_BASES[base_idx])
+    }
+}
+
+// ============================================================
+// SECTION: SET BONUS CALCULATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct SetBonusTier {
+    pub pieces_required: usize,
+    pub modifiers: Vec<StatModifier>,
+    pub special_effect: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemSetDefinition {
+    pub id: u64,
+    pub name: String,
+    pub members: Vec<u64>,
+    pub bonus_tiers: Vec<SetBonusTier>,
+}
+
+impl ItemSetDefinition {
+    pub fn active_bonuses(&self, equipped_count: usize) -> Vec<&SetBonusTier> {
+        self.bonus_tiers.iter().filter(|t| equipped_count >= t.pieces_required).collect()
+    }
+
+    pub fn total_modifiers_at_count(&self, equipped_count: usize) -> Vec<StatModifier> {
+        let mut mods = Vec::new();
+        for tier in self.active_bonuses(equipped_count) {
+            mods.extend(tier.modifiers.clone());
+        }
+        mods
+    }
+}
+
+pub fn detect_active_sets(equipped: &[&ItemDefinition], sets: &HashMap<u64, ItemSetDefinition>) -> Vec<(u64, usize)> {
+    let mut set_counts: HashMap<u64, usize> = HashMap::new();
+    for item in equipped {
+        if let Some(set_id) = item.set_id {
+            *set_counts.entry(set_id).or_insert(0) += 1;
+        }
+    }
+    set_counts.into_iter()
+        .filter(|(set_id, count)| {
+            sets.get(set_id).map(|s| !s.active_bonuses(*count).is_empty()).unwrap_or(false)
+        })
+        .collect()
+}
+
+// ============================================================
+// SECTION: UPGRADE MATERIAL SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct UpgradeMaterial {
+    pub id: u64,
+    pub name: String,
+    pub tier: u32,
+    pub material_type: String,
+    pub stack_size: u32,
+    pub base_value: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpgradeRecipe {
+    pub target_item_category: ItemCategory,
+    pub current_upgrade_level: u32,
+    pub materials: Vec<(u64, u32)>,
+    pub gold_cost: u64,
+    pub success_probability: f32,
+    pub stat_gain_per_upgrade: Vec<StatModifier>,
+}
+
+pub fn compute_upgrade_success_probability(base_prob: f32, upgrade_level: u32, blessing_bonus: f32) -> f32 {
+    let level_penalty = (upgrade_level as f32 * 0.05).min(0.4);
+    ((base_prob - level_penalty) + blessing_bonus).clamp(0.05, 1.0)
+}
+
+pub fn apply_upgrade(item: &mut ItemDefinition, recipe: &UpgradeRecipe, success: bool, upgrade_level: &mut u32) {
+    if success {
+        *upgrade_level += 1;
+        for modifier in &recipe.stat_gain_per_upgrade {
+            item.implicit_modifiers.push(modifier.clone());
+        }
+    }
+    // Failure: no change (item not destroyed at lower levels typically)
+}
+
+// ============================================================
+// SECTION: INVENTORY WEIGHT BUDGET PLANNER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct WeightBudgetPlanner {
+    pub max_carry_weight: f32,
+    pub current_items: Vec<(u64, f32)>,
+}
+
+impl WeightBudgetPlanner {
+    pub fn new(max_carry_weight: f32) -> Self {
+        Self { max_carry_weight, current_items: Vec::new() }
+    }
+
+    pub fn add_item(&mut self, item_id: u64, weight: f32) -> bool {
+        let total: f32 = self.current_items.iter().map(|(_, w)| w).sum::<f32>() + weight;
+        if total <= self.max_carry_weight {
+            self.current_items.push((item_id, weight));
+            true
+        } else { false }
+    }
+
+    pub fn remove_item(&mut self, item_id: u64) {
+        self.current_items.retain(|(id, _)| *id != item_id);
+    }
+
+    pub fn current_weight(&self) -> f32 {
+        self.current_items.iter().map(|(_, w)| w).sum()
+    }
+
+    pub fn remaining_capacity(&self) -> f32 {
+        self.max_carry_weight - self.current_weight()
+    }
+
+    pub fn encumbrance_penalty(&self) -> f32 {
+        let ratio = self.current_weight() / self.max_carry_weight;
+        if ratio < 0.5 { 0.0 }
+        else if ratio < 0.75 { (ratio - 0.5) * 0.4 }
+        else if ratio < 1.0 { 0.1 + (ratio - 0.75) * 0.8 }
+        else { 0.3 + (ratio - 1.0) * 2.0 }
+    }
+
+    pub fn knapsack_optimal_subset(&self, target_weight: f32) -> Vec<u64> {
+        // Greedy by weight approximation
+        let mut sorted = self.current_items.clone();
+        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut result = Vec::new();
+        let mut remaining = target_weight;
+        for (id, w) in sorted {
+            if w <= remaining {
+                remaining -= w;
+                result.push(id);
+            }
+        }
+        result
+    }
+}
+
+// ============================================================
+// SECTION: ITEM GENERATION VALIDATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ItemGenerationReport {
+    pub item_id: u64,
+    pub passed: bool,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub balance_score: f32,
+}
+
+pub fn full_generation_validation(item: &ItemDefinition, item_level: u32) -> ItemGenerationReport {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+
+    if item.name.is_empty() { errors.push("Item has no name".to_string()); }
+    if item.base_price == 0 { errors.push("Zero base price".to_string()); }
+    if item.weight < 0.0 { errors.push("Negative weight".to_string()); }
+    if item.explicit_modifiers.len() > 6 { warnings.push("Item has more than 6 explicit modifiers".to_string()); }
+    if item.requirements.level > item_level + 5 { warnings.push("Item level requirement significantly exceeds item_level".to_string()); }
+
+    let balance = validate_item_balance(item);
+    let balance_ok = !balance.is_overpowered && !balance.is_underpowered;
+    let balance_score = if balance_ok { 1.0 } else { 0.5 };
+    if !balance_ok { warnings.push(format!("Balance check failed: {:?}", balance.violations)); }
+
+    ItemGenerationReport {
+        item_id: item.id,
+        passed: errors.is_empty(),
+        warnings,
+        errors,
+        balance_score,
+    }
+}
+
+// ============================================================
+// SECTION: VENDOR INVENTORY ROTATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct VendorSlot {
+    pub item_id: u64,
+    pub stock: u32,
+    pub listed_price: f32,
+    pub refresh_at_tick: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct VendorState {
+    pub vendor_id: u64,
+    pub slots: Vec<VendorSlot>,
+    pub gold: u64,
+    pub refresh_interval_ticks: u64,
+    pub last_refresh_tick: u64,
+    pub specialty_category: Option<ItemCategory>,
+}
+
+impl VendorState {
+    pub fn new(vendor_id: u64, refresh_interval_ticks: u64) -> Self {
+        Self { vendor_id, slots: Vec::new(), gold: 1000, refresh_interval_ticks, last_refresh_tick: 0, specialty_category: None }
+    }
+
+    pub fn add_slot(&mut self, item_id: u64, stock: u32, price: f32, current_tick: u64) {
+        self.slots.push(VendorSlot { item_id, stock, listed_price: price, refresh_at_tick: current_tick + self.refresh_interval_ticks });
+    }
+
+    pub fn buy_item(&mut self, slot_index: usize, player_gold: &mut u64) -> Option<u64> {
+        if slot_index >= self.slots.len() { return None; }
+        let slot = &mut self.slots[slot_index];
+        let price = slot.listed_price as u64;
+        if *player_gold < price || slot.stock == 0 { return None; }
+        *player_gold -= price;
+        self.gold += price;
+        slot.stock -= 1;
+        Some(slot.item_id)
+    }
+
+    pub fn sell_item_to_vendor(&mut self, item_id: u64, sell_price: f32, player_gold: &mut u64) {
+        let gain = (sell_price * 0.3) as u64;
+        if self.gold >= gain {
+            self.gold -= gain;
+            *player_gold += gain;
+            self.slots.push(VendorSlot { item_id, stock: 1, listed_price: sell_price * 1.2, refresh_at_tick: u64::MAX });
+        }
+    }
+
+    pub fn needs_refresh(&self, current_tick: u64) -> bool {
+        current_tick >= self.last_refresh_tick + self.refresh_interval_ticks
+    }
+
+    pub fn refresh(&mut self, current_tick: u64, new_items: Vec<(u64, u32, f32)>) {
+        self.slots.retain(|s| s.refresh_at_tick > current_tick);
+        for (item_id, stock, price) in new_items {
+            self.add_slot(item_id, stock, price, current_tick);
+        }
+        self.last_refresh_tick = current_tick;
+    }
+
+    pub fn apply_reputation_discount(&mut self, reputation: f32) {
+        // reputation 0..100 gives up to 20% discount
+        let discount = (reputation / 100.0 * 0.2).min(0.2);
+        for slot in &mut self.slots {
+            slot.listed_price *= 1.0 - discount;
+        }
+    }
+}
+
+// ============================================================
+// SECTION: STASH TAB MANAGEMENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct StashTab {
+    pub id: u64,
+    pub name: String,
+    pub tab_type: StashTabType,
+    pub items: Vec<ItemInstance>,
+    pub grid_width: u32,
+    pub grid_height: u32,
+    pub color: Vec4,
+    pub is_premium: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StashTabType { Normal, Currency, Map, Fragment, Quad, Divination, Gem, Flask, Unique }
+
+impl StashTab {
+    pub fn new(id: u64, name: &str, tab_type: StashTabType) -> Self {
+        let (w, h) = match &tab_type {
+            StashTabType::Quad => (24, 24),
+            _ => (12, 12),
+        };
+        Self { id, name: name.to_string(), tab_type, items: Vec::new(), grid_width: w, grid_height: h, color: Vec4::new(0.5, 0.5, 0.5, 1.0), is_premium: false }
+    }
+
+    pub fn add_item(&mut self, item: ItemInstance) { self.items.push(item); }
+
+    pub fn remove_item(&mut self, instance_id: u64) -> Option<ItemInstance> {
+        if let Some(pos) = self.items.iter().position(|i| i.instance_id == instance_id) {
+            Some(self.items.remove(pos))
+        } else { None }
+    }
+
+    pub fn item_count(&self) -> usize { self.items.len() }
+    pub fn is_full(&self) -> bool { self.items.len() >= (self.grid_width * self.grid_height) as usize }
+
+    pub fn total_value(&self, db: &ItemDatabase) -> f32 {
+        self.items.iter()
+            .filter_map(|inst| db.definitions.get(&inst.definition_id))
+            .map(|d| d.base_price as f32)
+            .sum()
+    }
+
+    pub fn search(&self, query: &str) -> Vec<&ItemInstance> {
+        let q = query.to_lowercase();
+        self.items.iter().filter(|inst| {
+            inst.instance_id.to_string().contains(&q)
+        }).collect()
+    }
+}
+
+#[derive(Debug)]
+pub struct StashManager {
+    pub tabs: Vec<StashTab>,
+    pub active_tab_id: u64,
+}
+
+impl StashManager {
+    pub fn new() -> Self { Self { tabs: Vec::new(), active_tab_id: 0 } }
+
+    pub fn add_tab(&mut self, tab: StashTab) { self.tabs.push(tab); }
+
+    pub fn active_tab(&self) -> Option<&StashTab> {
+        self.tabs.iter().find(|t| t.id == self.active_tab_id)
+    }
+
+    pub fn active_tab_mut(&mut self) -> Option<&mut StashTab> {
+        self.tabs.iter_mut().find(|t| t.id == self.active_tab_id)
+    }
+
+    pub fn find_item(&self, instance_id: u64) -> Option<(&StashTab, &ItemInstance)> {
+        for tab in &self.tabs {
+            if let Some(item) = tab.items.iter().find(|i| i.instance_id == instance_id) {
+                return Some((tab, item));
+            }
+        }
+        None
+    }
+
+    pub fn move_item(&mut self, instance_id: u64, to_tab_id: u64) -> bool {
+        let from_tab_idx = self.tabs.iter().position(|t| t.items.iter().any(|i| i.instance_id == instance_id));
+        if let Some(from_idx) = from_tab_idx {
+            let item = self.tabs[from_idx].remove_item(instance_id);
+            if let Some(item) = item {
+                if let Some(to_tab) = self.tabs.iter_mut().find(|t| t.id == to_tab_id) {
+                    to_tab.add_item(item);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn total_value_all_tabs(&self, db: &ItemDatabase) -> f32 {
+        self.tabs.iter().map(|t| t.total_value(db)).sum()
     }
 }
 

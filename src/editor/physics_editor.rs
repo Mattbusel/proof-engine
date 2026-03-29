@@ -3807,7 +3807,7 @@ pub enum SurfaceType {
     Oil,
     WaterSurface,
     DeepWater,
-    Mud_Thick,
+    MudThick,
     Clay,
     Chalk,
     Coal,
@@ -3868,7 +3868,7 @@ pub fn surface_friction_coefficient(surface: SurfaceType, wet: bool) -> f32 {
         (SurfaceType::Gravel, _) => 0.6,
         (SurfaceType::Dirt, false) => 0.55,
         (SurfaceType::Dirt, true) => 0.4,
-        (SurfaceType::Mud, _) | (SurfaceType::Mud_Thick, _) => 0.3,
+        (SurfaceType::Mud, _) | (SurfaceType::MudThick, _) => 0.3,
         (SurfaceType::Sand, _) => 0.45,
         (SurfaceType::Snow, _) => 0.2,
         (SurfaceType::Ice, _) => 0.05,
@@ -3962,7 +3962,7 @@ pub fn build_material_library() -> HashMap<String, PhysicsMaterial> {
     add(&mut lib, PhysicsMaterial::new("Sandstone", SurfaceType::Sandstone, 0.6, 0.55, 0.02, 0.15, 2200.0));
     add(&mut lib, PhysicsMaterial::new("Limestone", SurfaceType::Limestone, 0.65, 0.6, 0.015, 0.15, 2300.0));
     add(&mut lib, PhysicsMaterial::new("Water Surface", SurfaceType::WaterSurface, 0.02, 0.01, 0.001, 0.0, WATER_DENSITY));
-    add(&mut lib, PhysicsMaterial::new("Thick Mud", SurfaceType::Mud_Thick, 0.4, 0.35, 0.06, 0.02, 2000.0));
+    add(&mut lib, PhysicsMaterial::new("Thick Mud", SurfaceType::MudThick, 0.4, 0.35, 0.06, 0.02, 2000.0));
     add(&mut lib, PhysicsMaterial::new("Tarmac Road", SurfaceType::TarmacRoad, 0.8, 0.75, 0.02, 0.1, 2300.0));
     add(&mut lib, PhysicsMaterial::new("Dirt Road", SurfaceType::DirtRoad, 0.55, 0.5, 0.04, 0.15, 1600.0));
     add(&mut lib, PhysicsMaterial::new("Snow Road", SurfaceType::SnowRoad, 0.25, 0.2, 0.03, 0.05, 300.0));
@@ -5044,7 +5044,7 @@ pub fn material_restitution(s: SurfaceType) -> f32 {
         SurfaceType::Concrete => 0.2,
         SurfaceType::Ice => 0.1,
         SurfaceType::Foam => 0.05,
-        SurfaceType::Mud | SurfaceType::Mud_Thick => 0.02,
+        SurfaceType::Mud | SurfaceType::MudThick => 0.02,
         SurfaceType::Sand => 0.1,
         SurfaceType::Carpet => 0.05,
         SurfaceType::Cork => 0.6,

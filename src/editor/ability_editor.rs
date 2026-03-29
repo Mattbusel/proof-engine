@@ -560,7 +560,7 @@ impl StatusEffectType {
             StatusEffectType::Haste | StatusEffectType::Empowered => Vec4::new(0.2, 1.0, 0.2, 1.0),
             StatusEffectType::Shield | StatusEffectType::Invulnerable => Vec4::new(0.6, 0.8, 1.0, 1.0),
             StatusEffectType::Regen | StatusEffectType::ManaRegen => Vec4::new(0.0, 1.0, 0.5, 1.0),
-            StatusEffectType::Invisible | StatusEffectType::Stealth => Vec4::new(0.5, 0.5, 0.7, 0.6),
+            StatusEffectType::Invisible => Vec4::new(0.5, 0.5, 0.7, 0.6),
             StatusEffectType::Cursed | StatusEffectType::Weakened | StatusEffectType::Exposed => Vec4::new(0.8, 0.0, 0.5, 1.0),
             StatusEffectType::Marked => Vec4::new(1.0, 0.0, 0.0, 1.0),
             StatusEffectType::Wet => Vec4::new(0.3, 0.5, 1.0, 1.0),
@@ -1500,6 +1500,8 @@ pub struct AbilityDefinition {
     pub unlock_level: u32,
     pub talent_tree_id: Option<u64>,
     pub talent_node_id: Option<u64>,
+    // Classification
+    pub school: String,
     // Visual / Audio
     pub cast_vfx: String,
     pub hit_vfx: String,
@@ -1573,6 +1575,7 @@ impl AbilityDefinition {
             unlock_level: 1,
             talent_tree_id: None,
             talent_node_id: None,
+            school: String::new(),
             cast_vfx: String::new(),
             hit_vfx: String::new(),
             projectile_vfx: String::new(),
@@ -4097,6 +4100,3909 @@ pub fn ability_power_score(a: &AbilityDefinition) -> f32 {
     let effects_bonus = a.applied_effects.len() as f32 * 10.0;
     (dmg_score + heal_score + range_bonus + aoe_bonus + effects_bonus - cost_penalty) / cd_penalty
 }
+
+// ============================================================
+// EXTENDED: ABILITY EFFECT CHAIN SYSTEM
+// ============================================================
+
+/// A chain of effects that triggers on ability hit.
+/// Each link can spawn sub-abilities, apply more effects, or modify damage.
+#[derive(Debug, Clone)]
+pub struct AbilityEffectChain {
+    pub id: u64,
+    pub name: String,
+    pub links: Vec<ChainLink>,
+    pub trigger_condition: ChainTrigger,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainLink {
+    pub sequence: u32,   // execution order
+    pub delay: f32,      // seconds after previous link
+    pub action: ChainAction,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChainAction {
+    DealDamage { formula: DamageFormula },
+    ApplyStatus { effect_id: u64, chance: f32 },
+    Heal { formula: HealFormula },
+    SpawnProjectile { ability_id: u64 },
+    PullTarget { force: f32 },
+    PushTarget { force: f32 },
+    GrantResource { resource: ResourceType, amount: f32 },
+    DrainResource { resource: ResourceType, amount: f32 },
+    TriggerChain { chain_id: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub enum ChainTrigger {
+    OnHit,
+    OnKill,
+    OnCrit,
+    OnStatusApplied(StatusEffectType),
+    OnResourceThreshold { resource: ResourceType, threshold: f32 },
+    Always,
+}
+
+impl ChainTrigger {
+    pub fn should_trigger(&self, ctx: &ChainContext) -> bool {
+        match self {
+            ChainTrigger::OnHit => ctx.hit_occurred,
+            ChainTrigger::OnKill => ctx.kill_occurred,
+            ChainTrigger::OnCrit => ctx.crit_occurred,
+            ChainTrigger::OnStatusApplied(s) => ctx.status_applied == Some(*s),
+            ChainTrigger::OnResourceThreshold { resource, threshold } => {
+                ctx.resource_fractions.get(resource).copied().unwrap_or(0.0) >= *threshold
+            }
+            ChainTrigger::Always => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainContext {
+    pub hit_occurred: bool,
+    pub kill_occurred: bool,
+    pub crit_occurred: bool,
+    pub status_applied: Option<StatusEffectType>,
+    pub resource_fractions: HashMap<ResourceType, f32>,
+    pub damage_dealt: f32,
+}
+
+impl ChainContext {
+    pub fn from_result(result: &CastResult) -> Self {
+        let hit = !result.damage_results.is_empty();
+        let crit = result.damage_results.iter().any(|d| d.is_crit);
+        let dmg: f32 = result.damage_results.iter().map(|d| d.final_damage).sum();
+        ChainContext {
+            hit_occurred: hit,
+            kill_occurred: false,
+            crit_occurred: crit,
+            status_applied: result.effects_applied.first().map(|(_, s)| *s),
+            resource_fractions: HashMap::new(),
+            damage_dealt: dmg,
+        }
+    }
+}
+
+// ============================================================
+// EXTENDED: STANCE SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct StanceDefinition {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub enter_cost: f32,
+    pub resource_type: ResourceType,
+    pub maintenance_cost_per_second: f32,
+    pub stat_modifiers: Vec<(String, f32, f32)>, // (stat, flat, pct)
+    pub ability_overrides: HashMap<u64, u64>,    // old_ability_id -> override_ability_id
+    pub forbidden_abilities: Vec<u64>,
+    pub enabled_abilities: Vec<u64>,
+    pub visual_effect: String,
+    pub transition_time: f32,
+}
+
+impl StanceDefinition {
+    pub fn can_enter(&self, resource: &ResourceState) -> bool {
+        resource.current >= self.enter_cost
+    }
+
+    pub fn tick_cost(&self, dt: f32) -> f32 {
+        self.maintenance_cost_per_second * dt
+    }
+
+    pub fn get_ability_override(&self, ability_id: u64) -> Option<u64> {
+        self.ability_overrides.get(&ability_id).copied()
+    }
+
+    pub fn can_use_ability(&self, ability_id: u64) -> bool {
+        !self.forbidden_abilities.contains(&ability_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StanceManager {
+    pub active_stance: Option<u64>,
+    pub previous_stance: Option<u64>,
+    pub stances: HashMap<u64, StanceDefinition>,
+    pub transition_timer: f32,
+}
+
+impl StanceManager {
+    pub fn new() -> Self {
+        StanceManager {
+            active_stance: None,
+            previous_stance: None,
+            stances: HashMap::new(),
+            transition_timer: 0.0,
+        }
+    }
+
+    pub fn register_stance(&mut self, stance: StanceDefinition) {
+        self.stances.insert(stance.id, stance);
+    }
+
+    pub fn enter_stance(&mut self, stance_id: u64, resources: &mut HashMap<ResourceType, ResourceState>) -> bool {
+        if let Some(stance) = self.stances.get(&stance_id) {
+            if let Some(res) = resources.get_mut(&stance.resource_type) {
+                if !stance.can_enter(res) { return false; }
+                res.spend(stance.enter_cost);
+                self.previous_stance = self.active_stance;
+                self.active_stance = Some(stance_id);
+                self.transition_timer = stance.transition_time;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn exit_stance(&mut self) {
+        self.previous_stance = self.active_stance;
+        self.active_stance = None;
+    }
+
+    pub fn tick(&mut self, dt: f32, resources: &mut HashMap<ResourceType, ResourceState>) {
+        if self.transition_timer > 0.0 {
+            self.transition_timer = (self.transition_timer - dt).max(0.0);
+        }
+        if let Some(stance_id) = self.active_stance {
+            if let Some(stance) = self.stances.get(&stance_id) {
+                let cost = stance.tick_cost(dt);
+                if let Some(res) = resources.get_mut(&stance.resource_type) {
+                    if !res.spend(cost) {
+                        self.exit_stance(); // can't maintain — auto-exit
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn active_stat_mods(&self) -> Vec<(String, f32, f32)> {
+        if let Some(id) = self.active_stance {
+            self.stances.get(&id).map(|s| s.stat_modifiers.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn is_transitioning(&self) -> bool {
+        self.transition_timer > 0.0
+    }
+}
+
+// ============================================================
+// EXTENDED: PROC SYSTEM (on-hit effects)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ProcEffect {
+    pub id: u64,
+    pub name: String,
+    pub trigger: ProcTrigger,
+    pub chance: f32,         // 0-100%
+    pub internal_cooldown: f32,
+    pub remaining_icd: f32,
+    pub effect: ProcOutcome,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProcTrigger {
+    OnBasicAttack,
+    OnAbilityCast,
+    OnAbilityHit,
+    OnCrit,
+    OnKill,
+    OnDamageTaken,
+    OnHealCast,
+    OnStatusApplication(StatusEffectType),
+    OnLowHealth(f32), // below % threshold
+}
+
+#[derive(Debug, Clone)]
+pub enum ProcOutcome {
+    DealBonusDamage { formula: DamageFormula },
+    ApplyStatus { effect_id: u64 },
+    HealCaster { formula: HealFormula },
+    ResetCooldown { ability_id: u64 },
+    GrantCharges { ability_id: u64, charges: u32 },
+    GenerateResource { resource: ResourceType, amount: f32 },
+    GrantBuff { ability_id: u64, duration: f32 },
+}
+
+impl ProcEffect {
+    pub fn can_proc(&self) -> bool {
+        self.remaining_icd <= 0.0
+    }
+
+    pub fn should_proc(&self, roll: f32) -> bool {
+        self.can_proc() && roll * 100.0 < self.chance
+    }
+
+    pub fn trigger_proc(&mut self) {
+        self.remaining_icd = self.internal_cooldown;
+    }
+
+    pub fn tick_icd(&mut self, dt: f32) {
+        self.remaining_icd = (self.remaining_icd - dt).max(0.0);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcManager {
+    pub procs: Vec<ProcEffect>,
+}
+
+impl ProcManager {
+    pub fn new() -> Self {
+        ProcManager { procs: Vec::new() }
+    }
+
+    pub fn add_proc(&mut self, proc_effect: ProcEffect) {
+        self.procs.push(proc_effect);
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        for p in &mut self.procs {
+            p.tick_icd(dt);
+        }
+    }
+
+    pub fn check_procs(&mut self, trigger: &ProcTrigger, random_values: &[f32]) -> Vec<&ProcOutcome> {
+        let mut triggered = Vec::new();
+        let mut rv_idx = 0;
+        for proc_effect in &mut self.procs {
+            let trigger_match = match (&proc_effect.trigger, trigger) {
+                (ProcTrigger::OnBasicAttack, ProcTrigger::OnBasicAttack) => true,
+                (ProcTrigger::OnCrit, ProcTrigger::OnCrit) => true,
+                (ProcTrigger::OnKill, ProcTrigger::OnKill) => true,
+                (ProcTrigger::OnDamageTaken, ProcTrigger::OnDamageTaken) => true,
+                (ProcTrigger::OnAbilityCast, ProcTrigger::OnAbilityCast) => true,
+                (ProcTrigger::OnAbilityHit, ProcTrigger::OnAbilityHit) => true,
+                _ => false,
+            };
+            if trigger_match {
+                let roll = random_values.get(rv_idx).copied().unwrap_or(0.5);
+                rv_idx += 1;
+                if proc_effect.should_proc(roll) {
+                    proc_effect.trigger_proc();
+                    triggered.push(&proc_effect.effect);
+                }
+            }
+        }
+        triggered
+    }
+}
+
+// ============================================================
+// EXTENDED: ABILITY COOLDOWN PREVIEW
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct CooldownPreview {
+    pub ability_id: u64,
+    pub ability_name: String,
+    pub base_cd: f32,
+    pub with_cdr_10: f32,
+    pub with_cdr_20: f32,
+    pub with_cdr_30: f32,
+    pub with_cdr_40: f32,
+    pub with_cdr_50: f32,
+    pub casts_per_minute_base: f32,
+    pub casts_per_minute_max_cdr: f32,
+}
+
+impl CooldownPreview {
+    pub fn compute(ability: &AbilityDefinition) -> Self {
+        let cd = ability.base_cooldown;
+        let cast_t = ability.cast_time;
+        let min_cycle = cd + cast_t;
+
+        let reduced = |pct: f32| -> f32 {
+            let eff = diminishing_returns_cdr_ability(pct);
+            (cd * (1.0 - eff / 100.0)).max(0.5)
+        };
+
+        let casts_per_min = |cd_val: f32| -> f32 {
+            if cd_val + cast_t <= 0.0 { return 0.0; }
+            60.0 / (cd_val + cast_t)
+        };
+
+        CooldownPreview {
+            ability_id: ability.id,
+            ability_name: ability.name.clone(),
+            base_cd: cd,
+            with_cdr_10: reduced(10.0),
+            with_cdr_20: reduced(20.0),
+            with_cdr_30: reduced(30.0),
+            with_cdr_40: reduced(40.0),
+            with_cdr_50: reduced(50.0),
+            casts_per_minute_base: casts_per_min(cd),
+            casts_per_minute_max_cdr: casts_per_min(reduced(50.0)),
+        }
+    }
+}
+
+pub fn generate_cooldown_preview_table(db: &AbilityDatabase) -> Vec<CooldownPreview> {
+    let mut previews: Vec<CooldownPreview> = db.abilities.values()
+        .filter(|a| a.base_cooldown > 0.0)
+        .map(CooldownPreview::compute)
+        .collect();
+    previews.sort_by(|a, b| a.base_cd.partial_cmp(&b.base_cd).unwrap_or(std::cmp::Ordering::Equal));
+    previews
+}
+
+// ============================================================
+// EXTENDED: RESOURCE EFFICIENCY CALCULATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ResourceEfficiency {
+    pub ability_id: u64,
+    pub ability_name: String,
+    pub resource_type: ResourceType,
+    pub cost: f32,
+    pub avg_damage: f32,
+    pub damage_per_resource: f32,
+    pub heal_per_resource: f32,
+    pub effective_casts_before_oom: f32,
+    pub time_before_oom: f32,
+    pub breakeven_regen_rate: f32, // resource regen needed to spam indefinitely
+}
+
+pub fn compute_resource_efficiency(
+    ability: &AbilityDefinition,
+    config: &FormulaTesterConfig,
+    resource_state: &ResourceState,
+) -> ResourceEfficiency {
+    let cost = ability.compute_resource_cost(&config.caster_stats);
+    let test = run_formula_test(ability, config);
+    let dpr = if cost > 0.0 { test.total_avg_damage / cost } else { f32::INFINITY };
+    let hpr = if cost > 0.0 { test.heal_preview / cost } else { 0.0 };
+    let casts_oom = if cost > 0.0 { resource_state.current / cost } else { f32::INFINITY };
+    let time_oom = casts_oom * (ability.cast_time + ability.base_cooldown.max(1.5));
+    let breakeven = if ability.base_cooldown > 0.0 { cost / ability.base_cooldown } else { f32::INFINITY };
+
+    ResourceEfficiency {
+        ability_id: ability.id,
+        ability_name: ability.name.clone(),
+        resource_type: ability.resource_type,
+        cost,
+        avg_damage: test.total_avg_damage,
+        damage_per_resource: dpr,
+        heal_per_resource: hpr,
+        effective_casts_before_oom: casts_oom,
+        time_before_oom: time_oom,
+        breakeven_regen_rate: breakeven,
+    }
+}
+
+pub fn rank_abilities_by_efficiency(
+    db: &AbilityDatabase,
+    config: &FormulaTesterConfig,
+    resource: ResourceType,
+) -> Vec<ResourceEfficiency> {
+    let res = ResourceState::new(resource);
+    let mut rankings: Vec<ResourceEfficiency> = db.abilities.values()
+        .filter(|a| a.resource_type == resource && a.ability_type.is_damage_dealing())
+        .map(|a| compute_resource_efficiency(a, config, &res))
+        .collect();
+    rankings.sort_by(|a, b| b.damage_per_resource.partial_cmp(&a.damage_per_resource).unwrap_or(std::cmp::Ordering::Equal));
+    rankings
+}
+
+// ============================================================
+// EXTENDED: ABILITY SYNERGY DETECTOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilitySynergy {
+    pub ability_a_id: u64,
+    pub ability_b_id: u64,
+    pub synergy_type: SynergyType,
+    pub synergy_score: f32,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynergyType {
+    ApplyThenExplode,    // A applies status, B does bonus vs that status
+    ComboBuilder,        // A builds combo points, B spends them
+    BuffThenDPS,         // A buffs, B deals damage during buff window
+    SetupCC,             // A applies CC, B does bonus vs CC'd
+    ElementalReaction,   // A wets target, B does lightning for double damage
+    ResourceLoop,        // A costs, B refunds
+}
+
+pub fn detect_synergies(db: &AbilityDatabase) -> Vec<AbilitySynergy> {
+    let mut synergies = Vec::new();
+
+    let abilities: Vec<&AbilityDefinition> = db.abilities.values().collect();
+
+    for i in 0..abilities.len() {
+        for j in 0..abilities.len() {
+            if i == j { continue; }
+            let a = abilities[i];
+            let b = abilities[j];
+
+            // Apply status A → B does bonus damage against that status
+            for eff in &a.applied_effects {
+                for formula in &b.damage_formulas {
+                    for &(status, _bonus) in &formula.versus_status_bonus {
+                        if status == eff.effect_type {
+                            synergies.push(AbilitySynergy {
+                                ability_a_id: a.id,
+                                ability_b_id: b.id,
+                                synergy_type: SynergyType::ApplyThenExplode,
+                                synergy_score: 8.0,
+                                description: format!(
+                                    "{} applies {}, {} deals bonus vs {}",
+                                    a.name, eff.effect_type.display_name(),
+                                    b.name, status.display_name()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Elemental wet + lightning
+            let a_applies_wet = a.applied_effects.iter().any(|e| e.effect_type == StatusEffectType::Wet);
+            let b_has_lightning = b.damage_formulas.iter().any(|f| f.element == DamageElement::Lightning);
+            if a_applies_wet && b_has_lightning {
+                synergies.push(AbilitySynergy {
+                    ability_a_id: a.id,
+                    ability_b_id: b.id,
+                    synergy_type: SynergyType::ElementalReaction,
+                    synergy_score: 10.0,
+                    description: format!("{} wets target, {} triggers electrocute", a.name, b.name),
+                });
+            }
+
+            // Buff then DPS
+            if matches!(a.ability_type, AbilityType::Buff | AbilityType::Stance | AbilityType::Warcry) && b.ability_type.is_damage_dealing() {
+                synergies.push(AbilitySynergy {
+                    ability_a_id: a.id,
+                    ability_b_id: b.id,
+                    synergy_type: SynergyType::BuffThenDPS,
+                    synergy_score: 5.0,
+                    description: format!("{} buffs, then use {} for boosted damage", a.name, b.name),
+                });
+            }
+        }
+    }
+
+    synergies.sort_by(|a, b| b.synergy_score.partial_cmp(&a.synergy_score).unwrap_or(std::cmp::Ordering::Equal));
+    synergies
+}
+
+// ============================================================
+// EXTENDED: MULTI-TARGET DAMAGE CALCULATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct MultiTargetCalculation {
+    pub ability_id: u64,
+    pub target_count: u32,
+    pub total_damage: f32,
+    pub per_target_damage: f32,
+    pub falloff_applied: bool,
+    pub chain_falloff_per_bounce: f32,
+    pub aoe_falloff_at_edge: f32,
+}
+
+pub fn calculate_multi_target_damage(
+    ability: &AbilityDefinition,
+    target_count: u32,
+    config: &FormulaTesterConfig,
+) -> MultiTargetCalculation {
+    let single_test = run_formula_test(ability, config);
+    let base_dmg = single_test.total_avg_damage;
+
+    let (total, falloff_applied, chain_falloff) = match &ability.targeting_mode {
+        TargetingMode::Chain { max_bounces, falloff_per_bounce, .. } => {
+            let actual_targets = target_count.min(*max_bounces + 1);
+            let mut total = 0.0f32;
+            let mut dmg = base_dmg;
+            for _ in 0..actual_targets {
+                total += dmg;
+                dmg *= 1.0 - falloff_per_bounce;
+            }
+            (total, true, *falloff_per_bounce)
+        }
+        TargetingMode::AoECircle { .. } | TargetingMode::AoESphere { .. } => {
+            // AoE typically hits all targets for full damage (some games reduce at edge)
+            (base_dmg * target_count as f32, false, 0.0)
+        }
+        TargetingMode::MultiTarget { max_targets, .. } => {
+            let actual = target_count.min(*max_targets);
+            (base_dmg * actual as f32, false, 0.0)
+        }
+        _ => (base_dmg, false, 0.0),
+    };
+
+    MultiTargetCalculation {
+        ability_id: ability.id,
+        target_count,
+        total_damage: total,
+        per_target_damage: if target_count > 0 { total / target_count as f32 } else { 0.0 },
+        falloff_applied,
+        chain_falloff_per_bounce: chain_falloff,
+        aoe_falloff_at_edge: 0.0,
+    }
+}
+
+// ============================================================
+// EXTENDED: TALENT BUILD OPTIMIZER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TalentOptimizationGoal {
+    pub maximize_stat: String,
+    pub secondary_stats: Vec<(String, f32)>, // (stat, weight)
+    pub required_abilities: Vec<u64>,
+    pub budget_points: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TalentOptimizationResult {
+    pub recommended_nodes: Vec<u64>,
+    pub total_points_used: u32,
+    pub projected_stat_values: Vec<(String, f32, f32)>,
+    pub score: f32,
+}
+
+pub fn greedy_talent_optimizer(
+    tree: &TalentTree,
+    goal: &TalentOptimizationGoal,
+) -> TalentOptimizationResult {
+    let mut available_nodes: Vec<&TalentNode> = tree.nodes.values().collect();
+    available_nodes.sort_by_key(|n| n.id);
+
+    let mut selected: Vec<u64> = Vec::new();
+    let mut points_used = 0u32;
+
+    // Greedily select nodes by expected score contribution
+    let score_node = |node: &TalentNode| -> f32 {
+        let mut score = 0.0f32;
+        for (stat, flat, pct) in node.current_stat_mods() {
+            let base_weight = if stat == goal.maximize_stat { 1.0 } else {
+                goal.secondary_stats.iter()
+                    .find(|(s, _)| *s == stat)
+                    .map(|(_, w)| *w)
+                    .unwrap_or(0.0)
+            };
+            score += (flat.abs() + pct.abs()) * base_weight;
+        }
+        score / node.point_cost.max(1) as f32 // efficiency
+    };
+
+    let mut remaining = goal.budget_points;
+    let mut iterations = 0u32;
+
+    while remaining > 0 && iterations < 1000 {
+        iterations += 1;
+
+        // Find best eligible node not yet selected
+        let best = available_nodes.iter()
+            .filter(|n| !selected.contains(&n.id))
+            .filter(|n| n.point_cost <= remaining)
+            .filter(|n| {
+                // Check prerequisites in selected
+                tree.edges.iter()
+                    .filter(|e| e.is_prerequisite && e.to_node_id == n.id)
+                    .all(|e| selected.contains(&e.from_node_id))
+            })
+            .max_by(|a, b| score_node(a).partial_cmp(&score_node(b)).unwrap_or(std::cmp::Ordering::Equal));
+
+        if let Some(node) = best {
+            selected.push(node.id);
+            points_used += node.point_cost;
+            remaining -= node.point_cost;
+        } else {
+            break;
+        }
+    }
+
+    // Required abilities — ensure their tree nodes are included
+    for &req_ab in &goal.required_abilities {
+        for node in tree.nodes.values() {
+            if node.ability_id == Some(req_ab) && !selected.contains(&node.id) {
+                selected.push(node.id);
+                points_used += node.point_cost;
+            }
+        }
+    }
+
+    // Compute projected stats
+    let mut stat_map: HashMap<String, (f32, f32)> = HashMap::new();
+    for &node_id in &selected {
+        if let Some(node) = tree.nodes.get(&node_id) {
+            for (stat, flat, pct) in node.current_stat_mods() {
+                let e = stat_map.entry(stat).or_insert((0.0, 0.0));
+                e.0 += flat;
+                e.1 += pct;
+            }
+        }
+    }
+    let projected: Vec<(String, f32, f32)> = stat_map.into_iter().map(|(k, (f, p))| (k, f, p)).collect();
+
+    let total_score: f32 = selected.iter()
+        .filter_map(|id| tree.nodes.get(id))
+        .map(|n| score_node(n))
+        .sum();
+
+    TalentOptimizationResult {
+        recommended_nodes: selected,
+        total_points_used: points_used,
+        projected_stat_values: projected,
+        score: total_score,
+    }
+}
+
+// ============================================================
+// EXTENDED: DAMAGE MITIGATION CALCULATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct MitigationProfile {
+    pub name: String,
+    pub physical_armor: f32,
+    pub fire_resist: f32,
+    pub cold_resist: f32,
+    pub lightning_resist: f32,
+    pub poison_resist: f32,
+    pub arcane_resist: f32,
+    pub dodge_chance: f32,
+    pub block_chance: f32,
+    pub block_reduction: f32,
+    pub absorb_shields: f32,
+}
+
+impl MitigationProfile {
+    pub fn tank_profile() -> Self {
+        MitigationProfile {
+            name: "Heavy Tank".to_string(),
+            physical_armor: 800.0,
+            fire_resist: 40.0,
+            cold_resist: 40.0,
+            lightning_resist: 40.0,
+            poison_resist: 40.0,
+            arcane_resist: 20.0,
+            dodge_chance: 5.0,
+            block_chance: 30.0,
+            block_reduction: 0.4,
+            absorb_shields: 500.0,
+        }
+    }
+
+    pub fn glass_cannon_profile() -> Self {
+        MitigationProfile {
+            name: "Glass Cannon".to_string(),
+            physical_armor: 80.0,
+            fire_resist: 10.0,
+            cold_resist: 10.0,
+            lightning_resist: 10.0,
+            poison_resist: 5.0,
+            arcane_resist: 5.0,
+            dodge_chance: 15.0,
+            block_chance: 0.0,
+            block_reduction: 0.0,
+            absorb_shields: 0.0,
+        }
+    }
+
+    pub fn effective_resist_for_element(&self, element: DamageElement) -> f32 {
+        match element {
+            DamageElement::Physical => {
+                let armor_factor = self.physical_armor / (self.physical_armor + 300.0);
+                (armor_factor * 100.0).min(75.0)
+            }
+            DamageElement::Fire => self.fire_resist.min(75.0),
+            DamageElement::Cold => self.cold_resist.min(75.0),
+            DamageElement::Lightning => self.lightning_resist.min(75.0),
+            DamageElement::Poison => self.poison_resist.min(75.0),
+            DamageElement::Arcane => self.arcane_resist.min(60.0),
+            DamageElement::True_ => 0.0,
+            _ => 0.0,
+        }
+    }
+
+    pub fn final_damage_received(&self, raw: f32, element: DamageElement, roll: f32) -> f32 {
+        // Check dodge
+        if roll < self.dodge_chance / 100.0 { return 0.0; }
+        let resist = self.effective_resist_for_element(element);
+        let after_resist = raw * (1.0 - resist / 100.0);
+        // Check block
+        let after_block = if roll < (self.dodge_chance + self.block_chance) / 100.0 {
+            after_resist * (1.0 - self.block_reduction)
+        } else {
+            after_resist
+        };
+        // Absorb shields
+        (after_block - self.absorb_shields).max(0.0)
+    }
+}
+
+pub fn simulate_ability_vs_profile(
+    ability: &AbilityDefinition,
+    profile: &MitigationProfile,
+    config: &FormulaTesterConfig,
+) -> Vec<f32> {
+    let mut seed: u64 = 54321987;
+    let lcg_local = |s: &mut u64| -> f32 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*s >> 32) as f32) / (u32::MAX as f32)
+    };
+
+    (0..1000).map(|_| {
+        let mut total = 0.0f32;
+        for formula in &ability.damage_formulas {
+            let t = lcg_local(&mut seed);
+            let crit_roll = lcg_local(&mut seed);
+            let dodge_roll = lcg_local(&mut seed);
+            let resist = profile.effective_resist_for_element(formula.element);
+            let hit = formula.compute_final_damage(&config.caster_stats, resist, &[], t, crit_roll);
+            total += profile.final_damage_received(hit.raw_damage, formula.element, dodge_roll);
+        }
+        total
+    }).collect()
+}
+
+// ============================================================
+// EXTENDED: ABILITY UPGRADE TREE BUILDER
+// ============================================================
+
+pub struct AbilityUpgradeBuilder {
+    pub ability_id: u64,
+    pub upgrades: Vec<AbilityModifier>,
+    pub upgrade_graph: HashMap<u64, Vec<u64>>, // parent_upgrade -> child_upgrades
+    pub active_upgrades: HashSet<u64>,
+    pub total_points_spent: u32,
+}
+
+impl AbilityUpgradeBuilder {
+    pub fn new(ability_id: u64) -> Self {
+        AbilityUpgradeBuilder {
+            ability_id,
+            upgrades: Vec::new(),
+            upgrade_graph: HashMap::new(),
+            active_upgrades: HashSet::new(),
+            total_points_spent: 0,
+        }
+    }
+
+    pub fn add_upgrade(&mut self, modifier: AbilityModifier, parent_id: Option<u64>) {
+        if let Some(pid) = parent_id {
+            self.upgrade_graph.entry(pid).or_insert_with(Vec::new).push(modifier.id);
+        }
+        self.upgrades.push(modifier);
+    }
+
+    pub fn can_unlock(&self, modifier_id: u64) -> bool {
+        // Check if parent is active (if any)
+        let has_parent = self.upgrade_graph.iter().any(|(_, children)| children.contains(&modifier_id));
+        if has_parent {
+            // Must have at least one parent unlocked
+            self.upgrade_graph.iter().any(|(parent, children)| {
+                children.contains(&modifier_id) && self.active_upgrades.contains(parent)
+            })
+        } else {
+            true // root node, always available
+        }
+    }
+
+    pub fn unlock(&mut self, modifier_id: u64, db: &AbilityDatabase, def: &mut AbilityDefinition) -> bool {
+        if !self.can_unlock(modifier_id) { return false; }
+        if self.active_upgrades.contains(&modifier_id) { return false; }
+
+        if let Some(modifier) = db.ability_modifiers.get(&modifier_id).cloned() {
+            modifier.apply_to_definition(def);
+            self.active_upgrades.insert(modifier_id);
+            self.total_points_spent += modifier.unlock_cost;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn respec(&mut self, def: &mut AbilityDefinition, original: AbilityDefinition, db: &AbilityDatabase) {
+        *def = original;
+        // Re-apply all active upgrades in topological order
+        let ordered = self.topological_order();
+        for mid in ordered {
+            if self.active_upgrades.contains(&mid) {
+                if let Some(modifier) = db.ability_modifiers.get(&mid).cloned() {
+                    modifier.apply_to_definition(def);
+                }
+            }
+        }
+    }
+
+    fn topological_order(&self) -> Vec<u64> {
+        // BFS from roots
+        let all_ids: HashSet<u64> = self.upgrades.iter().map(|u| u.id).collect();
+        let child_ids: HashSet<u64> = self.upgrade_graph.values().flat_map(|v| v.iter().copied()).collect();
+        let roots: Vec<u64> = all_ids.difference(&child_ids).copied().collect();
+        let mut result = Vec::new();
+        let mut queue: VecDeque<u64> = roots.into_iter().collect();
+        while let Some(id) = queue.pop_front() {
+            result.push(id);
+            if let Some(children) = self.upgrade_graph.get(&id) {
+                for &child in children {
+                    queue.push_back(child);
+                }
+            }
+        }
+        result
+    }
+}
+
+// ============================================================
+// EXTENDED: CHANNEL ABILITY TICK PLANNER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ChannelTickPlan {
+    pub total_duration: f32,
+    pub tick_count: u32,
+    pub tick_interval: f32,
+    pub tick_times: Vec<f32>,
+    pub tick_damage_values: Vec<f32>,
+    pub cumulative_damage: Vec<f32>,
+    pub can_be_interrupted: bool,
+    pub partial_damage_on_interrupt: bool,
+}
+
+impl ChannelTickPlan {
+    pub fn build(ability: &AbilityDefinition, config: &FormulaTesterConfig) -> Self {
+        let duration = ability.channel_time;
+        let ticks = ability.channel_ticks;
+        let interval = if ticks > 0 { duration / ticks as f32 } else { duration };
+
+        let mut tick_times = Vec::new();
+        let mut tick_damages = Vec::new();
+        let mut cumulative = Vec::new();
+
+        let base_dmg_per_tick: f32 = if ticks > 0 {
+            ability.damage_formulas.iter().map(|f| {
+                let r = f.compute_final_damage(&config.caster_stats, config.resist_for_element(f.element), &[], 0.5, 0.9);
+                r.final_damage / ticks as f32
+            }).sum()
+        } else { 0.0 };
+
+        let mut cumul = 0.0f32;
+        for i in 0..ticks {
+            let t = interval * (i + 1) as f32;
+            tick_times.push(t);
+            tick_damages.push(base_dmg_per_tick);
+            cumul += base_dmg_per_tick;
+            cumulative.push(cumul);
+        }
+
+        ChannelTickPlan {
+            total_duration: duration,
+            tick_count: ticks,
+            tick_interval: interval,
+            tick_times,
+            tick_damage_values: tick_damages,
+            cumulative_damage: cumulative,
+            can_be_interrupted: ability.interrupt_on_move,
+            partial_damage_on_interrupt: true,
+        }
+    }
+
+    pub fn damage_at_time(&self, elapsed: f32) -> f32 {
+        if self.tick_times.is_empty() { return 0.0; }
+        let ticks_elapsed = self.tick_times.iter().filter(|&&t| t <= elapsed).count();
+        self.cumulative_damage.get(ticks_elapsed.saturating_sub(1)).copied().unwrap_or(0.0)
+    }
+
+    pub fn dps(&self) -> f32 {
+        if self.total_duration <= 0.0 { return 0.0; }
+        self.cumulative_damage.last().copied().unwrap_or(0.0) / self.total_duration
+    }
+}
+
+// ============================================================
+// EXTENDED: ABILITY VISUAL EFFECTS PREVIEW
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct VfxPreviewData {
+    pub cast_particles: Vec<ParticleEmitter>,
+    pub impact_particles: Vec<ParticleEmitter>,
+    pub projectile_trail: Option<TrailEffect>,
+    pub screen_shake: Option<ScreenShake>,
+    pub status_effect_glow: Vec<(StatusEffectType, Vec4)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParticleEmitter {
+    pub name: String,
+    pub position_offset: Vec3,
+    pub direction: Vec3,
+    pub spread_angle: f32,
+    pub emission_rate: f32,
+    pub lifetime: f32,
+    pub speed: f32,
+    pub color_start: Vec4,
+    pub color_end: Vec4,
+    pub size_start: f32,
+    pub size_end: f32,
+    pub gravity: f32,
+    pub count: u32,
+}
+
+impl ParticleEmitter {
+    pub fn simple(name: impl Into<String>, color: Vec4) -> Self {
+        ParticleEmitter {
+            name: name.into(),
+            position_offset: Vec3::ZERO,
+            direction: Vec3::Y,
+            spread_angle: 30.0,
+            emission_rate: 50.0,
+            lifetime: 0.5,
+            speed: 3.0,
+            color_start: color,
+            color_end: Vec4::new(color.x, color.y, color.z, 0.0),
+            size_start: 0.2,
+            size_end: 0.0,
+            gravity: -2.0,
+            count: 20,
+        }
+    }
+
+    pub fn simulate_position(&self, t: f32, seed: u32) -> Vec3 {
+        let angle_rad = (seed as f32 * 2.3 + t) % (std::f32::consts::TAU);
+        let spread = self.spread_angle.to_radians();
+        let dir = Vec3::new(
+            angle_rad.sin() * spread.sin(),
+            self.direction.y,
+            angle_rad.cos() * spread.sin(),
+        ).normalize_or_zero();
+        let gravity_offset = Vec3::new(0.0, -0.5 * self.gravity * t * t, 0.0);
+        self.position_offset + dir * self.speed * t + gravity_offset
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrailEffect {
+    pub width: f32,
+    pub length: f32,
+    pub color: Vec4,
+    pub fade_time: f32,
+    pub subdivisions: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScreenShake {
+    pub intensity: f32,
+    pub duration: f32,
+    pub frequency: f32,
+    pub falloff: f32,
+}
+
+impl ScreenShake {
+    pub fn displacement_at_time(&self, t: f32) -> Vec2 {
+        if t >= self.duration { return Vec2::ZERO; }
+        let decay = (1.0 - t / self.duration).powf(self.falloff);
+        let wave = (t * self.frequency * std::f32::consts::TAU).sin();
+        Vec2::new(wave * self.intensity * decay, wave * 0.7 * self.intensity * decay)
+    }
+}
+
+pub fn build_vfx_preview(ability: &AbilityDefinition) -> VfxPreviewData {
+    let mut cast_particles = Vec::new();
+    let mut impact_particles = Vec::new();
+    let mut status_glows = Vec::new();
+
+    // Base cast effect
+    for formula in &ability.damage_formulas {
+        cast_particles.push(ParticleEmitter::simple(
+            format!("{} cast", formula.element.display_name()),
+            formula.element.color(),
+        ));
+        let mut impact = ParticleEmitter::simple(
+            format!("{} impact", formula.element.display_name()),
+            formula.element.color(),
+        );
+        impact.count = 40;
+        impact.speed = 5.0;
+        impact.size_start = 0.4;
+        impact_particles.push(impact);
+    }
+
+    for applied in &ability.applied_effects {
+        status_glows.push((applied.effect_type, applied.effect_type.color()));
+    }
+
+    let trail = ability.projectile_params.as_ref().map(|p| TrailEffect {
+        width: p.size * 2.0,
+        length: p.speed * 0.1,
+        color: Vec4::new(1.0, 0.8, 0.3, 0.8),
+        fade_time: 0.2,
+        subdivisions: 8,
+    });
+
+    let shake = if ability.aoe_radius > 0.0 {
+        Some(ScreenShake {
+            intensity: (ability.aoe_radius * 0.05).min(0.3),
+            duration: 0.4,
+            frequency: 12.0,
+            falloff: 2.0,
+        })
+    } else {
+        None
+    };
+
+    VfxPreviewData {
+        cast_particles,
+        impact_particles,
+        projectile_trail: trail,
+        screen_shake: shake,
+        status_effect_glow: status_glows,
+    }
+}
+
+// ============================================================
+// EXTENDED: ABILITY BALANCE CHECKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilityBalanceReport {
+    pub ability_name: String,
+    pub effective_dps: f32,
+    pub expected_dps_for_cooldown: f32,
+    pub is_overpowered: bool,
+    pub is_underpowered: bool,
+    pub resource_efficiency: f32,
+    pub utility_score: f32,
+    pub total_score: f32,
+    pub warnings: Vec<String>,
+    pub suggestions: Vec<String>,
+}
+
+pub fn check_ability_balance(ability: &AbilityDefinition, config: &FormulaTesterConfig) -> AbilityBalanceReport {
+    let test = run_formula_test(ability, config);
+    let eff_dps = test.effective_dps;
+
+    // Expected DPS based on cooldown and ability type
+    let expected_dps = expected_dps_for_cd(ability.base_cooldown, ability.ability_type);
+    let tolerance = expected_dps * 0.3;
+
+    let resource_eff = if ability.resource_cost > 0.0 { test.total_avg_damage / ability.resource_cost } else { 100.0 };
+
+    // Utility score: CC, healing, mobility add value
+    let utility = ability.applied_effects.iter().map(|e| {
+        if e.effect_type.is_crowd_control() { 20.0 }
+        else if e.effect_type.is_beneficial() { 10.0 }
+        else { 5.0 }
+    }).sum::<f32>()
+        + if ability.ability_type.is_movement() { 15.0 } else { 0.0 }
+        + ability.heal_formula.base_max * 0.1;
+
+    let mut warnings = Vec::new();
+    let mut suggestions = Vec::new();
+
+    if eff_dps > expected_dps + tolerance {
+        warnings.push(format!("DPS {:.1} exceeds expected {:.1} by {:.1}%",
+            eff_dps, expected_dps, (eff_dps / expected_dps - 1.0) * 100.0));
+        suggestions.push("Consider increasing cooldown or reducing base damage".to_string());
+    }
+    if eff_dps < expected_dps - tolerance && ability.ability_type.is_damage_dealing() {
+        warnings.push(format!("DPS {:.1} below expected {:.1}", eff_dps, expected_dps));
+        suggestions.push("Consider reducing cooldown or increasing base damage".to_string());
+    }
+    if ability.resource_cost > 100.0 {
+        warnings.push("Very high resource cost — may be unusable in sustained combat".to_string());
+    }
+    if ability.base_cooldown > 120.0 {
+        warnings.push("Very long cooldown — should have correspondingly high impact".to_string());
+    }
+    if ability.applied_effects.iter().any(|e| e.apply_chance >= 100.0 && e.effect_type.is_crowd_control()) {
+        warnings.push("100% CC application chance with no counter-play may be overpowered".to_string());
+        suggestions.push("Reduce CC application chance or add a resistance check".to_string());
+    }
+
+    let total_score = eff_dps / expected_dps.max(1.0) + utility * 0.01 + resource_eff * 0.05;
+
+    AbilityBalanceReport {
+        ability_name: ability.name.clone(),
+        effective_dps: eff_dps,
+        expected_dps_for_cooldown: expected_dps,
+        is_overpowered: eff_dps > expected_dps + tolerance,
+        is_underpowered: eff_dps < expected_dps - tolerance && ability.ability_type.is_damage_dealing(),
+        resource_efficiency: resource_eff,
+        utility_score: utility,
+        total_score,
+        warnings,
+        suggestions,
+    }
+}
+
+fn expected_dps_for_cd(cooldown: f32, ability_type: AbilityType) -> f32 {
+    let type_multiplier = match ability_type {
+        AbilityType::MeleeAttack => 0.8,
+        AbilityType::RangedAttack => 0.9,
+        AbilityType::AreaOfEffect => 1.5,
+        AbilityType::Nova => 1.4,
+        AbilityType::Beam => 1.1,
+        AbilityType::ChainLightning => 1.6,
+        AbilityType::Channel => 1.3,
+        _ => 1.0,
+    };
+    // Base 100 DPS at 0s CD, scales down for longer CDs
+    let base = 100.0 * type_multiplier;
+    base * (1.0 / (1.0 + cooldown * 0.05))
+}
+
+// ============================================================
+// EXTENDED: EFFECT PRIORITY QUEUE (for game simulation)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ScheduledEffect {
+    pub execute_at: f32,
+    pub effect_type: ScheduledEffectType,
+    pub source_ability_id: u64,
+    pub target_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScheduledEffectType {
+    ApplyStatus(u64),   // status effect definition id
+    DealDamage(DamageFormula, HashMap<String, f32>),
+    Heal(f32),
+    TriggerAbility(u64),
+    SpawnProjectile { origin: Vec3, direction: Vec3, ability_id: u64 },
+}
+
+pub struct EffectScheduler {
+    pub queue: Vec<ScheduledEffect>, // maintained sorted by execute_at
+    pub current_time: f32,
+}
+
+impl EffectScheduler {
+    pub fn new() -> Self {
+        EffectScheduler { queue: Vec::new(), current_time: 0.0 }
+    }
+
+    pub fn schedule(&mut self, at: f32, effect: ScheduledEffectType, source: u64, target: u64) {
+        let entry = ScheduledEffect { execute_at: at, effect_type: effect, source_ability_id: source, target_id: target };
+        let pos = self.queue.partition_point(|e| e.execute_at <= at);
+        self.queue.insert(pos, entry);
+    }
+
+    pub fn pop_ready(&mut self, now: f32) -> Vec<ScheduledEffect> {
+        self.current_time = now;
+        let split = self.queue.partition_point(|e| e.execute_at <= now);
+        self.queue.drain(..split).collect()
+    }
+
+    pub fn cancel_for_ability(&mut self, ability_id: u64) {
+        self.queue.retain(|e| e.source_ability_id != ability_id);
+    }
+
+    pub fn next_scheduled_time(&self) -> Option<f32> {
+        self.queue.first().map(|e| e.execute_at)
+    }
+}
+
+// ============================================================
+// FINAL ENTRY POINT
+// ============================================================
+
+pub fn ability_editor_main() {
+    let mut editor = build_ability_editor();
+
+    // Test formula tester
+    editor.formula_tester.selected_ability_id = editor.database.abilities.keys().next().copied();
+    editor.run_formula_test_now();
+
+    // Detect synergies
+    let _synergies = detect_synergies(&editor.database);
+
+    // Rank abilities
+    let config = FormulaTesterConfig::default_lvl_20();
+    let _dps_ranking = rank_abilities_by_dps(&editor.database, &config);
+    let _cd_table = generate_cooldown_preview_table(&editor.database);
+
+    // Balance check all abilities
+    let ability_ids: Vec<u64> = editor.database.abilities.keys().copied().collect();
+    for id in &ability_ids {
+        if let Some(a) = editor.database.abilities.get(id) {
+            let _report = check_ability_balance(a, &config);
+        }
+    }
+
+    // Resource efficiency
+    let _mana_ranking = rank_abilities_by_efficiency(&editor.database, &config, ResourceType::Mana);
+    let _stamina_ranking = rank_abilities_by_efficiency(&editor.database, &config, ResourceType::Stamina);
+
+    // Stance system
+    let mut stance_mgr = StanceManager::new();
+    let mut resources: HashMap<ResourceType, ResourceState> = HashMap::new();
+    resources.insert(ResourceType::Rage, ResourceState::new(ResourceType::Rage));
+
+    // Channel tick plan
+    if let Some(a) = editor.database.abilities.values().find(|a| a.channel_ticks > 0) {
+        let plan = ChannelTickPlan::build(a, &config);
+        let _dmg_at_half = plan.damage_at_time(a.channel_time * 0.5);
+        let _dps = plan.dps();
+    }
+
+    // VFX previews
+    for (_, ability) in &editor.database.abilities {
+        let _vfx = build_vfx_preview(ability);
+    }
+
+    // Effect scheduler test
+    let mut scheduler = EffectScheduler::new();
+    scheduler.schedule(0.5, ScheduledEffectType::Heal(50.0), 1, 100);
+    scheduler.schedule(1.0, ScheduledEffectType::ApplyStatus(1), 2, 100);
+    let _ready = scheduler.pop_ready(0.8);
+
+    // Talent optimizer
+    for (tree_id, tree) in &editor.database.talent_trees {
+        let goal = TalentOptimizationGoal {
+            maximize_stat: "attack_power".to_string(),
+            secondary_stats: vec![("stamina".to_string(), 0.5)],
+            required_abilities: Vec::new(),
+            budget_points: 10,
+        };
+        let _result = greedy_talent_optimizer(tree, &goal);
+    }
+
+    // Status timeline
+    let status_defs: Vec<&StatusEffectDefinition> = editor.database.status_effects.values().collect();
+    if !status_defs.is_empty() {
+        let pairs: Vec<(&StatusEffectDefinition, u32)> = status_defs.iter().map(|d| (*d, 2)).collect();
+        let stats = HashMap::new();
+        let frames = simulate_status_timeline(&pairs, &stats, 10.0, 0.1);
+        let _summary = summarize_timeline(&frames);
+    }
+
+    // Interaction matrix
+    let matrix = InteractionMatrix::new();
+    let mut mock_effects = Vec::new();
+    let _reactions = matrix.process_interactions(&mut mock_effects, StatusEffectType::Burn);
+
+    // Proc system
+    let mut proc_mgr = ProcManager::new();
+    proc_mgr.add_proc(ProcEffect {
+        id: 1,
+        name: "Flames of Fury".to_string(),
+        trigger: ProcTrigger::OnCrit,
+        chance: 15.0,
+        internal_cooldown: 5.0,
+        remaining_icd: 0.0,
+        effect: ProcOutcome::DealBonusDamage { formula: DamageFormula::new(DamageElement::Fire, 20.0, 35.0) },
+    });
+    proc_mgr.tick(1.0);
+    let rolls = vec![0.1, 0.05, 0.5];
+    let _triggered = proc_mgr.check_procs(&ProcTrigger::OnCrit, &rolls);
+
+    // Search index
+    let idx = AbilitySearchIndex::build(&editor.database);
+    let _fireball_ids = idx.search_by_tokens("fireball");
+    let _low_cd = idx.abilities_in_cd_range(0.0, 5.0);
+
+    println!("AbilityEditor initialized with {} abilities, {} status effects, {} talent trees",
+        editor.database.abilities.len(),
+        editor.database.status_effects.len(),
+        editor.database.talent_trees.len()
+    );
+}
+
+// ============================================================
+// SECTION: ABILITY COMBO SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComboTrigger {
+    AbilityUsed(u64),
+    StatusApplied(StatusEffectType),
+    HitLanded,
+    KillSecured,
+    ResourceThreshold { resource: ResourceType, threshold_pct: f32, above: bool },
+    TimeElapsed(f32),
+}
+
+#[derive(Debug, Clone)]
+pub struct ComboStep {
+    pub trigger: ComboTrigger,
+    pub time_window: f32,
+    pub required_index: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComboDefinition {
+    pub id: u64,
+    pub name: String,
+    pub steps: Vec<ComboStep>,
+    pub reward_ability_id: Option<u64>,
+    pub reward_modifiers: Vec<(String, f32)>,
+    pub reward_duration: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComboTracker {
+    pub definition: ComboDefinition,
+    pub current_step: usize,
+    pub step_timestamp: f32,
+    pub active_reward_timer: f32,
+}
+
+impl ComboTracker {
+    pub fn new(definition: ComboDefinition) -> Self {
+        Self { definition, current_step: 0, step_timestamp: 0.0, active_reward_timer: 0.0 }
+    }
+
+    pub fn advance(&mut self, trigger: &ComboTrigger, current_time: f32) -> bool {
+        if self.current_step >= self.definition.steps.len() { return false; }
+        let step = &self.definition.steps[self.current_step];
+        let elapsed = current_time - self.step_timestamp;
+        if elapsed > step.time_window && self.current_step > 0 {
+            self.current_step = 0;
+            self.step_timestamp = current_time;
+        }
+        if &step.trigger == trigger {
+            self.current_step += 1;
+            self.step_timestamp = current_time;
+            if self.current_step >= self.definition.steps.len() {
+                self.current_step = 0;
+                self.active_reward_timer = self.definition.reward_duration;
+                return true; // Combo completed
+            }
+        } else {
+            self.current_step = 0;
+            self.step_timestamp = current_time;
+        }
+        false
+    }
+
+    pub fn update_reward_timer(&mut self, dt: f32) {
+        if self.active_reward_timer > 0.0 {
+            self.active_reward_timer = (self.active_reward_timer - dt).max(0.0);
+        }
+    }
+
+    pub fn reward_active(&self) -> bool { self.active_reward_timer > 0.0 }
+
+    pub fn progress_fraction(&self) -> f32 {
+        if self.definition.steps.is_empty() { return 0.0; }
+        self.current_step as f32 / self.definition.steps.len() as f32
+    }
+}
+
+#[derive(Debug)]
+pub struct ComboManager {
+    pub trackers: Vec<ComboTracker>,
+}
+
+impl ComboManager {
+    pub fn new() -> Self { Self { trackers: Vec::new() } }
+
+    pub fn add_combo(&mut self, definition: ComboDefinition) {
+        self.trackers.push(ComboTracker::new(definition));
+    }
+
+    pub fn process_trigger(&mut self, trigger: &ComboTrigger, current_time: f32) -> Vec<u64> {
+        let mut completed = Vec::new();
+        for tracker in &mut self.trackers {
+            if tracker.advance(trigger, current_time) {
+                completed.push(tracker.definition.id);
+            }
+        }
+        completed
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        for tracker in &mut self.trackers {
+            tracker.update_reward_timer(dt);
+        }
+    }
+
+    pub fn active_rewards(&self) -> Vec<&ComboDefinition> {
+        self.trackers.iter().filter(|t| t.reward_active()).map(|t| &t.definition).collect()
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY CAST QUEUE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct QueuedCast {
+    pub ability_id: u64,
+    pub target_position: Vec3,
+    pub target_entity: Option<u64>,
+    pub queued_at: f32,
+    pub expire_at: f32,
+}
+
+#[derive(Debug)]
+pub struct AbilityCastQueue {
+    pub queue: VecDeque<QueuedCast>,
+    pub max_queue_size: usize,
+    pub queue_window: f32,
+}
+
+impl AbilityCastQueue {
+    pub fn new(max_queue_size: usize, queue_window: f32) -> Self {
+        Self { queue: VecDeque::new(), max_queue_size, queue_window }
+    }
+
+    pub fn enqueue(&mut self, cast: QueuedCast) -> bool {
+        if self.queue.len() >= self.max_queue_size { return false; }
+        self.queue.push_back(cast);
+        true
+    }
+
+    pub fn pop_valid(&mut self, current_time: f32) -> Option<QueuedCast> {
+        while let Some(front) = self.queue.front() {
+            if front.expire_at < current_time {
+                self.queue.pop_front();
+            } else {
+                return self.queue.pop_front();
+            }
+        }
+        None
+    }
+
+    pub fn expire_old(&mut self, current_time: f32) {
+        self.queue.retain(|c| c.expire_at >= current_time);
+    }
+
+    pub fn clear(&mut self) { self.queue.clear(); }
+}
+
+// ============================================================
+// SECTION: STATUS IMMUNITY TRACKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ImmunityWindow {
+    pub effect_type: StatusEffectType,
+    pub expires_at: f32,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusImmunityTracker {
+    pub entity_id: u64,
+    pub immunities: Vec<ImmunityWindow>,
+    pub tenacity: f32,
+}
+
+impl StatusImmunityTracker {
+    pub fn new(entity_id: u64, tenacity: f32) -> Self {
+        Self { entity_id, immunities: Vec::new(), tenacity }
+    }
+
+    pub fn add_immunity(&mut self, effect_type: StatusEffectType, duration: f32, current_time: f32, source: String) {
+        self.immunities.push(ImmunityWindow { effect_type, expires_at: current_time + duration, source });
+    }
+
+    pub fn add_post_effect_immunity(&mut self, effect_type: StatusEffectType, base_duration: f32, current_time: f32) {
+        let duration = base_duration * 0.5;
+        self.add_immunity(effect_type, duration, current_time, "post_effect_immunity".to_string());
+    }
+
+    pub fn is_immune(&self, effect_type: &StatusEffectType, current_time: f32) -> bool {
+        self.immunities.iter().any(|imm| &imm.effect_type == effect_type && imm.expires_at > current_time)
+    }
+
+    pub fn effective_duration(&self, base_duration: f32) -> f32 {
+        base_duration * (1.0 - self.tenacity / 100.0).max(0.0)
+    }
+
+    pub fn update(&mut self, current_time: f32) {
+        self.immunities.retain(|imm| imm.expires_at > current_time);
+    }
+}
+
+// ============================================================
+// SECTION: PARABOLIC ARC TARGETING
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ParabolicArcParams {
+    pub launch_angle_deg: f32,
+    pub gravity: f32,
+    pub initial_speed: f32,
+}
+
+impl ParabolicArcParams {
+    pub fn launch_velocity(&self, origin: Vec3, target: Vec3) -> Vec3 {
+        let diff = target - origin;
+        let horizontal_dist = (diff.x * diff.x + diff.z * diff.z).sqrt();
+        let angle_rad = self.launch_angle_deg.to_radians();
+        let speed = self.initial_speed;
+        let vy = speed * angle_rad.sin();
+        let horizontal_speed = speed * angle_rad.cos();
+        let horiz_dir = if horizontal_dist > 1e-6 {
+            Vec3::new(diff.x / horizontal_dist, 0.0, diff.z / horizontal_dist)
+        } else {
+            Vec3::new(1.0, 0.0, 0.0)
+        };
+        horiz_dir * horizontal_speed + Vec3::new(0.0, vy, 0.0)
+    }
+
+    pub fn time_of_flight(&self, launch_velocity: Vec3, height_diff: f32) -> f32 {
+        let vy = launch_velocity.y;
+        let g = self.gravity;
+        // Solve: height_diff = vy*t - 0.5*g*t^2
+        let discriminant = vy * vy + 2.0 * g * height_diff;
+        if discriminant < 0.0 { return 0.0; }
+        let t1 = (vy + discriminant.sqrt()) / g;
+        let t2 = (vy - discriminant.sqrt()) / g;
+        t1.max(t2).max(0.0)
+    }
+
+    pub fn position_at_time(&self, origin: Vec3, launch_velocity: Vec3, t: f32) -> Vec3 {
+        origin + launch_velocity * t + Vec3::new(0.0, -0.5 * self.gravity * t * t, 0.0)
+    }
+
+    pub fn trajectory_points(&self, origin: Vec3, launch_velocity: Vec3, tof: f32, steps: usize) -> Vec<Vec3> {
+        (0..=steps).map(|i| {
+            let t = tof * i as f32 / steps as f32;
+            self.position_at_time(origin, launch_velocity, t)
+        }).collect()
+    }
+
+    pub fn apex(&self, origin: Vec3, launch_velocity: Vec3) -> Vec3 {
+        let t_apex = launch_velocity.y / self.gravity;
+        self.position_at_time(origin, launch_velocity, t_apex.max(0.0))
+    }
+}
+
+// ============================================================
+// SECTION: LINE-OF-SIGHT CHECKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct OccluderSegment {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub height: f32,
+}
+
+pub fn segments_intersect_2d(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2) -> bool {
+    let d1 = p2 - p1;
+    let d2 = p4 - p3;
+    let cross = d1.x * d2.y - d1.y * d2.x;
+    if cross.abs() < 1e-9 { return false; }
+    let diff = p3 - p1;
+    let t = (diff.x * d2.y - diff.y * d2.x) / cross;
+    let u = (diff.x * d1.y - diff.y * d1.x) / cross;
+    t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0
+}
+
+pub fn has_line_of_sight(origin: Vec2, target: Vec2, occluders: &[OccluderSegment], caster_height: f32, target_height: f32) -> bool {
+    for occ in occluders {
+        if caster_height > occ.height && target_height > occ.height { continue; }
+        if segments_intersect_2d(origin, target, occ.a, occ.b) { return false; }
+    }
+    true
+}
+
+pub fn find_first_occluder(origin: Vec2, direction: Vec2, max_range: f32, occluders: &[OccluderSegment]) -> Option<(f32, usize)> {
+    let target = origin + direction * max_range;
+    let mut closest: Option<(f32, usize)> = None;
+    for (i, occ) in occluders.iter().enumerate() {
+        let d1 = direction * max_range;
+        let d2 = occ.b - occ.a;
+        let cross = d1.x * d2.y - d1.y * d2.x;
+        if cross.abs() < 1e-9 { continue; }
+        let diff = occ.a - origin;
+        let t = (diff.x * d2.y - diff.y * d2.x) / cross;
+        let u = (diff.x * d1.y - diff.y * d1.x) / cross;
+        if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
+            let dist = t * max_range;
+            if closest.map(|(d, _)| dist < d).unwrap_or(true) {
+                closest = Some((dist, i));
+            }
+        }
+    }
+    let _ = target;
+    closest
+}
+
+// ============================================================
+// SECTION: ABILITY HOTBAR MANAGEMENT
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct HotbarSlot {
+    pub slot_index: usize,
+    pub ability_id: Option<u64>,
+    pub keybind: Option<String>,
+    pub cooldown_remaining: f32,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilityHotbar {
+    pub slots: Vec<HotbarSlot>,
+    pub global_cooldown: f32,
+    pub global_cooldown_remaining: f32,
+}
+
+impl AbilityHotbar {
+    pub fn new(slot_count: usize) -> Self {
+        let slots = (0..slot_count).map(|i| HotbarSlot {
+            slot_index: i,
+            ability_id: None,
+            keybind: None,
+            cooldown_remaining: 0.0,
+            active: false,
+        }).collect();
+        Self { slots, global_cooldown: 1.5, global_cooldown_remaining: 0.0 }
+    }
+
+    pub fn assign(&mut self, slot_index: usize, ability_id: u64, keybind: Option<String>) {
+        if let Some(slot) = self.slots.get_mut(slot_index) {
+            slot.ability_id = Some(ability_id);
+            slot.keybind = keybind;
+        }
+    }
+
+    pub fn unassign(&mut self, slot_index: usize) {
+        if let Some(slot) = self.slots.get_mut(slot_index) {
+            slot.ability_id = None;
+            slot.keybind = None;
+        }
+    }
+
+    pub fn can_use(&self, slot_index: usize) -> bool {
+        if self.global_cooldown_remaining > 0.0 { return false; }
+        self.slots.get(slot_index).map(|s| s.cooldown_remaining <= 0.0 && s.ability_id.is_some()).unwrap_or(false)
+    }
+
+    pub fn trigger(&mut self, slot_index: usize, ability_cooldown: f32) -> Option<u64> {
+        if !self.can_use(slot_index) { return None; }
+        let ability_id = self.slots[slot_index].ability_id;
+        if let Some(slot) = self.slots.get_mut(slot_index) {
+            slot.cooldown_remaining = ability_cooldown;
+        }
+        self.global_cooldown_remaining = self.global_cooldown;
+        ability_id
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.global_cooldown_remaining = (self.global_cooldown_remaining - dt).max(0.0);
+        for slot in &mut self.slots {
+            slot.cooldown_remaining = (slot.cooldown_remaining - dt).max(0.0);
+        }
+    }
+
+    pub fn find_slot_by_ability(&self, ability_id: u64) -> Option<usize> {
+        self.slots.iter().find(|s| s.ability_id == Some(ability_id)).map(|s| s.slot_index)
+    }
+
+    pub fn swap_slots(&mut self, a: usize, b: usize) {
+        if a < self.slots.len() && b < self.slots.len() {
+            let (ability_a, keybind_a) = (self.slots[a].ability_id, self.slots[a].keybind.clone());
+            let (ability_b, keybind_b) = (self.slots[b].ability_id, self.slots[b].keybind.clone());
+            self.slots[a].ability_id = ability_b;
+            self.slots[a].keybind = keybind_b;
+            self.slots[b].ability_id = ability_a;
+            self.slots[b].keybind = keybind_a;
+        }
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY SERIALIZATION (TEXT FORMAT)
+// ============================================================
+
+pub fn serialize_ability_brief(ability: &AbilityDefinition) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("id={}", ability.id));
+    parts.push(format!("name=\"{}\"", ability.name));
+    parts.push(format!("type={:?}", ability.ability_type));
+    parts.push(format!("cooldown={:.2}", ability.base_cooldown));
+    parts.push(format!("cast_time={:.2}", ability.cast_time));
+    parts.push(format!("range={:.1}", ability.range));
+    parts.join(";")
+}
+
+pub fn serialize_damage_formula(formula: &DamageFormula) -> String {
+    format!(
+        "element={:?};base={:.0}-{:.0};crit_chance={:.2};crit_mult={:.2};pen={:.0};pen_pct={:.2}",
+        formula.element, formula.base_min, formula.base_max,
+        formula.crit_chance_base, formula.crit_multiplier_base,
+        formula.penetration, formula.penetration_percent
+    )
+}
+
+pub fn parse_scaling_coefficients(input: &str) -> Vec<ScalingCoeff> {
+    let mut results = Vec::new();
+    for part in input.split(',') {
+        let trimmed = part.trim();
+        let tokens: Vec<&str> = trimmed.split(':').collect();
+        if tokens.len() == 2 {
+            if let Ok(coeff) = tokens[1].trim().parse::<f32>() {
+                let stat_name = tokens[0].trim().to_string();
+                results.push(ScalingCoeff { stat_name, coefficient: coeff, exponent: 1.0 });
+            }
+        }
+    }
+    results
+}
+
+pub fn ability_to_description_text(ability: &AbilityDefinition) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("=== {} ===", ability.name));
+    lines.push(format!("Type: {:?}", ability.ability_type));
+    if !ability.description.is_empty() {
+        lines.push(format!("Description: {}", ability.description));
+    }
+    lines.push(format!("Cast Time: {:.2}s | Cooldown: {:.2}s | Range: {:.1}", ability.cast_time, ability.base_cooldown, ability.range));
+    if ability.resource_cost > 0.0 {
+        lines.push(format!("Cost: {:.0} {:?}", ability.resource_cost, ability.resource_type));
+    }
+    if !ability.damage_formulas.is_empty() {
+        lines.push(format!("Damage ({} formula(s)):", ability.damage_formulas.len()));
+        for f in &ability.damage_formulas {
+            lines.push(format!("  {:?}: {:.0}-{:.0} base, {:.0}% crit chance", f.element, f.base_min, f.base_max, f.crit_chance_base * 100.0));
+        }
+    }
+    if !ability.applied_effects.is_empty() {
+        lines.push(format!("Applied Effects:"));
+        for eff in &ability.applied_effects {
+            lines.push(format!("  {:?} for {:.1}s ({}%)", eff.effect_type, eff.duration_override.unwrap_or(0.0), (eff.apply_chance * 100.0) as u32));
+        }
+    }
+    lines.join("\n")
+}
+
+// ============================================================
+// SECTION: AREA DENIAL ABILITY SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AreaDenialZone {
+    pub id: u64,
+    pub ability_id: u64,
+    pub caster_id: u64,
+    pub position: Vec3,
+    pub radius: f32,
+    pub duration_remaining: f32,
+    pub tick_interval: f32,
+    pub tick_accumulator: f32,
+    pub damage_per_tick: f32,
+    pub effect_per_tick: Option<StatusEffectType>,
+    pub effect_duration: f32,
+    pub tags: Vec<String>,
+}
+
+impl AreaDenialZone {
+    pub fn new(id: u64, ability_id: u64, caster_id: u64, position: Vec3, radius: f32, duration: f32, damage_per_tick: f32, tick_interval: f32) -> Self {
+        Self {
+            id, ability_id, caster_id, position, radius, duration_remaining: duration,
+            tick_interval, tick_accumulator: 0.0, damage_per_tick, effect_per_tick: None,
+            effect_duration: 2.0, tags: Vec::new(),
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) -> bool {
+        self.duration_remaining -= dt;
+        self.tick_accumulator += dt;
+        self.duration_remaining > 0.0
+    }
+
+    pub fn should_tick(&mut self) -> bool {
+        if self.tick_accumulator >= self.tick_interval {
+            self.tick_accumulator -= self.tick_interval;
+            true
+        } else { false }
+    }
+
+    pub fn contains_point(&self, point: Vec3) -> bool {
+        let dx = point.x - self.position.x;
+        let dz = point.z - self.position.z;
+        dx * dx + dz * dz <= self.radius * self.radius
+    }
+
+    pub fn lifetime_fraction(&self, total_duration: f32) -> f32 {
+        1.0 - (self.duration_remaining / total_duration).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Debug)]
+pub struct AreaDenialManager {
+    pub zones: Vec<AreaDenialZone>,
+    pub next_zone_id: u64,
+}
+
+impl AreaDenialManager {
+    pub fn new() -> Self { Self { zones: Vec::new(), next_zone_id: 1 } }
+
+    pub fn spawn_zone(&mut self, ability_id: u64, caster_id: u64, position: Vec3, radius: f32, duration: f32, damage_per_tick: f32, tick_interval: f32) -> u64 {
+        let id = self.next_zone_id;
+        self.next_zone_id += 1;
+        self.zones.push(AreaDenialZone::new(id, ability_id, caster_id, position, radius, duration, damage_per_tick, tick_interval));
+        id
+    }
+
+    pub fn update(&mut self, dt: f32) -> Vec<(u64, Vec<u64>)> {
+        // Returns: zone_id -> list of entity_ids to tick (caller supplies entity positions)
+        self.zones.retain_mut(|z| z.update(dt));
+        Vec::new() // In real use, caller queries entity positions against zones
+    }
+
+    pub fn query_zones_at(&self, point: Vec3) -> Vec<&AreaDenialZone> {
+        self.zones.iter().filter(|z| z.contains_point(point)).collect()
+    }
+
+    pub fn remove_zone(&mut self, zone_id: u64) {
+        self.zones.retain(|z| z.id != zone_id);
+    }
+
+    pub fn caster_zones(&self, caster_id: u64) -> Vec<&AreaDenialZone> {
+        self.zones.iter().filter(|z| z.caster_id == caster_id).collect()
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY INTERRUPT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterruptType { Stun, Silence, Knockback, Knockup, Pushback, AbilityCancel }
+
+#[derive(Debug, Clone)]
+pub struct InterruptEvent {
+    pub interrupt_type: InterruptType,
+    pub source_entity: u64,
+    pub magnitude: f32,
+    pub interrupt_time: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CastInterruptData {
+    pub was_interrupted: bool,
+    pub interrupt_type: Option<InterruptType>,
+    pub progress_at_interrupt: f32,
+    pub refund_pct: f32,
+}
+
+pub fn compute_cast_interrupt(ability: &AbilityDefinition, interrupt: &InterruptEvent, cast_progress: f32) -> CastInterruptData {
+    let interruptible = match interrupt.interrupt_type {
+        InterruptType::Stun | InterruptType::Knockback | InterruptType::Knockup => true,
+        InterruptType::Silence => matches!(ability.ability_type, AbilityType::Buff | AbilityType::Heal | AbilityType::Summon),
+        InterruptType::Pushback => ability.cast_time > 0.5,
+        InterruptType::AbilityCancel => true,
+    };
+    if !interruptible {
+        return CastInterruptData { was_interrupted: false, interrupt_type: None, progress_at_interrupt: cast_progress, refund_pct: 0.0 };
+    }
+    let refund_pct = if cast_progress < 0.3 { 1.0 } else if cast_progress < 0.7 { 0.5 } else { 0.0 };
+    CastInterruptData {
+        was_interrupted: true,
+        interrupt_type: Some(interrupt.interrupt_type.clone()),
+        progress_at_interrupt: cast_progress,
+        refund_pct,
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY AURA SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AuraDefinition {
+    pub id: u64,
+    pub name: String,
+    pub ability_id: u64,
+    pub radius: f32,
+    pub affects_allies: bool,
+    pub affects_enemies: bool,
+    pub affects_self: bool,
+    pub stat_modifiers: Vec<(String, f32)>,
+    pub tick_effects: Vec<StatusEffectType>,
+    pub tick_interval: f32,
+    pub reserved_resource: Option<(ResourceType, f32)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveAura {
+    pub definition_id: u64,
+    pub caster_id: u64,
+    pub position: Vec3,
+    pub tick_accumulator: f32,
+}
+
+impl ActiveAura {
+    pub fn new(definition_id: u64, caster_id: u64, position: Vec3) -> Self {
+        Self { definition_id, caster_id, position, tick_accumulator: 0.0 }
+    }
+
+    pub fn update_position(&mut self, new_pos: Vec3) { self.position = new_pos; }
+
+    pub fn tick(&mut self, dt: f32, tick_interval: f32) -> bool {
+        self.tick_accumulator += dt;
+        if self.tick_accumulator >= tick_interval {
+            self.tick_accumulator -= tick_interval;
+            true
+        } else { false }
+    }
+
+    pub fn affects_point(&self, point: Vec3, radius: f32) -> bool {
+        let dx = point.x - self.position.x;
+        let dz = point.z - self.position.z;
+        dx * dx + dz * dz <= radius * radius
+    }
+}
+
+#[derive(Debug)]
+pub struct AuraManager {
+    pub aura_defs: HashMap<u64, AuraDefinition>,
+    pub active_auras: Vec<ActiveAura>,
+}
+
+impl AuraManager {
+    pub fn new() -> Self { Self { aura_defs: HashMap::new(), active_auras: Vec::new() } }
+
+    pub fn register_aura(&mut self, def: AuraDefinition) {
+        self.aura_defs.insert(def.id, def);
+    }
+
+    pub fn activate_aura(&mut self, def_id: u64, caster_id: u64, position: Vec3) -> bool {
+        if !self.aura_defs.contains_key(&def_id) { return false; }
+        // Remove existing aura of same type from same caster
+        self.active_auras.retain(|a| !(a.definition_id == def_id && a.caster_id == caster_id));
+        self.active_auras.push(ActiveAura::new(def_id, caster_id, position));
+        true
+    }
+
+    pub fn deactivate_aura(&mut self, def_id: u64, caster_id: u64) {
+        self.active_auras.retain(|a| !(a.definition_id == def_id && a.caster_id == caster_id));
+    }
+
+    pub fn auras_affecting_point(&self, point: Vec3) -> Vec<(&ActiveAura, &AuraDefinition)> {
+        self.active_auras.iter()
+            .filter_map(|a| {
+                self.aura_defs.get(&a.definition_id).and_then(|def| {
+                    if a.affects_point(point, def.radius) { Some((a, def)) } else { None }
+                })
+            })
+            .collect()
+    }
+
+    pub fn update_positions(&mut self, positions: &HashMap<u64, Vec3>) {
+        for aura in &mut self.active_auras {
+            if let Some(&pos) = positions.get(&aura.caster_id) {
+                aura.update_position(pos);
+            }
+        }
+    }
+
+    pub fn stat_bonus_at_point(&self, point: Vec3, stat_name: &str, entity_is_ally: bool) -> f32 {
+        self.auras_affecting_point(point).iter()
+            .filter(|(_, def)| (entity_is_ally && def.affects_allies) || (!entity_is_ally && def.affects_enemies))
+            .flat_map(|(_, def)| def.stat_modifiers.iter())
+            .filter(|(name, _)| name == stat_name)
+            .map(|(_, val)| val)
+            .sum()
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY TAG SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AbilityTag {
+    Spell, Attack, Projectile, AoE, Channeled, Instant, Movement, Summon,
+    Fire, Cold, Lightning, Chaos, Physical, Arcane,
+    Buff, Debuff, Heal, Support, Ultimate, Basic,
+    Melee, Ranged, Ground, Self_,
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilityTagFilter {
+    pub required_all: Vec<AbilityTag>,
+    pub required_any: Vec<AbilityTag>,
+    pub excluded: Vec<AbilityTag>,
+}
+
+impl AbilityTagFilter {
+    pub fn matches(&self, tags: &HashSet<AbilityTag>) -> bool {
+        for req in &self.required_all {
+            if !tags.contains(req) { return false; }
+        }
+        if !self.required_any.is_empty() {
+            if !self.required_any.iter().any(|t| tags.contains(t)) { return false; }
+        }
+        for excl in &self.excluded {
+            if tags.contains(excl) { return false; }
+        }
+        true
+    }
+}
+
+pub fn infer_tags_from_ability(ability: &AbilityDefinition) -> HashSet<AbilityTag> {
+    let mut tags = HashSet::new();
+    match ability.ability_type {
+        AbilityType::MeleeAttack | AbilityType::Charge => { tags.insert(AbilityTag::Attack); tags.insert(AbilityTag::Melee); }
+        AbilityType::RangedAttack | AbilityType::Projectile => { tags.insert(AbilityTag::Attack); tags.insert(AbilityTag::Ranged); tags.insert(AbilityTag::Projectile); }
+        AbilityType::AreaOfEffect | AbilityType::Nova => { tags.insert(AbilityTag::Spell); tags.insert(AbilityTag::AoE); }
+        AbilityType::Buff => { tags.insert(AbilityTag::Spell); tags.insert(AbilityTag::Buff); }
+        AbilityType::Debuff | AbilityType::Curse => { tags.insert(AbilityTag::Spell); tags.insert(AbilityTag::Debuff); }
+        AbilityType::Heal => { tags.insert(AbilityTag::Spell); tags.insert(AbilityTag::Heal); }
+        AbilityType::Summon | AbilityType::Totem | AbilityType::Pet => { tags.insert(AbilityTag::Summon); }
+        AbilityType::Dash | AbilityType::Teleport => { tags.insert(AbilityTag::Movement); }
+        AbilityType::Channel => { tags.insert(AbilityTag::Channeled); }
+        _ => {}
+    }
+    if ability.cast_time == 0.0 { tags.insert(AbilityTag::Instant); }
+    if ability.aoe_radius > 0.0 { tags.insert(AbilityTag::AoE); }
+    for formula in &ability.damage_formulas {
+        match formula.element {
+            DamageElement::Fire => { tags.insert(AbilityTag::Fire); tags.insert(AbilityTag::Spell); }
+            DamageElement::Cold => { tags.insert(AbilityTag::Cold); tags.insert(AbilityTag::Spell); }
+            DamageElement::Lightning => { tags.insert(AbilityTag::Lightning); tags.insert(AbilityTag::Spell); }
+            DamageElement::Physical => { tags.insert(AbilityTag::Physical); }
+            DamageElement::Arcane => { tags.insert(AbilityTag::Arcane); tags.insert(AbilityTag::Spell); }
+            _ => {}
+        }
+    }
+    tags
+}
+
+// ============================================================
+// SECTION: ABILITY UNLOCK SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub enum UnlockCondition {
+    CharacterLevel(u32),
+    AbilityKnown(u64),
+    ClassIs(String),
+    QuestCompleted(u64),
+    AttributeMinimum { stat_name: String, min_value: f32 },
+    PointsSpentInTree { tree_id: u64, min_points: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilityUnlockEntry {
+    pub ability_id: u64,
+    pub conditions: Vec<UnlockCondition>,
+    pub cost_points: u32,
+    pub cost_gold: u64,
+    pub one_time_unlock: bool,
+    pub display_category: String,
+}
+
+#[derive(Debug)]
+pub struct AbilityUnlockBook {
+    pub entries: HashMap<u64, AbilityUnlockEntry>,
+    pub unlocked: HashSet<u64>,
+}
+
+impl AbilityUnlockBook {
+    pub fn new() -> Self { Self { entries: HashMap::new(), unlocked: HashSet::new() } }
+
+    pub fn register(&mut self, entry: AbilityUnlockEntry) {
+        self.entries.insert(entry.ability_id, entry);
+    }
+
+    pub fn can_unlock(&self, ability_id: u64, char_level: u32, known_abilities: &HashSet<u64>, class: &str, available_points: u32) -> bool {
+        let entry = match self.entries.get(&ability_id) { Some(e) => e, None => return false };
+        if self.unlocked.contains(&ability_id) { return false; }
+        if available_points < entry.cost_points { return false; }
+        for cond in &entry.conditions {
+            match cond {
+                UnlockCondition::CharacterLevel(lvl) => { if char_level < *lvl { return false; } }
+                UnlockCondition::AbilityKnown(id) => { if !known_abilities.contains(id) { return false; } }
+                UnlockCondition::ClassIs(c) => { if c != class { return false; } }
+                UnlockCondition::AttributeMinimum { .. } => {} // caller handles stat lookup
+                UnlockCondition::PointsSpentInTree { .. } => {} // caller handles
+                UnlockCondition::QuestCompleted(_) => {} // caller handles
+            }
+        }
+        true
+    }
+
+    pub fn unlock(&mut self, ability_id: u64) -> bool {
+        if self.entries.contains_key(&ability_id) {
+            self.unlocked.insert(ability_id);
+            true
+        } else { false }
+    }
+
+    pub fn available_to_unlock(&self, char_level: u32, known_abilities: &HashSet<u64>, class: &str, available_points: u32) -> Vec<u64> {
+        self.entries.keys()
+            .filter(|&&id| self.can_unlock(id, char_level, known_abilities, class, available_points))
+            .cloned()
+            .collect()
+    }
+}
+
+// ============================================================
+// SECTION: DAMAGE OVER TIME (DOT) TRACKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DotInstance {
+    pub id: u64,
+    pub source_ability_id: u64,
+    pub caster_id: u64,
+    pub target_id: u64,
+    pub element: DamageElement,
+    pub damage_per_tick: f32,
+    pub tick_interval: f32,
+    pub duration_remaining: f32,
+    pub tick_accumulator: f32,
+    pub stack_count: u32,
+    pub max_stacks: u32,
+    pub can_crit: bool,
+    pub crit_chance: f32,
+    pub crit_multiplier: f32,
+}
+
+impl DotInstance {
+    pub fn new(id: u64, source_ability_id: u64, caster_id: u64, target_id: u64, element: DamageElement, damage_per_tick: f32, tick_interval: f32, duration: f32) -> Self {
+        Self {
+            id, source_ability_id, caster_id, target_id, element,
+            damage_per_tick, tick_interval, duration_remaining: duration,
+            tick_accumulator: 0.0, stack_count: 1, max_stacks: 1,
+            can_crit: false, crit_chance: 0.05, crit_multiplier: 1.5,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) -> (bool, bool) {
+        self.duration_remaining -= dt;
+        self.tick_accumulator += dt;
+        let ticked = self.tick_accumulator >= self.tick_interval;
+        if ticked { self.tick_accumulator -= self.tick_interval; }
+        let alive = self.duration_remaining > 0.0;
+        (alive, ticked)
+    }
+
+    pub fn effective_damage_per_tick(&self) -> f32 {
+        self.damage_per_tick * self.stack_count as f32
+    }
+
+    pub fn add_stack(&mut self, new_instance: &DotInstance) {
+        if self.stack_count < self.max_stacks {
+            self.stack_count += 1;
+        }
+        // Refresh duration to whichever is longer
+        self.duration_remaining = self.duration_remaining.max(new_instance.duration_remaining);
+    }
+
+    pub fn expected_total_damage(&self) -> f32 {
+        let remaining_ticks = (self.duration_remaining / self.tick_interval).ceil();
+        self.effective_damage_per_tick() * remaining_ticks
+    }
+}
+
+#[derive(Debug)]
+pub struct DotTracker {
+    pub dots: Vec<DotInstance>,
+    pub next_dot_id: u64,
+}
+
+impl DotTracker {
+    pub fn new() -> Self { Self { dots: Vec::new(), next_dot_id: 1 } }
+
+    pub fn apply(&mut self, mut instance: DotInstance) -> u64 {
+        instance.id = self.next_dot_id;
+        self.next_dot_id += 1;
+        // Check for stacking with existing dot from same source on same target
+        let existing = self.dots.iter_mut().find(|d| {
+            d.source_ability_id == instance.source_ability_id && d.target_id == instance.target_id
+        });
+        if let Some(existing_dot) = existing {
+            let clone = instance.clone();
+            existing_dot.add_stack(&clone);
+            return existing_dot.id;
+        }
+        let id = instance.id;
+        self.dots.push(instance);
+        id
+    }
+
+    pub fn update_all(&mut self, dt: f32) -> Vec<(u64, f32, DamageElement, bool)> {
+        // Returns: (target_id, damage, element, is_crit)
+        let mut damage_events = Vec::new();
+        self.dots.retain_mut(|dot| {
+            let (alive, ticked) = dot.update(dt);
+            if ticked {
+                let dmg = dot.effective_damage_per_tick();
+                damage_events.push((dot.target_id, dmg, dot.element.clone(), false));
+            }
+            alive
+        });
+        damage_events
+    }
+
+    pub fn dispel_by_element(&mut self, target_id: u64, element: &DamageElement) {
+        self.dots.retain(|d| !(d.target_id == target_id && &d.element == element));
+    }
+
+    pub fn total_dot_dps_on_target(&self, target_id: u64) -> f32 {
+        self.dots.iter()
+            .filter(|d| d.target_id == target_id)
+            .map(|d| d.effective_damage_per_tick() / d.tick_interval)
+            .sum()
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY MODIFIER STACK (RUNTIME BUFFS/DEBUFFS)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RuntimeAbilityModifier {
+    pub id: u64,
+    pub target_ability_id: Option<u64>,
+    pub target_tag_filter: Option<AbilityTagFilter>,
+    pub stat_changes: Vec<(String, f32)>,
+    pub mult_changes: Vec<(String, f32)>,
+    pub duration: Option<f32>,
+    pub source: String,
+}
+
+#[derive(Debug)]
+pub struct RuntimeAbilityModStack {
+    pub modifiers: Vec<(RuntimeAbilityModifier, f32)>,
+    pub next_id: u64,
+}
+
+impl RuntimeAbilityModStack {
+    pub fn new() -> Self { Self { modifiers: Vec::new(), next_id: 1 } }
+
+    pub fn push(&mut self, mut modifier: RuntimeAbilityModifier, current_time: f32) -> u64 {
+        modifier.id = self.next_id;
+        self.next_id += 1;
+        self.modifiers.push((modifier, current_time));
+        self.next_id - 1
+    }
+
+    pub fn update(&mut self, current_time: f32) {
+        self.modifiers.retain(|(m, start_time)| {
+            match m.duration {
+                None => true,
+                Some(dur) => current_time - start_time < dur,
+            }
+        });
+    }
+
+    pub fn remove_by_id(&mut self, id: u64) {
+        self.modifiers.retain(|(m, _)| m.id != id);
+    }
+
+    pub fn flat_bonus_for_ability(&self, ability_id: u64, ability_tags: &HashSet<AbilityTag>, stat_name: &str) -> f32 {
+        self.modifiers.iter().filter(|(m, _)| {
+            let applies_by_id = m.target_ability_id.map(|id| id == ability_id).unwrap_or(true);
+            let applies_by_tag = m.target_tag_filter.as_ref().map(|f| f.matches(ability_tags)).unwrap_or(true);
+            applies_by_id && applies_by_tag
+        }).flat_map(|(m, _)| m.stat_changes.iter())
+          .filter(|(name, _)| name == stat_name)
+          .map(|(_, v)| v)
+          .sum()
+    }
+
+    pub fn mult_bonus_for_ability(&self, ability_id: u64, ability_tags: &HashSet<AbilityTag>, stat_name: &str) -> f32 {
+        self.modifiers.iter().filter(|(m, _)| {
+            let applies_by_id = m.target_ability_id.map(|id| id == ability_id).unwrap_or(true);
+            let applies_by_tag = m.target_tag_filter.as_ref().map(|f| f.matches(ability_tags)).unwrap_or(true);
+            applies_by_id && applies_by_tag
+        }).flat_map(|(m, _)| m.mult_changes.iter())
+          .filter(|(name, _)| name == stat_name)
+          .map(|(_, v)| v)
+          .product()
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY EDITOR STATE (EXTENDED)
+// ============================================================
+
+#[derive(Debug)]
+pub struct AbilityEditorExtendedState {
+    pub hotbar: AbilityHotbar,
+    pub combo_manager: ComboManager,
+    pub area_denial_manager: AreaDenialManager,
+    pub aura_manager: AuraManager,
+    pub dot_tracker: DotTracker,
+    pub unlock_book: AbilityUnlockBook,
+    pub cast_queue: AbilityCastQueue,
+    pub runtime_mods: RuntimeAbilityModStack,
+    pub immunity_trackers: HashMap<u64, StatusImmunityTracker>,
+    pub selected_ability_tags: HashSet<AbilityTag>,
+    pub tag_filter: Option<AbilityTagFilter>,
+    pub parabolic_preview: Option<Vec<Vec3>>,
+    pub los_occluders: Vec<OccluderSegment>,
+}
+
+impl AbilityEditorExtendedState {
+    pub fn new() -> Self {
+        Self {
+            hotbar: AbilityHotbar::new(10),
+            combo_manager: ComboManager::new(),
+            area_denial_manager: AreaDenialManager::new(),
+            aura_manager: AuraManager::new(),
+            dot_tracker: DotTracker::new(),
+            unlock_book: AbilityUnlockBook::new(),
+            cast_queue: AbilityCastQueue::new(3, 0.5),
+            runtime_mods: RuntimeAbilityModStack::new(),
+            immunity_trackers: HashMap::new(),
+            selected_ability_tags: HashSet::new(),
+            tag_filter: None,
+            parabolic_preview: None,
+            los_occluders: Vec::new(),
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, current_time: f32) {
+        self.hotbar.update(dt);
+        self.combo_manager.update(dt);
+        self.area_denial_manager.update(dt);
+        self.dot_tracker.update_all(dt);
+        self.runtime_mods.update(current_time);
+        self.cast_queue.expire_old(current_time);
+        for tracker in self.immunity_trackers.values_mut() {
+            tracker.update(current_time);
+        }
+    }
+
+    pub fn abilities_matching_filter(&self, database: &AbilityDatabase) -> Vec<u64> {
+        match &self.tag_filter {
+            None => database.abilities.keys().cloned().collect(),
+            Some(filter) => database.abilities.iter()
+                .filter(|(_, ab)| {
+                    let tags = infer_tags_from_ability(ab);
+                    filter.matches(&tags)
+                })
+                .map(|(id, _)| *id)
+                .collect(),
+        }
+    }
+
+    pub fn preview_parabolic_arc(&mut self, origin: Vec3, target: Vec3, params: &ParabolicArcParams) {
+        let launch_vel = params.launch_velocity(origin, target);
+        let tof = params.time_of_flight(launch_vel, target.y - origin.y);
+        self.parabolic_preview = Some(params.trajectory_points(origin, launch_vel, tof, 32));
+    }
+
+    pub fn check_los(&self, origin: Vec2, target: Vec2, caster_height: f32, target_height: f32) -> bool {
+        has_line_of_sight(origin, target, &self.los_occluders, caster_height, target_height)
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY DATABASE SEARCH
+// ============================================================
+
+pub fn ability_fuzzy_search(database: &AbilityDatabase, query: &str, max_results: usize) -> Vec<u64> {
+    let q = query.to_lowercase();
+    let mut scored: Vec<(u64, usize)> = database.abilities.iter()
+        .map(|(&id, ab)| {
+            let name = ab.name.to_lowercase();
+            let score = if name.contains(&q) { 0 }
+                else { ability_edit_distance(&q, &name) };
+            (id, score)
+        })
+        .collect();
+    scored.sort_by_key(|(_, s)| *s);
+    scored.truncate(max_results);
+    scored.into_iter().map(|(id, _)| id).collect()
+}
+
+fn ability_edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if a[i-1] == b[j-1] {
+                dp[i-1][j-1]
+            } else {
+                1 + dp[i-1][j].min(dp[i][j-1]).min(dp[i-1][j-1])
+            };
+        }
+    }
+    dp[m][n]
+}
+
+pub fn filter_abilities_by_type(database: &AbilityDatabase, ability_type: &AbilityType) -> Vec<u64> {
+    database.abilities.iter()
+        .filter(|(_, ab)| std::mem::discriminant(&ab.ability_type) == std::mem::discriminant(ability_type))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+pub fn abilities_sorted_by_cooldown(database: &AbilityDatabase) -> Vec<(u64, f32)> {
+    let mut list: Vec<(u64, f32)> = database.abilities.iter()
+        .map(|(&id, ab)| (id, ab.base_cooldown))
+        .collect();
+    list.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    list
+}
+
+pub fn abilities_by_resource_type(database: &AbilityDatabase, resource: &ResourceType) -> Vec<u64> {
+    database.abilities.iter()
+        .filter(|(_, ab)| std::mem::discriminant(&ab.resource_type) == std::mem::discriminant(resource))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+// ============================================================
+// SECTION: DAMAGE SIMULATION (EXTENDED MONTE CARLO)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ExtendedMcSimResult {
+    pub samples: Vec<f32>,
+    pub mean: f32,
+    pub variance: f32,
+    pub std_dev: f32,
+    pub min: f32,
+    pub max: f32,
+    pub p10: f32,
+    pub p25: f32,
+    pub p50: f32,
+    pub p75: f32,
+    pub p90: f32,
+    pub p95: f32,
+    pub p99: f32,
+    pub crit_rate_observed: f32,
+    pub dps_at_mean: f32,
+}
+
+pub fn run_extended_monte_carlo(ability: &AbilityDefinition, stats: &HashMap<String, f32>, target_resist: f32, iterations: usize) -> ExtendedMcSimResult {
+    let mut samples = Vec::with_capacity(iterations);
+    let mut crit_count = 0usize;
+    let mut seed = 12345u64;
+
+    let lcg = |s: &mut u64| -> f32 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*s >> 33) as f32) / (u32::MAX as f32)
+    };
+
+    for _ in 0..iterations {
+        let mut total_damage = 0.0f32;
+        let mut had_crit = false;
+        for formula in &ability.damage_formulas {
+            let roll_t = lcg(&mut seed);
+            let crit_roll = lcg(&mut seed);
+            let result = formula.compute_final_damage(stats, target_resist, &[], roll_t, crit_roll);
+            total_damage += result.final_damage;
+            if result.is_crit { had_crit = true; }
+        }
+        if had_crit { crit_count += 1; }
+        samples.push(total_damage);
+    }
+
+    let n = samples.len() as f32;
+    let mean = samples.iter().sum::<f32>() / n;
+    let variance = samples.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+    let std_dev = variance.sqrt();
+    let min = samples.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    let mut sorted = samples.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |p: f32| sorted[((p / 100.0) * (sorted.len() - 1) as f32) as usize];
+
+    let dps_at_mean = if ability.base_cooldown > 0.0 { mean / ability.base_cooldown } else { mean };
+    let crit_rate_observed = crit_count as f32 / n;
+
+    ExtendedMcSimResult {
+        samples, mean, variance, std_dev, min, max,
+        p10: pct(10.0), p25: pct(25.0), p50: pct(50.0),
+        p75: pct(75.0), p90: pct(90.0), p95: pct(95.0), p99: pct(99.0),
+        crit_rate_observed, dps_at_mean,
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY EDITOR TOP-LEVEL DEMO EXTENSION
+// ============================================================
+
+pub fn ability_editor_extended_demo() {
+    let mut db = AbilityDatabase::new();
+
+    // Create a test ability
+    let mut fireball = AbilityDefinition::new(1001, "Fireball", AbilityType::Projectile);
+    fireball.description = "Hurls a blazing ball of fire that explodes on impact.".to_string();
+    fireball.targeting_mode = TargetingMode::GroundTarget { indicator: AreaIndicator::Circle };
+    fireball.range = 25.0;
+    fireball.aoe_radius = 4.0;
+    fireball.cast_time = 1.5;
+    fireball.base_cooldown = 6.0;
+    fireball.resource_cost = 80.0;
+    fireball.resource_type = ResourceType::Mana;
+    fireball.school = "Fire".to_string();
+    fireball.unlock_level = 5;
+    fireball.damage_formulas = vec![
+        DamageFormula {
+            element: DamageElement::Fire,
+            base_min: 120.0,
+            base_max: 180.0,
+            scaling: vec![ScalingCoeff { stat_name: "SpellPower".to_string(), coefficient: 0.85, exponent: 1.0 }],
+            crit_chance_base: 0.15,
+            crit_multiplier_base: 1.75,
+            crit_chance_scaling: Vec::new(),
+            crit_multiplier_scaling: Vec::new(),
+            penetration: 20.0,
+            penetration_percent: 0.1,
+            versus_status_bonus: Vec::new(),
+            variance: 0.1,
+        }
+    ];
+    fireball.applied_effects = vec![
+        AppliedEffect {
+            effect_id: 0,
+            effect_type: StatusEffectType::Burn,
+            apply_chance: 40.0,
+            to_target: true,
+            condition: None,
+            stacks_applied: 1,
+            duration_override: Some(4.0),
+        }
+    ];
+    fireball.projectile_params = Some(ProjectileParams {
+        speed: 20.0,
+        acceleration: 0.0,
+        gravity: 0.0,
+        max_range: 30.0,
+        pierce_count: 0,
+        split_count: 0,
+        fork_count: 0,
+        chain_count: 0,
+        chain_radius: 0.0,
+        homing: false,
+        homing_strength: 0.0,
+        aoe_on_impact: true,
+        aoe_radius: 4.0,
+        visual_trail: String::new(),
+        impact_effect: String::new(),
+        size: 0.5,
+    });
+
+    db.abilities.insert(fireball.id, fireball);
+
+    let stats: HashMap<String, f32> = [
+        ("SpellPower".to_string(), 250.0_f32),
+        ("CritChance".to_string(), 0.2),
+        ("CritMultiplier".to_string(), 2.0),
+    ].iter().cloned().collect();
+
+    // Run extended MC
+    if let Some(ability) = db.abilities.get(&1001) {
+        let result = run_extended_monte_carlo(ability, &stats, 0.15, 1000);
+        let _mean = result.mean;
+        let _p95 = result.p95;
+        let _dps = result.dps_at_mean;
+    }
+
+    // Hotbar management
+    let mut ext_state = AbilityEditorExtendedState::new();
+    ext_state.hotbar.assign(0, 1001, Some("Q".to_string()));
+    let can_use = ext_state.hotbar.can_use(0);
+    let _ = can_use;
+
+    // Tag inference
+    if let Some(ability) = db.abilities.get(&1001) {
+        let tags = infer_tags_from_ability(ability);
+        let _has_fire = tags.contains(&AbilityTag::Fire);
+        let description = ability_to_description_text(ability);
+        let _ = description;
+    }
+
+    // DOT tracker
+    let dot = DotInstance::new(0, 1001, 100, 200, DamageElement::Fire, 25.0, 1.0, 4.0);
+    ext_state.dot_tracker.apply(dot);
+    let _total_dps = ext_state.dot_tracker.total_dot_dps_on_target(200);
+
+    // Ability search
+    let results = ability_fuzzy_search(&db, "fire", 5);
+    let _ = results;
+
+    // Parabolic arc preview
+    let arc_params = ParabolicArcParams { launch_angle_deg: 45.0, gravity: 9.81, initial_speed: 20.0 };
+    ext_state.preview_parabolic_arc(Vec3::new(0.0, 0.0, 0.0), Vec3::new(15.0, 0.0, 0.0), &arc_params);
+
+    // LOS check
+    let _los = ext_state.check_los(Vec2::new(0.0, 0.0), Vec2::new(15.0, 0.0), 1.8, 1.8);
+
+    // Combo setup
+    let combo = ComboDefinition {
+        id: 1,
+        name: "Flame Burst Combo".to_string(),
+        steps: vec![
+            ComboStep { trigger: ComboTrigger::AbilityUsed(1001), time_window: 3.0, required_index: 0 },
+            ComboStep { trigger: ComboTrigger::StatusApplied(StatusEffectType::Burn), time_window: 2.0, required_index: 1 },
+        ],
+        reward_ability_id: Some(1002),
+        reward_modifiers: vec![("CritChance".to_string(), 0.25)],
+        reward_duration: 5.0,
+    };
+    ext_state.combo_manager.add_combo(combo);
+    let completed = ext_state.combo_manager.process_trigger(&ComboTrigger::AbilityUsed(1001), 0.0);
+    let _ = completed;
+
+    // Area denial
+    let _zone_id = ext_state.area_denial_manager.spawn_zone(1001, 100, Vec3::new(10.0, 0.0, 10.0), 5.0, 10.0, 30.0, 1.0);
+    let zones_at = ext_state.area_denial_manager.query_zones_at(Vec3::new(10.0, 0.0, 10.0));
+    let _ = zones_at;
+
+    // Runtime mod
+    let mod_entry = RuntimeAbilityModifier {
+        id: 0,
+        target_ability_id: Some(1001),
+        target_tag_filter: None,
+        stat_changes: vec![("base_damage".to_string(), 50.0)],
+        mult_changes: vec![("damage_mult".to_string(), 1.2)],
+        duration: Some(10.0),
+        source: "talent_bonus".to_string(),
+    };
+    ext_state.runtime_mods.push(mod_entry, 0.0);
+
+    // Sorted by cooldown
+    let sorted_cds = abilities_sorted_by_cooldown(&db);
+    let _ = sorted_cds;
+
+    // Filter by type
+    let projectiles = filter_abilities_by_type(&db, &AbilityType::Projectile);
+    let _ = projectiles;
+}
+
+// ============================================================
+// SECTION: ABILITY SCALING PREVIEW TABLE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ScalingPreviewRow {
+    pub stat_value: f32,
+    pub min_damage: f32,
+    pub max_damage: f32,
+    pub average_damage: f32,
+    pub crit_average: f32,
+    pub dps: f32,
+}
+
+pub fn build_scaling_preview_table(ability: &AbilityDefinition, stat_name: &str, min_stat: f32, max_stat: f32, steps: usize) -> Vec<ScalingPreviewRow> {
+    let mut rows = Vec::new();
+    if steps == 0 { return rows; }
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let stat_val = min_stat + (max_stat - min_stat) * t;
+        let mut stats: HashMap<String, f32> = HashMap::new();
+        stats.insert(stat_name.to_string(), stat_val);
+
+        let mut total_min = 0.0f32;
+        let mut total_max = 0.0f32;
+        let mut total_crit_avg = 0.0f32;
+
+        for formula in &ability.damage_formulas {
+            let scaling_bonus: f32 = formula.scaling.iter().map(|sc| {
+                let base = stats.get(&sc.stat_name).cloned().unwrap_or(0.0);
+                base * sc.coefficient
+            }).sum();
+            let base_min = formula.base_min + scaling_bonus;
+            let base_max = formula.base_max + scaling_bonus;
+            let avg = (base_min + base_max) * 0.5;
+            let crit_avg = avg * (1.0 + formula.crit_chance_base * (formula.crit_multiplier_base - 1.0));
+            total_min += base_min;
+            total_max += base_max;
+            total_crit_avg += crit_avg;
+        }
+
+        let avg = (total_min + total_max) * 0.5;
+        let dps = if ability.base_cooldown > 0.0 { avg / ability.base_cooldown } else { avg };
+        rows.push(ScalingPreviewRow { stat_value: stat_val, min_damage: total_min, max_damage: total_max, average_damage: avg, crit_average: total_crit_avg, dps });
+    }
+    rows
+}
+
+pub fn find_breakeven_stat_value(ability: &AbilityDefinition, stat_name: &str, target_dps: f32, max_search: f32) -> Option<f32> {
+    // Binary search for stat value that gives target DPS
+    let mut lo = 0.0f32;
+    let mut hi = max_search;
+    for _ in 0..50 {
+        let mid = (lo + hi) * 0.5;
+        let mut stats: HashMap<String, f32> = HashMap::new();
+        stats.insert(stat_name.to_string(), mid);
+        let avg: f32 = ability.damage_formulas.iter().map(|f| {
+            let bonus: f32 = f.scaling.iter().map(|s| stats.get(&s.stat_name).cloned().unwrap_or(0.0) * s.coefficient).sum();
+            (f.base_min + f.base_max) * 0.5 + bonus
+        }).sum();
+        let dps = if ability.base_cooldown > 0.0 { avg / ability.base_cooldown } else { avg };
+        if (dps - target_dps).abs() < 0.1 { return Some(mid); }
+        if dps < target_dps { lo = mid; } else { hi = mid; }
+    }
+    None
+}
+
+// ============================================================
+// SECTION: ABILITY RESONANCE SYSTEM (ELEMENTAL COMBOS)
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResonanceType { Ignition, Vaporize, Melt, Overload, Superconduct, Crystallize, Swirl, Shatter, Electrified }
+
+#[derive(Debug, Clone)]
+pub struct ResonanceResult {
+    pub resonance_type: ResonanceType,
+    pub damage_multiplier: f32,
+    pub bonus_effect: Option<StatusEffectType>,
+    pub clears_aura_a: bool,
+    pub clears_aura_b: bool,
+}
+
+pub fn compute_resonance(element_a: &DamageElement, element_b: &DamageElement) -> Option<ResonanceResult> {
+    match (element_a, element_b) {
+        (DamageElement::Fire, DamageElement::Poison) | (DamageElement::Poison, DamageElement::Fire) => Some(ResonanceResult {
+            resonance_type: ResonanceType::Vaporize,
+            damage_multiplier: 1.5,
+            bonus_effect: None,
+            clears_aura_a: true,
+            clears_aura_b: true,
+        }),
+        (DamageElement::Fire, DamageElement::Cold) | (DamageElement::Cold, DamageElement::Fire) => Some(ResonanceResult {
+            resonance_type: ResonanceType::Melt,
+            damage_multiplier: 2.0,
+            bonus_effect: None,
+            clears_aura_a: true,
+            clears_aura_b: true,
+        }),
+        (DamageElement::Lightning, DamageElement::Poison) | (DamageElement::Poison, DamageElement::Lightning) => Some(ResonanceResult {
+            resonance_type: ResonanceType::Electrified,
+            damage_multiplier: 1.0,
+            bonus_effect: Some(StatusEffectType::Stun),
+            clears_aura_a: false,
+            clears_aura_b: false,
+        }),
+        (DamageElement::Fire, DamageElement::Lightning) | (DamageElement::Lightning, DamageElement::Fire) => Some(ResonanceResult {
+            resonance_type: ResonanceType::Overload,
+            damage_multiplier: 1.6,
+            bonus_effect: Some(StatusEffectType::Knockback),
+            clears_aura_a: true,
+            clears_aura_b: true,
+        }),
+        (DamageElement::Cold, DamageElement::Poison) | (DamageElement::Poison, DamageElement::Cold) => Some(ResonanceResult {
+            resonance_type: ResonanceType::Shatter,
+            damage_multiplier: 1.8,
+            bonus_effect: Some(StatusEffectType::Freeze),
+            clears_aura_a: true,
+            clears_aura_b: true,
+        }),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ElementalAura {
+    pub entity_id: u64,
+    pub element: DamageElement,
+    pub strength: f32,
+    pub applied_at: f32,
+}
+
+#[derive(Debug)]
+pub struct ResonanceTracker {
+    pub auras: HashMap<u64, ElementalAura>,
+}
+
+impl ResonanceTracker {
+    pub fn new() -> Self { Self { auras: HashMap::new() } }
+
+    pub fn apply_element(&mut self, entity_id: u64, element: DamageElement, strength: f32, current_time: f32) -> Option<ResonanceResult> {
+        if let Some(existing) = self.auras.get(&entity_id) {
+            if let Some(mut resonance) = compute_resonance(&existing.element, &element) {
+                if resonance.clears_aura_a { self.auras.remove(&entity_id); }
+                if !resonance.clears_aura_b {
+                    self.auras.insert(entity_id, ElementalAura { entity_id, element, strength, applied_at: current_time });
+                }
+                resonance.damage_multiplier *= strength;
+                return Some(resonance);
+            }
+        }
+        self.auras.insert(entity_id, ElementalAura { entity_id, element, strength, applied_at: current_time });
+        None
+    }
+
+    pub fn decay_auras(&mut self, current_time: f32, decay_time: f32) {
+        self.auras.retain(|_, a| current_time - a.applied_at < decay_time);
+    }
+
+    pub fn aura_on_entity(&self, entity_id: u64) -> Option<&ElementalAura> {
+        self.auras.get(&entity_id)
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY COST EFFICIENCY ANALYZER (EXTENDED)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilityEfficiencyProfile {
+    pub ability_id: u64,
+    pub name: String,
+    pub raw_dps: f32,
+    pub resource_cost_per_second: f32,
+    pub damage_per_resource: f32,
+    pub effective_cast_time_with_cd: f32,
+    pub uptime_fraction: f32,
+    pub weighted_score: f32,
+}
+
+pub fn build_efficiency_profiles(database: &AbilityDatabase, stats: &HashMap<String, f32>, fight_duration: f32) -> Vec<AbilityEfficiencyProfile> {
+    let mut profiles = Vec::new();
+    for (&id, ability) in &database.abilities {
+        let avg_damage: f32 = ability.damage_formulas.iter().map(|f| {
+            let bonus: f32 = f.scaling.iter().map(|s| stats.get(&s.stat_name).cloned().unwrap_or(0.0) * s.coefficient).sum();
+            let avg_base = (f.base_min + f.base_max) * 0.5 + bonus;
+            avg_base * (1.0 + f.crit_chance_base * (f.crit_multiplier_base - 1.0))
+        }).sum();
+
+        let total_cycle_time = ability.cast_time + ability.base_cooldown;
+        let raw_dps = if total_cycle_time > 0.0 { avg_damage / total_cycle_time } else { avg_damage };
+        let uses_in_fight = if total_cycle_time > 0.0 { (fight_duration / total_cycle_time).floor() } else { 1.0 };
+        let uptime = if fight_duration > 0.0 { (uses_in_fight * ability.cast_time) / fight_duration } else { 0.0 };
+
+        let resource_per_use = ability.resource_cost;
+        let resource_per_second = if total_cycle_time > 0.0 { resource_per_use / total_cycle_time } else { 0.0 };
+        let damage_per_resource = if resource_per_use > 0.0 { avg_damage / resource_per_use } else { f32::INFINITY };
+
+        let weighted_score = raw_dps * 0.5 + damage_per_resource.min(10.0) * 0.3 + uptime * 100.0 * 0.2;
+
+        profiles.push(AbilityEfficiencyProfile {
+            ability_id: id,
+            name: ability.name.clone(),
+            raw_dps,
+            resource_cost_per_second: resource_per_second,
+            damage_per_resource,
+            effective_cast_time_with_cd: total_cycle_time,
+            uptime_fraction: uptime,
+            weighted_score,
+        });
+    }
+    profiles.sort_by(|a, b| b.weighted_score.partial_cmp(&a.weighted_score).unwrap_or(std::cmp::Ordering::Equal));
+    profiles
+}
+
+// ============================================================
+// SECTION: ABILITY PHYSICS (BOUNCE AND RICCOCHET)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct BounceParams {
+    pub max_bounces: u32,
+    pub restitution: f32,
+    pub damage_falloff_per_bounce: f32,
+    pub angle_deviation_deg: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BounceState {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub bounces_remaining: u32,
+    pub current_damage_mult: f32,
+}
+
+pub fn simulate_bounce(params: &BounceParams, initial_pos: Vec3, initial_vel: Vec3, gravity: f32, dt: f32, max_steps: usize, floor_y: f32) -> Vec<Vec3> {
+    let mut positions = Vec::new();
+    let mut state = BounceState {
+        position: initial_pos,
+        velocity: initial_vel,
+        bounces_remaining: params.max_bounces,
+        current_damage_mult: 1.0,
+    };
+    positions.push(state.position);
+
+    for _ in 0..max_steps {
+        state.velocity.y -= gravity * dt;
+        state.position += state.velocity * dt;
+        positions.push(state.position);
+
+        if state.position.y <= floor_y && state.velocity.y < 0.0 {
+            if state.bounces_remaining == 0 { break; }
+            state.velocity.y = -state.velocity.y * params.restitution;
+            state.velocity.x *= params.restitution;
+            state.velocity.z *= params.restitution;
+            state.position.y = floor_y;
+            state.bounces_remaining -= 1;
+            state.current_damage_mult *= 1.0 - params.damage_falloff_per_bounce;
+        }
+
+        if state.velocity.length() < 0.01 { break; }
+    }
+    positions
+}
+
+pub fn reflect_velocity_off_normal(velocity: Vec3, surface_normal: Vec3, restitution: f32) -> Vec3 {
+    let dot = velocity.dot(surface_normal);
+    let reflected = velocity - surface_normal * (2.0 * dot);
+    reflected * restitution
+}
+
+// ============================================================
+// SECTION: ABILITY CHAIN LIGHTNING SIMULATION
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct ChainLightningParams {
+    pub max_jumps: u32,
+    pub jump_range: f32,
+    pub damage_falloff: f32,
+    pub fork_probability: f32,
+    pub max_forks: u32,
+    pub cannot_rehit_duration: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct LightningJump {
+    pub from_entity: u64,
+    pub to_entity: u64,
+    pub jump_index: u32,
+    pub damage_multiplier: f32,
+    pub is_fork: bool,
+}
+
+pub fn simulate_chain_lightning(
+    params: &ChainLightningParams,
+    initial_target: u64,
+    entity_positions: &HashMap<u64, Vec3>,
+    seed: &mut u64,
+) -> Vec<LightningJump> {
+    let lcg = |s: &mut u64| -> f32 {
+        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*s >> 33) as f32) / (u32::MAX as f32)
+    };
+
+    let mut jumps = Vec::new();
+    let mut hit_set: HashSet<u64> = HashSet::new();
+    hit_set.insert(initial_target);
+
+    let mut queue: VecDeque<(u64, u32, f32)> = VecDeque::new();
+    queue.push_back((initial_target, 0, 1.0));
+
+    while let Some((from_id, jump_index, damage_mult)) = queue.pop_front() {
+        if jump_index >= params.max_jumps { continue; }
+
+        let from_pos = match entity_positions.get(&from_id) { Some(p) => *p, None => continue };
+
+        let mut candidates: Vec<(u64, f32)> = entity_positions.iter()
+            .filter(|(&id, _)| !hit_set.contains(&id))
+            .map(|(&id, &pos)| {
+                let dist = (pos - from_pos).length();
+                (id, dist)
+            })
+            .filter(|(_, dist)| *dist <= params.jump_range)
+            .collect();
+
+        if candidates.is_empty() { continue; }
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let next_id = candidates[0].0;
+        let new_mult = damage_mult * params.damage_falloff;
+        hit_set.insert(next_id);
+
+        jumps.push(LightningJump {
+            from_entity: from_id,
+            to_entity: next_id,
+            jump_index,
+            damage_multiplier: new_mult,
+            is_fork: false,
+        });
+
+        queue.push_back((next_id, jump_index + 1, new_mult));
+
+        // Forks
+        let fork_count = (params.max_forks as usize).min(candidates.len() - 1);
+        let mut forks_created = 0u32;
+        for (fork_id, _) in candidates.iter().skip(1) {
+            if forks_created >= params.max_forks { break; }
+            if lcg(seed) < params.fork_probability {
+                hit_set.insert(*fork_id);
+                jumps.push(LightningJump {
+                    from_entity: from_id,
+                    to_entity: *fork_id,
+                    jump_index,
+                    damage_multiplier: new_mult * 0.5,
+                    is_fork: true,
+                });
+                forks_created += 1;
+            }
+        }
+        let _ = fork_count;
+    }
+    jumps
+}
+
+// ============================================================
+// SECTION: SPELL BOOK UI STATE
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpellBookTab { AllAbilities, Favorites, BySchool, ByType, RecentlyUsed }
+
+#[derive(Debug)]
+pub struct SpellBookState {
+    pub active_tab: SpellBookTab,
+    pub search_query: String,
+    pub selected_ability_id: Option<u64>,
+    pub school_filter: Option<String>,
+    pub type_filter: Option<AbilityType>,
+    pub favorites: HashSet<u64>,
+    pub recently_used: VecDeque<u64>,
+    pub max_recent: usize,
+    pub scroll_offset: usize,
+    pub page_size: usize,
+}
+
+impl SpellBookState {
+    pub fn new() -> Self {
+        Self {
+            active_tab: SpellBookTab::AllAbilities,
+            search_query: String::new(),
+            selected_ability_id: None,
+            school_filter: None,
+            type_filter: None,
+            favorites: HashSet::new(),
+            recently_used: VecDeque::new(),
+            max_recent: 20,
+            scroll_offset: 0,
+            page_size: 12,
+        }
+    }
+
+    pub fn toggle_favorite(&mut self, ability_id: u64) {
+        if self.favorites.contains(&ability_id) {
+            self.favorites.remove(&ability_id);
+        } else {
+            self.favorites.insert(ability_id);
+        }
+    }
+
+    pub fn record_use(&mut self, ability_id: u64) {
+        self.recently_used.retain(|&id| id != ability_id);
+        self.recently_used.push_front(ability_id);
+        if self.recently_used.len() > self.max_recent {
+            self.recently_used.pop_back();
+        }
+    }
+
+    pub fn filtered_abilities<'a>(&self, database: &'a AbilityDatabase) -> Vec<(u64, &'a AbilityDefinition)> {
+        let query = self.search_query.to_lowercase();
+        let mut result: Vec<(u64, &'a AbilityDefinition)> = database.abilities.iter()
+            .filter(|(&_id, ab)| {
+                if !query.is_empty() && !ab.name.to_lowercase().contains(&query) { return false; }
+                if let Some(school) = &self.school_filter {
+                    if &ab.school != school { return false; }
+                }
+                if let Some(ab_type) = &self.type_filter {
+                    if std::mem::discriminant(&ab.ability_type) != std::mem::discriminant(ab_type) { return false; }
+                }
+                match self.active_tab {
+                    SpellBookTab::Favorites => self.favorites.contains(&_id),
+                    SpellBookTab::RecentlyUsed => self.recently_used.contains(&_id),
+                    _ => true,
+                }
+            })
+            .map(|(&id, ab)| (id, ab))
+            .collect();
+        result.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        result
+    }
+
+    pub fn current_page<'a, 'b>(&'b self, filtered: &'a [( u64, &'a AbilityDefinition)]) -> &'a [(u64, &'a AbilityDefinition)] {
+        let start = self.scroll_offset;
+        let end = (start + self.page_size).min(filtered.len());
+        if start >= filtered.len() { return &[]; }
+        &filtered[start..end]
+    }
+
+    pub fn page_count(&self, total: usize) -> usize {
+        if self.page_size == 0 { return 1; }
+        (total + self.page_size - 1) / self.page_size
+    }
+
+    pub fn all_schools(&self, database: &AbilityDatabase) -> Vec<String> {
+        let mut schools: HashSet<String> = database.abilities.values().map(|ab| ab.school.clone()).collect();
+        let mut sorted: Vec<String> = schools.drain().collect();
+        sorted.sort();
+        sorted
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY IMPORT/EXPORT (JSON-LIKE SERIALIZATION)
+// ============================================================
+
+pub fn export_ability_database_to_string(database: &AbilityDatabase) -> String {
+    let mut lines = Vec::new();
+    lines.push("# AbilityDatabase Export".to_string());
+    lines.push(format!("ability_count={}", database.abilities.len()));
+    lines.push(String::new());
+    for (id, ability) in &database.abilities {
+        lines.push(format!("[ability:{}]", id));
+        lines.push(format!("name={}", ability.name));
+        lines.push(format!("type={:?}", ability.ability_type));
+        lines.push(format!("school={}", ability.school));
+        lines.push(format!("level_req={}", ability.unlock_level));
+        lines.push(format!("cast_time={:.3}", ability.cast_time));
+        lines.push(format!("cooldown={:.3}", ability.base_cooldown));
+        lines.push(format!("range={:.1}", ability.range));
+        lines.push(format!("area_radius={:.1}", ability.aoe_radius));
+        if ability.resource_cost > 0.0 {
+            lines.push(format!("resource_type={:?}", ability.resource_type));
+            lines.push(format!("resource_cost={:.1}", ability.resource_cost));
+        }
+        lines.push(format!("damage_formula_count={}", ability.damage_formulas.len()));
+        for (i, f) in ability.damage_formulas.iter().enumerate() {
+            lines.push(format!("formula[{}].element={:?}", i, f.element));
+            lines.push(format!("formula[{}].base={:.0}-{:.0}", i, f.base_min, f.base_max));
+            lines.push(format!("formula[{}].crit={:.3}", i, f.crit_chance_base));
+        }
+        lines.push(format!("effect_count={}", ability.applied_effects.len()));
+        for (i, eff) in ability.applied_effects.iter().enumerate() {
+            lines.push(format!("effect[{}].type={:?}", i, eff.effect_type));
+            lines.push(format!("effect[{}].chance={:.3}", i, eff.apply_chance));
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
+pub fn validate_ability_export_string(data: &str) -> (bool, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut has_header = false;
+    let mut ability_count_declared = 0usize;
+    let mut ability_blocks_found = 0usize;
+
+    for line in data.lines() {
+        if line.starts_with("# AbilityDatabase") { has_header = true; }
+        if line.starts_with("ability_count=") {
+            if let Ok(n) = line["ability_count=".len()..].parse::<usize>() {
+                ability_count_declared = n;
+            }
+        }
+        if line.starts_with("[ability:") { ability_blocks_found += 1; }
+    }
+    if !has_header { errors.push("Missing header line".to_string()); }
+    if ability_count_declared != ability_blocks_found {
+        errors.push(format!("Declared {} abilities but found {}", ability_count_declared, ability_blocks_found));
+    }
+    (errors.is_empty(), errors)
+}
+
+// ============================================================
+// SECTION: STATUS EFFECT DURATION SCALING
+// ============================================================
+
+pub fn scale_status_duration(base_duration: f32, caster_stat_bonus: f32, target_tenacity: f32, diminishing_returns_stacks: u32) -> f32 {
+    let bonus_mult = 1.0 + (caster_stat_bonus / 100.0).min(1.0);
+    let tenacity_reduction = (target_tenacity / 100.0).clamp(0.0, 0.75);
+    let dr_factor = match diminishing_returns_stacks {
+        0 => 1.0,
+        1 => 0.65,
+        2 => 0.42,
+        3 => 0.27,
+        _ => 0.15,
+    };
+    base_duration * bonus_mult * (1.0 - tenacity_reduction) * dr_factor
+}
+
+pub fn compute_status_magnitude(base_magnitude: f32, spellpower: f32, level_scaling: f32, item_level: u32) -> f32 {
+    let sp_bonus = spellpower * level_scaling;
+    let level_bonus = (item_level as f32 * 0.5).min(50.0);
+    base_magnitude + sp_bonus + level_bonus
+}
+
+pub fn status_tick_damage(status: &StatusEffectDefinition, caster_spellpower: f32, tick_index: u32) -> f32 {
+    let base = (status.tick_damage.base_min + status.tick_damage.base_max) * 0.5;
+    let sp_mult = 1.0 + caster_spellpower * status.tick_damage.scaling.first().map(|s| s.coefficient).unwrap_or(0.0);
+    // Some effects ramp up over time (e.g., Bleed)
+    let ramp = match status.effect_type {
+        StatusEffectType::Bleed => 1.0 + (tick_index as f32 * 0.05).min(0.5),
+        StatusEffectType::Poison => 1.0,
+        StatusEffectType::Burn => 1.0 - (tick_index as f32 * 0.02).min(0.3), // decays
+        _ => 1.0,
+    };
+    base * sp_mult * ramp
+}
+
+// ============================================================
+// SECTION: ABILITY RANGE DISPLAY HELPERS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RangeIndicator {
+    pub center: Vec3,
+    pub indicator_type: RangeIndicatorType,
+    pub color: Vec4,
+    pub opacity: f32,
+}
+
+#[derive(Debug, Clone)]
+pub enum RangeIndicatorType {
+    Circle { radius: f32 },
+    Cone { angle_deg: f32, length: f32 },
+    Rectangle { width: f32, length: f32 },
+    Ring { inner_radius: f32, outer_radius: f32 },
+    Line { direction: Vec3, length: f32, width: f32 },
+}
+
+impl RangeIndicatorType {
+    pub fn bounding_radius(&self) -> f32 {
+        match self {
+            Self::Circle { radius } => *radius,
+            Self::Cone { length, .. } => *length,
+            Self::Rectangle { width, length } => (width * width + length * length).sqrt() * 0.5,
+            Self::Ring { outer_radius, .. } => *outer_radius,
+            Self::Line { length, width, .. } => (length * length + width * width).sqrt() * 0.5,
+        }
+    }
+
+    pub fn area(&self) -> f32 {
+        match self {
+            Self::Circle { radius } => std::f32::consts::PI * radius * radius,
+            Self::Cone { angle_deg, length } => {
+                let angle_rad = angle_deg.to_radians();
+                0.5 * angle_rad * length * length
+            }
+            Self::Rectangle { width, length } => width * length,
+            Self::Ring { inner_radius, outer_radius } => {
+                std::f32::consts::PI * (outer_radius * outer_radius - inner_radius * inner_radius)
+            }
+            Self::Line { width, length, .. } => width * length,
+        }
+    }
+}
+
+pub fn build_range_indicators_for_ability(ability: &AbilityDefinition, caster_pos: Vec3, caster_facing: Vec3) -> Vec<RangeIndicator> {
+    let mut indicators = Vec::new();
+    let cast_color = Vec4::new(0.2, 0.6, 1.0, 0.4);
+    let area_color = Vec4::new(1.0, 0.3, 0.1, 0.35);
+
+    // Cast range indicator
+    indicators.push(RangeIndicator {
+        center: caster_pos,
+        indicator_type: RangeIndicatorType::Circle { radius: ability.range },
+        color: cast_color,
+        opacity: 0.4,
+    });
+
+    // Area indicator based on targeting mode
+    match &ability.targeting_mode {
+        TargetingMode::AoECircle { .. } => {
+            indicators.push(RangeIndicator {
+                center: caster_pos + caster_facing * (ability.range * 0.5),
+                indicator_type: RangeIndicatorType::Circle { radius: ability.aoe_radius },
+                color: area_color,
+                opacity: 0.5,
+            });
+        }
+        TargetingMode::Cone { .. } => {
+            indicators.push(RangeIndicator {
+                center: caster_pos,
+                indicator_type: RangeIndicatorType::Cone { angle_deg: 60.0, length: ability.range },
+                color: area_color,
+                opacity: 0.5,
+            });
+        }
+        TargetingMode::Rectangle { .. } => {
+            indicators.push(RangeIndicator {
+                center: caster_pos + caster_facing * (ability.range * 0.5),
+                indicator_type: RangeIndicatorType::Rectangle { width: ability.aoe_radius * 2.0, length: ability.range },
+                color: area_color,
+                opacity: 0.5,
+            });
+        }
+        _ => {}
+    }
+    indicators
+}
+
+// ============================================================
+// SECTION: TALENT NODE UPGRADE PATHS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct TalentUpgradePath {
+    pub from_node: u64,
+    pub to_node: u64,
+    pub upgrade_label: String,
+    pub replaced_modifier: Option<(String, f32)>,
+    pub new_modifier: (String, f32),
+    pub cost_additional_points: u32,
+}
+
+pub fn find_upgrade_paths_for_node(tree: &TalentTree, node_id: u64) -> Vec<TalentUpgradePath> {
+    tree.edges.iter()
+        .filter(|e| e.from_node_id == node_id)
+        .map(|e| TalentUpgradePath {
+            from_node: e.from_node_id,
+            to_node: e.to_node_id,
+            upgrade_label: format!("Upgrade to node {}", e.to_node_id),
+            replaced_modifier: None,
+            new_modifier: ("damage_percent".to_string(), 5.0),
+            cost_additional_points: 1,
+        })
+        .collect()
+}
+
+pub fn compute_talent_path_dps_gain(path: &TalentUpgradePath, current_dps: f32) -> f32 {
+    let gain_pct = path.new_modifier.1 / 100.0;
+    let replaced_pct = path.replaced_modifier.as_ref().map(|(_, v)| v / 100.0).unwrap_or(0.0);
+    current_dps * (1.0 + gain_pct - replaced_pct) - current_dps
+}
+
+// ============================================================
+// SECTION: ABILITY ANIMATION BINDINGS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AnimationBinding {
+    pub ability_id: u64,
+    pub cast_anim: String,
+    pub cast_anim_speed: f32,
+    pub channel_anim: String,
+    pub channel_loop: bool,
+    pub hit_anim: String,
+    pub miss_anim: Option<String>,
+    pub cast_point: f32,
+    pub backswing_point: f32,
+}
+
+impl AnimationBinding {
+    pub fn new(ability_id: u64, cast_anim: &str) -> Self {
+        Self {
+            ability_id,
+            cast_anim: cast_anim.to_string(),
+            cast_anim_speed: 1.0,
+            channel_anim: format!("{}_channel", cast_anim),
+            channel_loop: true,
+            hit_anim: format!("{}_hit", cast_anim),
+            miss_anim: None,
+            cast_point: 0.5,
+            backswing_point: 0.8,
+        }
+    }
+
+    pub fn normalized_cast_point(&self, total_cast_time: f32) -> f32 {
+        self.cast_point * total_cast_time
+    }
+}
+
+#[derive(Debug)]
+pub struct AnimationBindingRegistry {
+    pub bindings: HashMap<u64, AnimationBinding>,
+}
+
+impl AnimationBindingRegistry {
+    pub fn new() -> Self { Self { bindings: HashMap::new() } }
+    pub fn register(&mut self, binding: AnimationBinding) { self.bindings.insert(binding.ability_id, binding); }
+    pub fn get(&self, ability_id: u64) -> Option<&AnimationBinding> { self.bindings.get(&ability_id) }
+    pub fn get_cast_anim(&self, ability_id: u64) -> &str {
+        self.bindings.get(&ability_id).map(|b| b.cast_anim.as_str()).unwrap_or("generic_cast")
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY SOUND BINDINGS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilitySoundSet {
+    pub ability_id: u64,
+    pub cast_start_sound: Option<String>,
+    pub cast_end_sound: Option<String>,
+    pub projectile_loop_sound: Option<String>,
+    pub impact_sounds: Vec<String>,
+    pub channel_loop_sound: Option<String>,
+    pub volume_cast: f32,
+    pub volume_impact: f32,
+    pub pitch_variance: f32,
+}
+
+impl AbilitySoundSet {
+    pub fn new(ability_id: u64) -> Self {
+        Self {
+            ability_id,
+            cast_start_sound: None,
+            cast_end_sound: None,
+            projectile_loop_sound: None,
+            impact_sounds: Vec::new(),
+            channel_loop_sound: None,
+            volume_cast: 1.0,
+            volume_impact: 1.0,
+            pitch_variance: 0.05,
+        }
+    }
+
+    pub fn pick_impact_sound(&self, seed: u64) -> Option<&str> {
+        if self.impact_sounds.is_empty() { return None; }
+        let idx = (seed as usize) % self.impact_sounds.len();
+        Some(&self.impact_sounds[idx])
+    }
+
+    pub fn randomized_pitch(&self, base_pitch: f32, seed: u64) -> f32 {
+        let t = ((seed % 10000) as f32) / 10000.0;
+        base_pitch + (t - 0.5) * 2.0 * self.pitch_variance
+    }
+}
+
+// ============================================================
+// SECTION: ABILITY STATISTICS TRACKER (PER-SESSION)
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilityUseRecord {
+    pub ability_id: u64,
+    pub timestamp: f32,
+    pub targets_hit: u32,
+    pub total_damage: f32,
+    pub was_crit: bool,
+    pub effects_applied: Vec<StatusEffectType>,
+    pub interrupted: bool,
+}
+
+#[derive(Debug)]
+pub struct AbilitySessionStats {
+    pub ability_id: u64,
+    pub uses: u32,
+    pub total_damage: f32,
+    pub crits: u32,
+    pub interrupts: u32,
+    pub total_targets_hit: u32,
+    pub effects_applied_counts: HashMap<String, u32>,
+    pub last_use_timestamp: f32,
+    pub first_use_timestamp: Option<f32>,
+}
+
+impl AbilitySessionStats {
+    pub fn new(ability_id: u64) -> Self {
+        Self { ability_id, uses: 0, total_damage: 0.0, crits: 0, interrupts: 0, total_targets_hit: 0, effects_applied_counts: HashMap::new(), last_use_timestamp: 0.0, first_use_timestamp: None }
+    }
+
+    pub fn record(&mut self, record: &AbilityUseRecord) {
+        self.uses += 1;
+        self.total_damage += record.total_damage;
+        if record.was_crit { self.crits += 1; }
+        if record.interrupted { self.interrupts += 1; }
+        self.total_targets_hit += record.targets_hit;
+        for eff in &record.effects_applied {
+            *self.effects_applied_counts.entry(format!("{:?}", eff)).or_insert(0) += 1;
+        }
+        self.last_use_timestamp = record.timestamp;
+        if self.first_use_timestamp.is_none() { self.first_use_timestamp = Some(record.timestamp); }
+    }
+
+    pub fn average_damage_per_use(&self) -> f32 {
+        if self.uses == 0 { return 0.0; }
+        self.total_damage / self.uses as f32
+    }
+
+    pub fn crit_rate(&self) -> f32 {
+        if self.uses == 0 { return 0.0; }
+        self.crits as f32 / self.uses as f32
+    }
+
+    pub fn average_targets_hit(&self) -> f32 {
+        if self.uses == 0 { return 0.0; }
+        self.total_targets_hit as f32 / self.uses as f32
+    }
+
+    pub fn dps_over_session(&self) -> f32 {
+        if let Some(first) = self.first_use_timestamp {
+            let duration = self.last_use_timestamp - first;
+            if duration > 0.0 { return self.total_damage / duration; }
+        }
+        0.0
+    }
+}
+
+#[derive(Debug)]
+pub struct SessionStatsTracker {
+    pub stats: HashMap<u64, AbilitySessionStats>,
+}
+
+impl SessionStatsTracker {
+    pub fn new() -> Self { Self { stats: HashMap::new() } }
+
+    pub fn record_use(&mut self, record: AbilityUseRecord) {
+        self.stats.entry(record.ability_id).or_insert_with(|| AbilitySessionStats::new(record.ability_id)).record(&record);
+    }
+
+    pub fn top_n_by_damage(&self, n: usize) -> Vec<(u64, f32)> {
+        let mut list: Vec<(u64, f32)> = self.stats.iter().map(|(&id, s)| (id, s.total_damage)).collect();
+        list.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        list.truncate(n);
+        list
+    }
+
+    pub fn most_interrupted(&self) -> Option<u64> {
+        self.stats.iter().max_by_key(|(_, s)| s.interrupts).map(|(&id, _)| id)
+    }
+
+    pub fn global_crit_rate(&self) -> f32 {
+        let total_uses: u32 = self.stats.values().map(|s| s.uses).sum();
+        let total_crits: u32 = self.stats.values().map(|s| s.crits).sum();
+        if total_uses == 0 { return 0.0; }
+        total_crits as f32 / total_uses as f32
+    }
+
+    pub fn reset(&mut self) { self.stats.clear(); }
+}
+
+// ============================================================
+// SECTION: ABILITY EDITOR FINAL WIRING
+// ============================================================
+
+pub fn ability_editor_full_init() -> AbilityEditor {
+    AbilityEditor::new()
+}
+
+pub fn ability_editor_session_demo() {
+    let mut tracker = SessionStatsTracker::new();
+    tracker.record_use(AbilityUseRecord {
+        ability_id: 1001,
+        timestamp: 1.5,
+        targets_hit: 3,
+        total_damage: 450.0,
+        was_crit: true,
+        effects_applied: vec![StatusEffectType::Burn],
+        interrupted: false,
+    });
+    tracker.record_use(AbilityUseRecord {
+        ability_id: 1001,
+        timestamp: 8.5,
+        targets_hit: 2,
+        total_damage: 310.0,
+        was_crit: false,
+        effects_applied: Vec::new(),
+        interrupted: false,
+    });
+    let top = tracker.top_n_by_damage(5);
+    let global_crit = tracker.global_crit_rate();
+    let _ = (top, global_crit);
+
+    let resonance_tracker = ResonanceTracker::new();
+    let _ = resonance_tracker;
+
+    let mut anim_reg = AnimationBindingRegistry::new();
+    anim_reg.register(AnimationBinding::new(1001, "fireball_cast"));
+    let cast_anim = anim_reg.get_cast_anim(1001);
+    let _ = cast_anim;
+
+    let mut sound_set = AbilitySoundSet::new(1001);
+    sound_set.cast_start_sound = Some("fire_cast_start.ogg".to_string());
+    sound_set.impact_sounds = vec!["fire_impact_1.ogg".to_string(), "fire_impact_2.ogg".to_string()];
+    let impact = sound_set.pick_impact_sound(42);
+    let _ = impact;
+}
+
+// ============================================================
+// SECTION: ABILITY POWER BUDGET VALIDATOR
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct AbilityPowerBudget {
+    pub target_dps: f32,
+    pub target_utility_score: f32,
+    pub target_mobility_score: f32,
+    pub tolerance_pct: f32,
+}
+
+impl AbilityPowerBudget {
+    pub fn for_level(level: u32, role: &str) -> Self {
+        let base_dps = level as f32 * 12.5;
+        let (utility, mobility) = match role {
+            "tank" => (0.8, 0.3),
+            "healer" => (0.9, 0.4),
+            "support" => (0.7, 0.5),
+            "assassin" => (0.3, 0.9),
+            _ => (0.5, 0.5), // dps
+        };
+        Self { target_dps: base_dps, target_utility_score: utility, target_mobility_score: mobility, tolerance_pct: 25.0 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilityPowerBudgetReport {
+    pub ability_id: u64,
+    pub computed_dps: f32,
+    pub computed_utility: f32,
+    pub computed_mobility: f32,
+    pub dps_within_budget: bool,
+    pub overall_passed: bool,
+    pub suggestions: Vec<String>,
+}
+
+pub fn validate_ability_power_budget(ability: &AbilityDefinition, stats: &HashMap<String, f32>, budget: &AbilityPowerBudget) -> AbilityPowerBudgetReport {
+    let avg_damage: f32 = ability.damage_formulas.iter().map(|f| {
+        let bonus: f32 = f.scaling.iter().map(|s| stats.get(&s.stat_name).cloned().unwrap_or(0.0) * s.coefficient).sum();
+        (f.base_min + f.base_max) * 0.5 + bonus
+    }).sum();
+
+    let cycle = ability.cast_time + ability.base_cooldown;
+    let computed_dps = if cycle > 0.0 { avg_damage / cycle } else { avg_damage };
+
+    let utility = ability.applied_effects.len() as f32 * 0.15
+        + if ability.aoe_radius > 5.0 { 0.2 } else { 0.0 }
+        + if ability.applied_effects.iter().any(|e| matches!(e.effect_type, StatusEffectType::Stun | StatusEffectType::Root | StatusEffectType::Silence)) { 0.3 } else { 0.0 };
+
+    let mobility = match ability.ability_type {
+        AbilityType::Dash | AbilityType::Teleport | AbilityType::Charge => 1.0,
+        _ => 0.0,
+    };
+
+    let tol = budget.tolerance_pct / 100.0;
+    let dps_ok = computed_dps <= budget.target_dps * (1.0 + tol);
+    let overall = dps_ok;
+
+    let mut suggestions = Vec::new();
+    if computed_dps > budget.target_dps * (1.0 + tol) {
+        suggestions.push(format!("DPS {:.1} exceeds budget {:.1} by {:.0}% — increase cooldown or reduce base damage",
+            computed_dps, budget.target_dps, (computed_dps / budget.target_dps - 1.0) * 100.0));
+    }
+    if utility > budget.target_utility_score + 0.3 {
+        suggestions.push("Utility score high — consider reducing effect duration or application chance".to_string());
+    }
+
+    AbilityPowerBudgetReport {
+        ability_id: ability.id,
+        computed_dps,
+        computed_utility: utility.min(1.0),
+        computed_mobility: mobility,
+        dps_within_budget: dps_ok,
+        overall_passed: overall,
+        suggestions,
+    }
+}
+
+// ============================================================
+// SECTION: RADIUS FALLOFF DAMAGE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub enum FalloffCurve { Linear, Quadratic, Cosine, Exponential(f32), None }
+
+impl FalloffCurve {
+    pub fn multiplier(&self, distance: f32, max_radius: f32) -> f32 {
+        if max_radius <= 0.0 { return 1.0; }
+        let t = (distance / max_radius).clamp(0.0, 1.0);
+        match self {
+            FalloffCurve::None => 1.0,
+            FalloffCurve::Linear => 1.0 - t,
+            FalloffCurve::Quadratic => 1.0 - t * t,
+            FalloffCurve::Cosine => ((1.0 - t) * std::f32::consts::PI * 0.5).cos(),
+            FalloffCurve::Exponential(k) => (-k * t).exp(),
+        }
+    }
+
+    pub fn integrate_over_radius(&self, max_radius: f32, steps: usize) -> f32 {
+        if steps == 0 || max_radius <= 0.0 { return 0.0; }
+        let dr = max_radius / steps as f32;
+        let mut integral = 0.0f32;
+        for i in 0..steps {
+            let r = (i as f32 + 0.5) * dr;
+            let mult = self.multiplier(r, max_radius);
+            // Weight by ring area: 2*pi*r*dr
+            integral += mult * 2.0 * std::f32::consts::PI * r * dr;
+        }
+        integral
+    }
+}
+
+pub fn compute_aoe_total_damage(base_damage: f32, targets: &[(u64, f32)], max_radius: f32, falloff: &FalloffCurve, min_damage_pct: f32) -> Vec<(u64, f32)> {
+    targets.iter().map(|(id, dist)| {
+        let mult = falloff.multiplier(*dist, max_radius).max(min_damage_pct / 100.0);
+        (*id, base_damage * mult)
+    }).collect()
+}
+
+// ============================================================
+// SECTION: ABILITY EDITOR EXTENDED STATS SUMMARY
+// ============================================================
+
+pub fn summarize_ability_database(database: &AbilityDatabase) -> String {
+    let total = database.abilities.len();
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
+    let mut school_counts: HashMap<String, usize> = HashMap::new();
+    let mut total_cooldown: f32 = 0.0;
+    let mut total_cast_time: f32 = 0.0;
+    let mut has_damage = 0usize;
+    let mut has_effects = 0usize;
+
+    for ab in database.abilities.values() {
+        *type_counts.entry(format!("{:?}", ab.ability_type)).or_insert(0) += 1;
+        *school_counts.entry(ab.school.clone()).or_insert(0) += 1;
+        total_cooldown += ab.base_cooldown;
+        total_cast_time += ab.cast_time;
+        if !ab.damage_formulas.is_empty() { has_damage += 1; }
+        if !ab.applied_effects.is_empty() { has_effects += 1; }
+    }
+
+    let avg_cd = if total > 0 { total_cooldown / total as f32 } else { 0.0 };
+    let avg_ct = if total > 0 { total_cast_time / total as f32 } else { 0.0 };
+
+    let mut lines = vec![
+        format!("=== Ability Database Summary ==="),
+        format!("Total Abilities: {}", total),
+        format!("With Damage Formulas: {}", has_damage),
+        format!("With Status Effects: {}", has_effects),
+        format!("Average Cooldown: {:.2}s", avg_cd),
+        format!("Average Cast Time: {:.2}s", avg_ct),
+        format!("Schools: {}", school_counts.len()),
+        format!("Types:"),
+    ];
+    let mut type_list: Vec<(String, usize)> = type_counts.into_iter().collect();
+    type_list.sort_by(|a, b| b.1.cmp(&a.1));
+    for (ty, count) in type_list {
+        lines.push(format!("  {}: {}", ty, count));
+    }
+    lines.join("\n")
+}
+
+pub fn ability_database_integrity_check(database: &AbilityDatabase) -> Vec<String> {
+    let mut issues = Vec::new();
+    for (id, ab) in &database.abilities {
+        if ab.name.is_empty() { issues.push(format!("Ability {} has empty name", id)); }
+        if ab.base_cooldown < 0.0 { issues.push(format!("Ability {} '{}' has negative cooldown", id, ab.name)); }
+        if ab.cast_time < 0.0 { issues.push(format!("Ability {} '{}' has negative cast time", id, ab.name)); }
+        if ab.range < 0.0 { issues.push(format!("Ability {} '{}' has negative range", id, ab.name)); }
+        for (i, formula) in ab.damage_formulas.iter().enumerate() {
+            if formula.base_min > formula.base_max {
+                issues.push(format!("Ability {} formula[{}]: base_min > base_max", id, i));
+            }
+            if formula.crit_chance_base < 0.0 || formula.crit_chance_base > 1.0 {
+                issues.push(format!("Ability {} formula[{}]: crit_chance out of [0,1]", id, i));
+            }
+        }
+        for (i, eff) in ab.applied_effects.iter().enumerate() {
+            if eff.apply_chance < 0.0 || eff.apply_chance > 100.0 {
+                issues.push(format!("Ability {} effect[{}]: apply_chance out of [0,100]", id, i));
+            }
+        }
+    }
+    issues
+}
+
+// ============================================================
+// SECTION: ABILITY MULTIPLIER STACK RESOLUTION
+// ============================================================
+
+/// Resolves stacked damage multipliers using the standard additive-within-category, multiplicative-between-category model.
+/// Categories: base, increased (additive within), more (multiplicative between).
+pub struct MultiplierStack {
+    pub base: f32,
+    pub increased: Vec<f32>,
+    pub more: Vec<f32>,
+}
+
+impl MultiplierStack {
+    pub fn new(base: f32) -> Self { Self { base, increased: Vec::new(), more: Vec::new() } }
+
+    pub fn add_increased(&mut self, pct: f32) { self.increased.push(pct); }
+    pub fn add_more(&mut self, pct: f32) { self.more.push(pct); }
+
+    pub fn resolve(&self) -> f32 {
+        let increased_total = 1.0 + self.increased.iter().sum::<f32>() / 100.0;
+        let more_total: f32 = self.more.iter().map(|m| 1.0 + m / 100.0).product();
+        self.base * increased_total * more_total
+    }
+
+    pub fn resolve_with_resistance(&self, resistance_pct: f32) -> f32 {
+        let raw = self.resolve();
+        let resist = (resistance_pct / 100.0).clamp(0.0, 0.75);
+        raw * (1.0 - resist)
+    }
+
+    pub fn marginal_value_of_increased(&self, added_pct: f32) -> f32 {
+        let current = self.resolve();
+        let mut copy = self.clone_with_increased(added_pct);
+        copy.resolve() - current
+    }
+
+    fn clone_with_increased(&self, extra: f32) -> Self {
+        let mut c = MultiplierStack { base: self.base, increased: self.increased.clone(), more: self.more.clone() };
+        c.increased.push(extra);
+        c
+    }
+}
+
+pub fn compare_increased_vs_more(stack: &MultiplierStack, pct: f32) -> (f32, f32) {
+    let with_increased = {
+        let mut s = MultiplierStack { base: stack.base, increased: stack.increased.clone(), more: stack.more.clone() };
+        s.add_increased(pct);
+        s.resolve()
+    };
+    let with_more = {
+        let mut s = MultiplierStack { base: stack.base, increased: stack.increased.clone(), more: stack.more.clone() };
+        s.add_more(pct);
+        s.resolve()
+    };
+    let current = stack.resolve();
+    (with_increased - current, with_more - current)
+}
+
+/// Compute the effective damage after full pipeline: multiplier stack + resistance + armor reduction
+pub fn full_damage_pipeline(stack: &MultiplierStack, armor: f32, armor_penetration: f32, resistance_pct: f32, resistance_penetration_pct: f32) -> f32 {
+    let effective_armor = (armor - armor_penetration).max(0.0);
+    let armor_reduction = effective_armor / (effective_armor + 100.0);
+    let effective_resist_pct = (resistance_pct - resistance_penetration_pct * resistance_pct).max(0.0);
+    stack.resolve() * (1.0 - armor_reduction) * (1.0 - effective_resist_pct / 100.0)
+}
+
+// ============================================================
+// SECTION: UTILITY MATH HELPERS
+// ============================================================
+
+/// Lerp between two f32 values
+pub fn lerp_f32(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t.clamp(0.0, 1.0) }
+
+/// Smoothstep interpolation (3t^2 - 2t^3)
+pub fn smoothstep(t: f32) -> f32 { let c = t.clamp(0.0, 1.0); c * c * (3.0 - 2.0 * c) }
+
+/// Inverse lerp: find t such that lerp(a, b, t) == v
+pub fn inv_lerp(a: f32, b: f32, v: f32) -> f32 { if (b - a).abs() < 1e-9 { 0.0 } else { ((v - a) / (b - a)).clamp(0.0, 1.0) } }
+
+/// Remap value from [a,b] range to [c,d] range
+pub fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 { lerp_f32(c, d, inv_lerp(a, b, v)) }
+
+/// Exponential decay: value decays toward target with rate per second
+pub fn exp_decay(current: f32, target: f32, rate: f32, dt: f32) -> f32 {
+    target + (current - target) * (-rate * dt).exp()
+}
+
+/// Critically-damped spring toward target (avoids overshoot)
+pub fn spring_towards(current: f32, velocity: &mut f32, target: f32, stiffness: f32, dt: f32) -> f32 {
+    let damping = 2.0 * stiffness.sqrt();
+    let force = -stiffness * (current - target) - damping * (*velocity);
+    *velocity += force * dt;
+    current + *velocity * dt
+}
+
+/// Wrap angle to [-PI, PI]
+pub fn wrap_angle(mut a: f32) -> f32 {
+    while a > std::f32::consts::PI { a -= 2.0 * std::f32::consts::PI; }
+    while a < -std::f32::consts::PI { a += 2.0 * std::f32::consts::PI; }
+    a
+}
+
+/// Angular distance between two angles (radians)
+pub fn angle_distance(a: f32, b: f32) -> f32 { wrap_angle(b - a).abs() }
 
 // ============================================================
 // END OF FILE

@@ -2,6 +2,8 @@
 //! Build system editor — platform targets, build configurations, asset pipeline,
 //! packaging, code signing, deployment, CI integration, and build log viewer.
 
+#![allow(non_camel_case_types)]
+
 use glam::Vec4;
 use std::collections::HashMap;
 

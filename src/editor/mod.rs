@@ -53,6 +53,12 @@ pub mod physics_editor;
 pub mod render_graph_editor;
 pub mod dialogue_editor;
 pub mod quest_editor;
+pub mod spline_editor;
+pub mod cinematic_sequencer;
+pub mod inventory_editor;
+pub mod ability_editor;
+pub mod level_streaming_editor;
+pub mod audio_mixer_editor;
 
 use glam::{Vec2, Vec3, Vec4};
 use std::collections::HashMap;

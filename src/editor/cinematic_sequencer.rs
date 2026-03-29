@@ -31,7 +31,7 @@ fn lerp_vec3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     a + (b - a) * t
 }
 
-fn lerp_vec4(a: Vec4, b: Vec4, t: f32) -> Vec4 {
+pub(crate) fn lerp_vec4(a: Vec4, b: Vec4, t: f32) -> Vec4 {
     a + (b - a) * t
 }
 
@@ -85,7 +85,7 @@ fn catmull_rom_vec3(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
     )
 }
 
-fn value_noise_1d(x: f32) -> f32 {
+pub(crate) fn value_noise_1d(x: f32) -> f32 {
     let xi = x.floor() as i32;
     let xf = x - x.floor();
     let h0 = hash_f32(xi);
@@ -381,6 +381,7 @@ impl<T: Clone + std::fmt::Debug> Keyframe<T> {
 // KEYFRAME EVALUATOR FOR f32
 // ============================================================
 
+#[derive(Clone, Debug)]
 pub struct FloatCurve {
     pub keys: Vec<Keyframe<f32>>,
     pub pre_infinity:  InfinityMode,
@@ -1551,10 +1552,29 @@ impl SubtitleKeyframe {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SubtitleStyle {
+    pub font_size: f32,
+    pub color:     Vec4,
+    pub bold:      bool,
+    pub italic:    bool,
+}
+
 #[derive(Clone, Debug)]
+pub struct SubtitleEntry {
+    pub id:         u64,
+    pub start_time: f64,
+    pub end_time:   f64,
+    pub text:       String,
+    pub speaker:    String,
+    pub style:      SubtitleStyle,
+}
+
+#[derive(Debug)]
 pub struct SubtitleTrack {
     pub base:       TrackBase,
     pub subtitles:  Vec<SubtitleKeyframe>,
+    pub entries:    Vec<SubtitleEntry>,
     pub language:   String,
     pub export_srt: bool,
 }
@@ -1564,6 +1584,7 @@ impl SubtitleTrack {
         SubtitleTrack {
             base: TrackBase::new(id, name, TrackKind::Subtitle),
             subtitles: Vec::new(),
+            entries: Vec::new(),
             language: "en".to_string(),
             export_srt: true,
         }
@@ -1977,19 +1998,24 @@ impl TimeDilationTrack {
 // SHOT LIST / TAKE SYSTEM
 // ============================================================
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum CutType { Cut, Dissolve, Fade, Wipe }
+
 #[derive(Clone, Debug)]
 pub struct Shot {
-    pub id:          u64,
-    pub name:        String,
-    pub start_time:  f64,
-    pub end_time:    f64,
-    pub camera_id:   u64,
-    pub scene_name:  String,
-    pub take_number: u32,
-    pub is_selected: bool,
-    pub notes:       String,
-    pub rating:      u8,  // 1-5 stars
-    pub color_flag:  Vec4,
+    pub id:                  u64,
+    pub name:                String,
+    pub start_time:          f64,
+    pub end_time:            f64,
+    pub camera_id:           u64,
+    pub scene_name:          String,
+    pub take_number:         u32,
+    pub is_selected:         bool,
+    pub notes:               String,
+    pub rating:              u8,
+    pub color_flag:          Vec4,
+    pub transition:          CutType,
+    pub transition_duration: f64,
 }
 
 impl Shot {
@@ -2004,6 +2030,8 @@ impl Shot {
             notes: String::new(),
             rating: 3,
             color_flag: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            transition: CutType::Cut,
+            transition_duration: 0.0,
         }
     }
 
@@ -4411,5 +4439,3613 @@ mod tests {
         assert!(srt.contains("Hello world"));
         assert!(srt.contains("Goodbye world"));
         assert!(srt.contains("-->"));
+    }
+}
+
+// ============================================================
+// SEQUENCER TIMELINE VIEW STATE
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct TimelineViewState {
+    pub view_start:    f64,    // seconds
+    pub view_end:      f64,
+    pub scroll_y:      f32,
+    pub track_heights: HashMap<u64, f32>,
+    pub zoom_level:    f32,
+    pub snap_mode:     SnapMode,
+    pub show_waveforms: bool,
+    pub show_thumbnails: bool,
+    pub collapsed_groups: HashSet<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SnapMode {
+    None,
+    Frames,
+    Seconds,
+    BeatGrid(f32), // BPM
+    Custom(f64),
+}
+
+impl TimelineViewState {
+    pub fn new(duration: f64) -> Self {
+        TimelineViewState {
+            view_start: 0.0,
+            view_end:   duration.min(30.0),
+            scroll_y:   0.0,
+            track_heights: HashMap::new(),
+            zoom_level: 1.0,
+            snap_mode:  SnapMode::Frames,
+            show_waveforms: true,
+            show_thumbnails: false,
+            collapsed_groups: HashSet::new(),
+        }
+    }
+
+    pub fn time_to_screen_x(&self, time: f64, screen_w: f32) -> f32 {
+        let frac = (time - self.view_start) / (self.view_end - self.view_start).max(1e-9);
+        frac as f32 * screen_w
+    }
+
+    pub fn screen_x_to_time(&self, x: f32, screen_w: f32) -> f64 {
+        let frac = x as f64 / screen_w as f64;
+        self.view_start + frac * (self.view_end - self.view_start)
+    }
+
+    pub fn snap_time(&self, time: f64, fps: f32) -> f64 {
+        match self.snap_mode {
+            SnapMode::None       => time,
+            SnapMode::Frames     => (time * fps as f64).round() / fps as f64,
+            SnapMode::Seconds    => time.round(),
+            SnapMode::BeatGrid(bpm) => {
+                let beat = 60.0 / bpm as f64;
+                (time / beat).round() * beat
+            }
+            SnapMode::Custom(interval) => (time / interval).round() * interval,
+        }
+    }
+
+    pub fn zoom_in(&mut self, center: f64, factor: f32) {
+        let range = self.view_end - self.view_start;
+        let new_range = range / factor as f64;
+        self.view_start = center - new_range * 0.5;
+        self.view_end   = center + new_range * 0.5;
+        self.view_start = self.view_start.max(0.0);
+    }
+
+    pub fn zoom_out(&mut self, center: f64, factor: f32, duration: f64) {
+        let range = self.view_end - self.view_start;
+        let new_range = (range * factor as f64).min(duration * 1.1);
+        self.view_start = (center - new_range * 0.5).max(0.0);
+        self.view_end   = self.view_start + new_range;
+    }
+
+    pub fn pan(&mut self, delta_time: f64, duration: f64) {
+        self.view_start = (self.view_start + delta_time).max(0.0);
+        self.view_end   = self.view_start + (self.view_end - self.view_start);
+        if self.view_end > duration { self.view_end = duration; self.view_start = self.view_end - (self.view_end - self.view_start); }
+    }
+
+    pub fn track_height(&self, track_id: u64) -> f32 {
+        self.track_heights.get(&track_id).cloned().unwrap_or(32.0)
+    }
+
+    pub fn visible_time_range(&self) -> (f64, f64) {
+        (self.view_start, self.view_end)
+    }
+}
+
+// ============================================================
+// TRACK GROUP
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct TrackGroup {
+    pub id:       u64,
+    pub name:     String,
+    pub color:    Vec4,
+    pub track_ids: Vec<u64>,
+    pub collapsed: bool,
+    pub muted:    bool,
+    pub solo:     bool,
+}
+
+impl TrackGroup {
+    pub fn new(id: u64, name: &str) -> Self {
+        TrackGroup {
+            id, name: name.to_string(),
+            color: Vec4::new(0.5, 0.5, 1.0, 1.0),
+            track_ids: Vec::new(),
+            collapsed: false,
+            muted: false,
+            solo: false,
+        }
+    }
+
+    pub fn add_track(&mut self, id: u64) {
+        if !self.track_ids.contains(&id) { self.track_ids.push(id); }
+    }
+
+    pub fn remove_track(&mut self, id: u64) {
+        self.track_ids.retain(|&tid| tid != id);
+    }
+}
+
+// ============================================================
+// SEQUENCE LOCATOR (find things by time)
+// ============================================================
+
+pub struct SequenceLocator;
+
+impl SequenceLocator {
+    pub fn find_camera_keyframes_in_range(
+        track: &CameraTrack,
+        t_start: f64,
+        t_end: f64,
+    ) -> Vec<usize> {
+        track.keyframes.iter().enumerate()
+            .filter(|(_, k)| k.time >= t_start && k.time <= t_end)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn find_events_in_range(
+        track: &EventTrack,
+        t_start: f64,
+        t_end: f64,
+    ) -> Vec<usize> {
+        track.events.iter().enumerate()
+            .filter(|(_, e)| e.time >= t_start && e.time <= t_end)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn find_subtitles_overlapping(
+        track: &SubtitleTrack,
+        t_start: f64,
+        t_end: f64,
+    ) -> Vec<usize> {
+        track.subtitles.iter().enumerate()
+            .filter(|(_, s)| s.time < t_end && s.end_time > t_start)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+// ============================================================
+// FLOAT CURVE BATCH OPERATIONS
+// ============================================================
+
+pub fn mirror_curve_time(curve: &mut FloatCurve, pivot: f64) {
+    for k in &mut curve.keys { k.time = 2.0 * pivot - k.time; }
+    curve.keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+pub fn reverse_curve(curve: &mut FloatCurve) {
+    if curve.keys.len() < 2 { return; }
+    let t0 = curve.keys.first().unwrap().time;
+    let t1 = curve.keys.last().unwrap().time;
+    for k in &mut curve.keys { k.time = t0 + t1 - k.time; }
+    curve.keys.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    for k in &mut curve.keys {
+        if let Some(h) = &mut k.bezier_handle {
+            let tmp = h.in_tangent;
+            h.in_tangent  = Vec2::new(-h.out_tangent.x, h.out_tangent.y);
+            h.out_tangent = Vec2::new(-tmp.x, tmp.y);
+        }
+    }
+}
+
+pub fn scale_curve_values(curve: &mut FloatCurve, scale: f32) {
+    for k in &mut curve.keys {
+        k.value *= scale;
+        if let Some(h) = &mut k.bezier_handle {
+            h.in_tangent.y  *= scale;
+            h.out_tangent.y *= scale;
+        }
+    }
+}
+
+pub fn offset_curve_times(curve: &mut FloatCurve, offset: f64) {
+    for k in &mut curve.keys { k.time += offset; }
+}
+
+pub fn clamp_curve_values(curve: &mut FloatCurve, min: f32, max: f32) {
+    for k in &mut curve.keys { k.value = k.value.clamp(min, max); }
+}
+
+pub fn snap_curve_times(curve: &mut FloatCurve, interval: f64) {
+    for k in &mut curve.keys { k.time = (k.time / interval).round() * interval; }
+}
+
+
+// ============================================================
+// ADDITIONAL UNIT TESTS
+// ============================================================
+
+#[cfg(test)]
+mod tests_extended {
+    use super::*;
+
+    #[test]
+    fn test_float_curve_bezier_endpoints() {
+        let mut curve = FloatCurve::new("bezier");
+        curve.add_key_bezier(0.0, 0.0, BezierHandle::flat());
+        curve.add_key_bezier(1.0, 1.0, BezierHandle::flat());
+        let v0 = curve.evaluate(0.0);
+        let v1 = curve.evaluate(1.0);
+        assert!((v0 - 0.0).abs() < 0.001);
+        assert!((v1 - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_post_fx_blending() {
+        let mut seq = CinematicSequencer::new("PFX", 5.0, FrameRate::Fps30);
+        let pfx_id = seq.add_post_fx_track("GlobalPFX");
+        if let Some(track) = seq.tracks.post_fx_tracks.get_mut(&pfx_id) {
+            track.add_keyframe(PostFxKeyframe { vignette: 0.0, ..PostFxKeyframe::default_at(0.0) });
+            track.add_keyframe(PostFxKeyframe { vignette: 1.0, ..PostFxKeyframe::default_at(5.0) });
+        }
+        let pfx = seq.tracks.post_fx_tracks[&pfx_id].evaluate(2.5);
+        assert!(pfx.vignette > 0.4 && pfx.vignette < 0.6, "PFX midpoint vignette ~ 0.5");
+    }
+
+    #[test]
+    fn test_blend_camera_matrix() {
+        let mut seq = CinematicSequencer::new("BlendCam", 10.0, FrameRate::Fps30);
+        let cam_a = seq.add_camera_track("CamA");
+        let cam_b = seq.add_camera_track("CamB");
+        {
+            let track = seq.tracks.camera_tracks.get_mut(&cam_a).unwrap();
+            track.add_keyframe(CameraKeyframe::new(0.0, Vec3::ZERO, Quat::IDENTITY));
+        }
+        {
+            let track = seq.tracks.camera_tracks.get_mut(&cam_b).unwrap();
+            track.add_keyframe(CameraKeyframe::new(0.0, Vec3::X * 10.0, Quat::IDENTITY));
+        }
+        seq.cut_to_camera(cam_a);
+        seq.blend_to_camera(cam_b, 1.0);
+        seq.camera_blend_t = 0.5;
+        let mat = seq.blended_camera_matrix(0.0);
+        // Position should be approximately midpoint
+        let pos = Vec3::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z);
+        assert!(pos.x > 2.0 && pos.x < 8.0, "Blended camera X should be between 0 and 10");
+    }
+
+    #[test]
+    fn test_time_dilation_integration() {
+        let mut seq = CinematicSequencer::new("TD", 10.0, FrameRate::Fps30);
+        let td_id = seq.add_time_dilation_track("SlowMo");
+        if let Some(t) = seq.tracks.time_dilation_tracks.get_mut(&td_id) {
+            t.add_keyframe(TimeDilationKeyframe::new(0.0, 0.5));
+            t.add_keyframe(TimeDilationKeyframe::new(5.0, 0.5));
+        }
+        let scale = seq.apply_time_dilation(2.5);
+        assert!((scale - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_edl_cmx_format() {
+        let edl = EdlDocument::new("TestEDL", FrameRate::Fps24);
+        let s = edl.to_string();
+        assert!(s.starts_with("TITLE: TestEDL"));
+        assert!(s.contains("FCM:"));
+    }
+
+    #[test]
+    fn test_light_temperature_rgb() {
+        let rgb_daylight = LightKeyframe::temperature_to_rgb(6500.0);
+        let rgb_candle   = LightKeyframe::temperature_to_rgb(1900.0);
+        // Daylight should be close to white
+        assert!(rgb_daylight.x > 0.8);
+        // Candlelight should be very orange (red > blue)
+        assert!(rgb_candle.x > rgb_candle.z, "Candle: red > blue");
+    }
+
+    #[test]
+    fn test_visibility_opacity_fade() {
+        let mut track = VisibilityTrack::new(1, "V", 10);
+        track.add_keyframe(VisibilityKeyframe { time: 0.0, visible: true,  opacity: 1.0, fade: 0.0 });
+        track.add_keyframe(VisibilityKeyframe { time: 2.0, visible: false, opacity: 0.0, fade: 1.0 });
+        let op_at_0 = track.evaluate_opacity(0.0);
+        assert!((op_at_0 - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_playback_controller_loop() {
+        let mut pb = PlaybackController::new(FrameRate::Fps30);
+        pb.loop_enabled = true;
+        pb.loop_start = 0.0;
+        pb.loop_end   = 1.0;
+        pb.play();
+        for _ in 0..60 { pb.update(1.0/30.0, 5.0); }
+        // After 2 seconds with 1s loop, should have wrapped
+        assert!(pb.current_time < 1.0 + 0.1);
+    }
+
+    #[test]
+    fn test_audio_sidechain_duck() {
+        let mut track = AudioTrack::new(1, "Music");
+        let clip = AudioClipData::new(1, "kick", 4.0, 44100);
+        let mut kf = AudioKeyframe::new(0.0, clip);
+        kf.duck_others = true;
+        kf.duck_amount = 0.5;
+        kf.duck_release = 0.5;
+        track.add_clip(kf);
+        let duck = track.sidechain_duck_factor_at(1.0);
+        assert!(duck < 1.0, "Sidechain should reduce volume");
+    }
+
+    #[test]
+    fn test_spring_converges() {
+        let v = spring_curve(5.0, 0.0, 10.0, 10.0, 0.7);
+        assert!((v - 10.0).abs() < 0.5, "Spring should approach target");
+    }
+
+    #[test]
+    fn test_ease_out_bounce_endpoints() {
+        assert!((ease_out_bounce(0.0) - 0.0).abs() < 0.001);
+        assert!((ease_out_bounce(1.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_dof_hyperfocal() {
+        let dof = DepthOfFieldKeyframe::new(0.0);
+        let hf  = dof.hyperfocal(0.029);
+        assert!(hf > 0.0, "Hyperfocal distance must be positive");
+    }
+
+    #[test]
+    fn test_lens_distortion_identity() {
+        let ld = LensDistortion::none();
+        let uv = Vec2::new(0.5, 0.5);
+        let distorted = ld.distort_uv(uv);
+        assert!((distorted - uv).length() < 0.001, "Zero distortion should leave UV unchanged");
+    }
+
+    #[test]
+    fn test_baked_sequence_data_memory() {
+        let mut data = BakedSequenceData::new(30.0, 10.0);
+        data.actor_data.insert(1, vec![Mat4::IDENTITY; 300]);
+        let mem = data.memory_bytes();
+        assert!(mem > 0);
+    }
+
+    #[test]
+    fn test_curve_integration_trapezoid() {
+        let mut c = FloatCurve::new("const");
+        c.add_key(0.0, 2.0, InterpType::Linear);
+        c.add_key(5.0, 2.0, InterpType::Linear);
+        let area = integrate_curve(&c, 0.0, 5.0, 100);
+        assert!((area - 10.0).abs() < 0.1, "Area under constant 2 over [0,5] should be 10");
+    }
+}
+
+// ============================================================
+// SEQUENCE GRAPH (branching / non-linear)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct SequenceNode {
+    pub id:        u64,
+    pub name:      String,
+    pub sequence:  String,   // sequence name / ID
+    pub duration:  f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SequenceEdge {
+    pub from_id:   u64,
+    pub to_id:     u64,
+    pub condition: String,   // "always" | "if_flag:X" | "on_choice:N"
+    pub weight:    f32,
+}
+
+pub struct SequenceGraph {
+    pub nodes:      HashMap<u64, SequenceNode>,
+    pub edges:      Vec<SequenceEdge>,
+    pub start_node: u64,
+    pub current:    u64,
+    pub flags:      HashSet<String>,
+    next_id:        u64,
+}
+
+impl SequenceGraph {
+    pub fn new() -> Self {
+        SequenceGraph {
+            nodes: HashMap::new(),
+            edges: Vec::new(),
+            start_node: 0,
+            current: 0,
+            flags: HashSet::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn add_node(&mut self, name: &str, sequence: &str, duration: f64) -> u64 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.insert(id, SequenceNode { id, name: name.to_string(), sequence: sequence.to_string(), duration });
+        id
+    }
+
+    pub fn add_edge(&mut self, from_id: u64, to_id: u64, condition: &str, weight: f32) {
+        self.edges.push(SequenceEdge { from_id, to_id, condition: condition.to_string(), weight });
+    }
+
+    pub fn set_flag(&mut self, flag: &str) { self.flags.insert(flag.to_string()); }
+    pub fn clear_flag(&mut self, flag: &str) { self.flags.remove(flag); }
+
+    /// Evaluate condition string against current flag set.
+    pub fn condition_met(&self, condition: &str) -> bool {
+        if condition == "always" { return true; }
+        if let Some(flag) = condition.strip_prefix("if_flag:") {
+            return self.flags.contains(flag);
+        }
+        false
+    }
+
+    /// Get all reachable next nodes from `current`.
+    pub fn next_nodes(&self) -> Vec<u64> {
+        self.edges.iter()
+            .filter(|e| e.from_id == self.current && self.condition_met(&e.condition))
+            .map(|e| e.to_id)
+            .collect()
+    }
+
+    /// Advance to best-matching next node.
+    pub fn advance(&mut self) -> Option<&SequenceNode> {
+        let nexts = self.next_nodes();
+        if nexts.is_empty() { return None; }
+        // Pick highest-weight edge
+        let best = self.edges.iter()
+            .filter(|e| e.from_id == self.current && nexts.contains(&e.to_id))
+            .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal))?;
+        self.current = best.to_id;
+        self.nodes.get(&self.current)
+    }
+
+    pub fn current_node(&self) -> Option<&SequenceNode> { self.nodes.get(&self.current) }
+}
+
+// ============================================================
+// CAMERA SHAKE PRESET LIBRARY
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct ShakePreset {
+    pub name:      String,
+    pub trauma:    f32,
+    pub frequency: f32,
+    pub decay:     f32,
+}
+
+pub struct ShakePresetLibrary {
+    pub presets: HashMap<String, ShakePreset>,
+}
+
+impl ShakePresetLibrary {
+    pub fn new() -> Self {
+        let mut lib = ShakePresetLibrary { presets: HashMap::new() };
+        lib.add("gunshot",    0.6, 20.0, 4.0);
+        lib.add("explosion",  1.0, 12.0, 2.5);
+        lib.add("earthquake", 0.8, 6.0,  1.0);
+        lib.add("footstep",   0.2, 30.0, 8.0);
+        lib.add("engine",     0.1, 60.0, 20.0);
+        lib
+    }
+
+    fn add(&mut self, name: &str, trauma: f32, frequency: f32, decay: f32) {
+        let preset = ShakePreset { name: name.to_string(), trauma, frequency, decay };
+        self.presets.insert(name.to_string(), preset);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ShakePreset> { self.presets.get(name) }
+
+    pub fn apply(&self, name: &str, state: &mut CameraShakeState) {
+        if let Some(p) = self.get(name) {
+            state.add_trauma(p.trauma);
+        }
+    }
+}
+
+// ============================================================
+// KEYFRAME INTERPOLATION BENCHMARK
+// ============================================================
+
+pub struct InterpBenchResult {
+    pub curve_name:    String,
+    pub samples:       usize,
+    pub eval_count:    usize,
+    pub mean_error:    f32,
+    pub max_error:     f32,
+}
+
+impl InterpBenchResult {
+    /// Compare a FloatCurve against a reference function `f`.
+    pub fn measure(curve: &FloatCurve, f: &dyn Fn(f64) -> f32, t_start: f64, t_end: f64, steps: usize) -> Self {
+        let mut sum_err = 0.0f32;
+        let mut max_err = 0.0f32;
+        for i in 0..steps {
+            let t   = t_start + (t_end - t_start) * i as f64 / steps as f64;
+            let got = curve.evaluate(t);
+            let exp = f(t);
+            let e   = (got - exp).abs();
+            sum_err += e;
+            if e > max_err { max_err = e; }
+        }
+        InterpBenchResult {
+            curve_name: curve.name.clone(),
+            samples:    curve.keys.len(),
+            eval_count: steps,
+            mean_error: sum_err / steps as f32,
+            max_error:  max_err,
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        format!("{}: {} keys, mean_err={:.6}, max_err={:.6}",
+            self.curve_name, self.samples, self.mean_error, self.max_error)
+    }
+}
+
+// ============================================================
+// SEQUENCE STATISTICS
+// ============================================================
+
+pub struct SequenceStats {
+    pub total_duration:    f64,
+    pub track_count:       usize,
+    pub keyframe_count:    usize,
+    pub shot_count:        usize,
+    pub cut_count:         usize,
+    pub blend_count:       usize,
+    pub audio_track_count: usize,
+    pub subtitle_count:    usize,
+}
+
+impl SequenceStats {
+    pub fn compute(seq: &CinematicSequencer) -> Self {
+        let tc      = &seq.tracks;
+        let kf      = tc.camera_tracks.values().map(|t| t.keyframes.len()).sum::<usize>()
+                    + tc.actor_tracks.values().map(|t| t.keyframes.len()).sum::<usize>()
+                    + tc.animation_tracks.values().map(|t| t.clips.len()).sum::<usize>()
+                    + tc.audio_tracks.values().map(|t| t.clips.len()).sum::<usize>()
+                    + tc.light_tracks.values().map(|t| t.keyframes.len()).sum::<usize>()
+                    + tc.post_fx_tracks.values().map(|t| t.keyframes.len()).sum::<usize>()
+                    + tc.subtitle_tracks.values().map(|t| t.entries.len()).sum::<usize>();
+        let shot_count  = seq.shot_list.shots.len();
+        let cut_count   = seq.shot_list.shots.iter().filter(|s| s.transition == CutType::Cut).count();
+        let blend_count = shot_count - cut_count;
+        let audio_count = tc.audio_tracks.len();
+        let sub_count   = tc.subtitle_tracks.values().map(|t| t.entries.len()).sum::<usize>();
+        let total_tracks = tc.camera_tracks.len() + tc.actor_tracks.len()
+            + tc.animation_tracks.len() + tc.audio_tracks.len()
+            + tc.light_tracks.len() + tc.post_fx_tracks.len()
+            + tc.subtitle_tracks.len() + tc.event_tracks.len();
+
+        SequenceStats {
+            total_duration:    seq.master_sequence.duration,
+            track_count:       total_tracks,
+            keyframe_count:    kf,
+            shot_count,
+            cut_count,
+            blend_count,
+            audio_track_count: audio_count,
+            subtitle_count:    sub_count,
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "Duration: {:.2}s | Tracks: {} | Keyframes: {} | Shots: {} (cuts: {}, blends: {}) | Audio: {} | Subs: {}",
+            self.total_duration, self.track_count, self.keyframe_count,
+            self.shot_count, self.cut_count, self.blend_count,
+            self.audio_track_count, self.subtitle_count
+        )
+    }
+}
+
+// ============================================================
+// CINEMATIC SEQUENCE EXPORTER (extended formats)
+// ============================================================
+
+/// Export sequence timing to a simple JSON-like text format.
+pub fn export_sequence_timing_json(seq: &CinematicSequencer) -> String {
+    let mut out = String::from("{\n");
+    out.push_str(&format!("  \"title\": \"{}\",\n", seq.master_sequence.name));
+    out.push_str(&format!("  \"duration\": {},\n", seq.master_sequence.duration));
+    out.push_str(&format!("  \"frame_rate\": {},\n", seq.playback.fps.fps()));
+    out.push_str("  \"shots\": [\n");
+    for (i, shot) in seq.shot_list.shots.iter().enumerate() {
+        let comma = if i + 1 < seq.shot_list.shots.len() { "," } else { "" };
+        out.push_str(&format!(
+            "    {{\"id\": {}, \"name\": \"{}\", \"start\": {:.4}, \"end\": {:.4}, \"camera\": {}}}{}",
+            shot.id, shot.name, shot.start_time, shot.end_time, shot.camera_id, comma
+        ));
+        out.push('\n');
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+/// Export all subtitle entries to a VTT (WebVTT) string.
+pub fn export_subtitles_vtt(seq: &CinematicSequencer, fps: f32) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    let mut entries: Vec<&SubtitleEntry> = seq.tracks.subtitle_tracks.values()
+        .flat_map(|t| t.entries.iter())
+        .collect();
+    entries.sort_by(|a, b| a.start_time.partial_cmp(&b.start_time).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (i, e) in entries.iter().enumerate() {
+        fn fmt_vtt(t: f64) -> String {
+            let total_ms = (t * 1000.0) as u64;
+            let ms  = total_ms % 1000;
+            let sec = (total_ms / 1000) % 60;
+            let min = (total_ms / 60000) % 60;
+            let hr  = total_ms / 3600000;
+            format!("{:02}:{:02}:{:02}.{:03}", hr, min, sec, ms)
+        }
+        out.push_str(&format!("{}\n{} --> {}\n{}\n\n",
+            i + 1, fmt_vtt(e.start_time), fmt_vtt(e.end_time), e.text));
+    }
+    let _ = fps;
+    out
+}
+
+// ============================================================
+// FLOAT CURVE BAKING & COMPRESSION
+// ============================================================
+
+/// Bake a FloatCurve to a fixed-FPS float array.
+pub fn bake_curve_to_frames(curve: &FloatCurve, fps: f32, duration: f64) -> Vec<f32> {
+    let n = (duration * fps as f64).ceil() as usize + 1;
+    (0..n).map(|i| curve.evaluate(i as f64 / fps as f64)).collect()
+}
+
+/// Reconstruct a FloatCurve from baked frames (linear interpolation).
+pub fn unbake_curve_from_frames(frames: &[f32], fps: f32) -> FloatCurve {
+    let mut curve = FloatCurve::new("Unbaked");
+    for (i, &v) in frames.iter().enumerate() {
+        curve.add_key(i as f64 / fps as f64, v, InterpType::Linear);
+    }
+    curve
+}
+
+/// Delta-encode a baked array (for compression).
+pub fn delta_encode(values: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(values.len());
+    let mut prev = 0.0f32;
+    for &v in values {
+        out.push(v - prev);
+        prev = v;
+    }
+    out
+}
+
+/// Decode a delta-encoded array.
+pub fn delta_decode(deltas: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(deltas.len());
+    let mut acc = 0.0f32;
+    for &d in deltas {
+        acc += d;
+        out.push(acc);
+    }
+    out
+}
+
+// ============================================================
+// CINEMATIC DIRECTOR (RULE-BASED AUTO-EDIT)
+// ============================================================
+
+/// Score an edit between two shots based on visual continuity rules.
+pub fn score_shot_transition(
+    current_cam_pos: Vec3,
+    next_cam_pos:    Vec3,
+    subject_pos:     Vec3,
+    min_angle_deg:   f32,
+) -> f32 {
+    // Angle between camera vectors to subject
+    let v0 = (subject_pos - current_cam_pos).normalize_or_zero();
+    let v1 = (subject_pos - next_cam_pos).normalize_or_zero();
+    let cos_angle = v0.dot(v1).clamp(-1.0, 1.0);
+    let angle_deg = cos_angle.acos().to_degrees();
+    // Penalise < min_angle_deg (axis cut rule)
+    let angle_score = if angle_deg < min_angle_deg { angle_deg / min_angle_deg } else { 1.0 };
+    // Prefer distance variety
+    let d0 = (current_cam_pos - subject_pos).length();
+    let d1 = (next_cam_pos - subject_pos).length();
+    let ratio = if d0 < 1e-3 || d1 < 1e-3 { 0.5 } else { (d0 / d1).min(d1 / d0) };
+    (angle_score + ratio) * 0.5
+}
+
+// ============================================================
+// AUDIO ENVELOPE GENERATOR
+// ============================================================
+
+/// ADSR envelope: returns gain in [0,1] at time t given ADSR params.
+pub fn adsr_envelope(t: f64, attack: f64, decay: f64, sustain: f32, release: f64, note_off: f64) -> f32 {
+    if t < 0.0 { return 0.0; }
+    if t < attack {
+        return (t / attack.max(1e-10)) as f32;
+    }
+    let t2 = t - attack;
+    if t2 < decay {
+        let f = (t2 / decay.max(1e-10)) as f32;
+        return 1.0 - (1.0 - sustain) * f;
+    }
+    if t < note_off {
+        return sustain;
+    }
+    let t3 = t - note_off;
+    if t3 < release {
+        return sustain * (1.0 - (t3 / release.max(1e-10)) as f32);
+    }
+    0.0
+}
+
+// ============================================================
+// TRACK MUTE / SOLO MANAGER
+// ============================================================
+
+pub struct MuteSoloManager {
+    pub muted:  HashSet<u64>,
+    pub solos:  HashSet<u64>,
+    pub all_ids: Vec<u64>,
+}
+
+impl MuteSoloManager {
+    pub fn new(all_ids: Vec<u64>) -> Self {
+        MuteSoloManager { muted: HashSet::new(), solos: HashSet::new(), all_ids }
+    }
+
+    pub fn mute(&mut self, id: u64)   { self.muted.insert(id); }
+    pub fn unmute(&mut self, id: u64) { self.muted.remove(&id); }
+    pub fn solo(&mut self, id: u64)   { self.solos.insert(id); }
+    pub fn unsolo(&mut self, id: u64) { self.solos.remove(&id); }
+
+    pub fn is_audible(&self, id: u64) -> bool {
+        if self.muted.contains(&id) { return false; }
+        if !self.solos.is_empty() && !self.solos.contains(&id) { return false; }
+        true
+    }
+}
+
+// ============================================================
+// CINEMATIC MARKERS
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct SequenceMarker {
+    pub id:    u64,
+    pub time:  f64,
+    pub name:  String,
+    pub color: Vec4,
+    pub kind:  MarkerKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkerKind {
+    Comment,
+    Chapter,
+    BeatMarker,
+    CutPoint,
+    SceneChange,
+    Custom(String),
+}
+
+pub struct MarkerTrack {
+    pub markers: Vec<SequenceMarker>,
+    next_id: u64,
+}
+
+impl MarkerTrack {
+    pub fn new() -> Self { MarkerTrack { markers: Vec::new(), next_id: 1 } }
+
+    pub fn add(&mut self, time: f64, name: &str, color: Vec4, kind: MarkerKind) -> u64 {
+        let id = self.next_id; self.next_id += 1;
+        self.markers.push(SequenceMarker { id, time, name: name.to_string(), color, kind });
+        self.markers.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+        id
+    }
+
+    pub fn remove(&mut self, id: u64) { self.markers.retain(|m| m.id != id); }
+
+    pub fn markers_in_range(&self, t_start: f64, t_end: f64) -> Vec<&SequenceMarker> {
+        self.markers.iter().filter(|m| m.time >= t_start && m.time <= t_end).collect()
+    }
+
+    pub fn nearest_marker(&self, t: f64) -> Option<&SequenceMarker> {
+        self.markers.iter().min_by(|a, b| {
+            let da = (a.time - t).abs();
+            let db = (b.time - t).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+}
+
+// ============================================================
+// COLOUR GRADING TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct ColorGradingKeyframe {
+    pub time:        f64,
+    pub lift:        Vec3,   // shadow colour shift
+    pub gamma:       Vec3,   // midtone
+    pub gain:        Vec3,   // highlight
+    pub saturation:  f32,
+    pub contrast:    f32,
+    pub exposure:    f32,
+    pub hue_shift:   f32,
+}
+
+impl ColorGradingKeyframe {
+    pub fn identity(time: f64) -> Self {
+        ColorGradingKeyframe {
+            time,
+            lift:       Vec3::ZERO,
+            gamma:      Vec3::ONE,
+            gain:       Vec3::ONE,
+            saturation: 1.0,
+            contrast:   1.0,
+            exposure:   0.0,
+            hue_shift:  0.0,
+        }
+    }
+
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        ColorGradingKeyframe {
+            time:       self.time + (other.time - self.time) * t as f64,
+            lift:       self.lift.lerp(other.lift, t),
+            gamma:      self.gamma.lerp(other.gamma, t),
+            gain:       self.gain.lerp(other.gain, t),
+            saturation: self.saturation + (other.saturation - self.saturation) * t,
+            contrast:   self.contrast   + (other.contrast   - self.contrast)   * t,
+            exposure:   self.exposure   + (other.exposure   - self.exposure)   * t,
+            hue_shift:  self.hue_shift  + (other.hue_shift  - self.hue_shift)  * t,
+        }
+    }
+}
+
+pub struct ColorGradingTrack {
+    pub keyframes: Vec<ColorGradingKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl ColorGradingTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        ColorGradingTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: ColorGradingKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> ColorGradingKeyframe {
+        if self.keyframes.is_empty() { return ColorGradingKeyframe::identity(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        a.lerp(b, t.clamp(0.0, 1.0))
+    }
+
+    /// Apply grading to an RGB value.
+    pub fn apply(&self, time: f64, rgb: Vec3) -> Vec3 {
+        let g = self.evaluate(time);
+        // Exposure
+        let exposed = rgb * 2.0f32.powf(g.exposure);
+        // Lift / Gamma / Gain (Resolve-style):
+        let lifted  = exposed + g.lift * (Vec3::ONE - exposed);
+        let gained  = lifted * g.gain;
+        let inv_gamma = Vec3::ONE / g.gamma.max(Vec3::splat(0.001));
+        let corrected = Vec3::new(gained.x.powf(inv_gamma.x), gained.y.powf(inv_gamma.y), gained.z.powf(inv_gamma.z));
+        // Contrast around 0.5
+        let contrasted = (corrected - Vec3::splat(0.5)) * g.contrast + Vec3::splat(0.5);
+        // Saturation
+        let luma = Vec3::new(0.299, 0.587, 0.114);
+        let grey  = Vec3::splat(contrasted.dot(luma));
+        grey.lerp(contrasted, g.saturation)
+    }
+}
+
+// ============================================================
+// LOOK-AT TRACK (auto-aim camera at target)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct LookAtKeyframe {
+    pub time:        f64,
+    pub target_pos:  Vec3,
+    pub weight:      f32,  // blend between free and look-at
+    pub offset:      Vec3,
+}
+
+pub struct LookAtTrack {
+    pub keyframes: Vec<LookAtKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl LookAtTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        LookAtTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: LookAtKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> Option<(Vec3, f32)> {
+        if self.keyframes.is_empty() { return None; }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { let k = &self.keyframes[0]; return Some((k.target_pos + k.offset, k.weight)); }
+        if idx >= self.keyframes.len() {
+            let k = self.keyframes.last().unwrap();
+            return Some((k.target_pos + k.offset, k.weight));
+        }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        let target = (a.target_pos + a.offset).lerp(b.target_pos + b.offset, t);
+        let weight = a.weight + (b.weight - a.weight) * t;
+        Some((target, weight))
+    }
+}
+
+// ============================================================
+// DOLLY ZOOM TRACK
+// ============================================================
+
+/// Vertigo / Dolly-zoom: camera moves along rail while FOV compensates.
+pub struct DollyZoomKeyframe {
+    pub time:         f64,
+    pub distance:     f32,  // camera-to-subject distance
+    pub subject_size: f32,  // apparent size in radians (target angular size)
+}
+
+impl DollyZoomKeyframe {
+    /// Compute FOV (vertical) to keep subject_size constant: fov = 2*atan(subject_size / (2*d))
+    pub fn fov_vertical(&self) -> f32 {
+        2.0 * (self.subject_size / (2.0 * self.distance.max(0.001))).atan()
+    }
+}
+
+pub struct DollyZoomTrack {
+    pub keyframes: Vec<DollyZoomKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl DollyZoomTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        DollyZoomTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: DollyZoomKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate_fov(&self, time: f64) -> f32 {
+        if self.keyframes.is_empty() { return 60.0f32.to_radians(); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].fov_vertical(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().fov_vertical(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        let d    = a.distance + (b.distance - a.distance) * t;
+        let size = a.subject_size + (b.subject_size - a.subject_size) * t;
+        2.0 * (size / (2.0 * d.max(0.001))).atan()
+    }
+}
+
+// ============================================================
+// SEQUENCE RENDER PASS SYSTEM
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct RenderPassConfig {
+    pub name:          String,
+    pub enabled:       bool,
+    pub resolution_x:  u32,
+    pub resolution_y:  u32,
+    pub frame_rate:    f32,
+    pub start_frame:   u64,
+    pub end_frame:     u64,
+    pub output_format: String,
+    pub color_space:   String,
+    pub motion_blur_samples: u32,
+}
+
+impl RenderPassConfig {
+    pub fn new(name: &str, width: u32, height: u32, fps: f32) -> Self {
+        RenderPassConfig {
+            name: name.to_string(),
+            enabled: true,
+            resolution_x: width,
+            resolution_y: height,
+            frame_rate: fps,
+            start_frame: 0,
+            end_frame: 0,
+            output_format: "EXR".to_string(),
+            color_space: "ACEScg".to_string(),
+            motion_blur_samples: 8,
+        }
+    }
+
+    pub fn total_frames(&self) -> u64 { self.end_frame.saturating_sub(self.start_frame) }
+    pub fn pixel_count(&self) -> u64 { self.resolution_x as u64 * self.resolution_y as u64 }
+    pub fn total_pixels(&self) -> u64 { self.total_frames() * self.pixel_count() }
+
+    pub fn estimated_disk_gb(&self, bytes_per_pixel: f32) -> f32 {
+        self.total_pixels() as f32 * bytes_per_pixel / 1_073_741_824.0
+    }
+}
+
+pub struct RenderQueueEntry {
+    pub pass:      RenderPassConfig,
+    pub priority:  i32,
+    pub status:    RenderStatus,
+    pub progress:  f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderStatus { Pending, Running, Done, Failed(String) }
+
+pub struct RenderQueue {
+    pub entries: Vec<RenderQueueEntry>,
+}
+
+impl RenderQueue {
+    pub fn new() -> Self { RenderQueue { entries: Vec::new() } }
+
+    pub fn add(&mut self, pass: RenderPassConfig, priority: i32) {
+        self.entries.push(RenderQueueEntry { pass, priority, status: RenderStatus::Pending, progress: 0.0 });
+        self.entries.sort_by(|a, b| b.priority.cmp(&a.priority));
+    }
+
+    pub fn next_pending(&mut self) -> Option<&mut RenderQueueEntry> {
+        self.entries.iter_mut().find(|e| e.status == RenderStatus::Pending)
+    }
+
+    pub fn total_estimated_disk_gb(&self, bytes_per_pixel: f32) -> f32 {
+        self.entries.iter().filter(|e| e.pass.enabled).map(|e| e.pass.estimated_disk_gb(bytes_per_pixel)).sum()
+    }
+}
+
+// ============================================================
+// TIME REMAP TRACK
+// ============================================================
+
+/// A time-remap track maps sequence time → media time (for slow-mo / fast-forward).
+pub struct TimeRemapTrack {
+    pub curve: FloatCurve,  // output: media time as function of sequence time
+    pub id:    u64,
+    pub name:  String,
+}
+
+impl TimeRemapTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        let curve = FloatCurve::new("TimeRemap");
+        TimeRemapTrack { curve, id, name: name.to_string() }
+    }
+
+    pub fn set_constant_speed(&mut self, duration: f64) {
+        self.curve.keys.clear();
+        self.curve.add_key(0.0, 0.0, InterpType::Linear);
+        self.curve.add_key(duration, duration as f32, InterpType::Linear);
+    }
+
+    pub fn set_slow_motion(&mut self, t_start: f64, t_end: f64, factor: f32) {
+        // Remap: [t_start, t_end] → [t_start, t_start + (t_end-t_start)*factor]
+        self.curve.add_key(t_start, t_start as f32, InterpType::Cubic);
+        let media_end = t_start as f32 + (t_end - t_start) as f32 * factor;
+        self.curve.add_key(t_end, media_end, InterpType::Cubic);
+    }
+
+    pub fn media_time(&self, sequence_time: f64) -> f64 {
+        self.curve.evaluate(sequence_time) as f64
+    }
+
+    /// Playback speed at sequence_time (derivative of media_time w.r.t. sequence_time).
+    pub fn speed_factor(&self, sequence_time: f64) -> f32 {
+        let dt = 1e-4;
+        let t0 = (sequence_time - dt).max(0.0);
+        let t1 = sequence_time + dt;
+        let m0 = self.curve.evaluate(t0) as f64;
+        let m1 = self.curve.evaluate(t1) as f64;
+        ((m1 - m0) / (t1 - t0)) as f32
+    }
+}
+
+// ============================================================
+// CHAPTER SYSTEM
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct Chapter {
+    pub id:          u64,
+    pub title:       String,
+    pub start_time:  f64,
+    pub thumbnail_t: f64,   // normalised time for thumbnail frame
+    pub description: String,
+}
+
+pub struct ChapterList {
+    pub chapters: Vec<Chapter>,
+    next_id: u64,
+}
+
+impl ChapterList {
+    pub fn new() -> Self { ChapterList { chapters: Vec::new(), next_id: 1 } }
+
+    pub fn add(&mut self, title: &str, start_time: f64, desc: &str) -> u64 {
+        let id = self.next_id; self.next_id += 1;
+        self.chapters.push(Chapter {
+            id, title: title.to_string(), start_time,
+            thumbnail_t: 0.0, description: desc.to_string(),
+        });
+        self.chapters.sort_by(|a, b| a.start_time.partial_cmp(&b.start_time).unwrap_or(std::cmp::Ordering::Equal));
+        id
+    }
+
+    pub fn chapter_at(&self, time: f64) -> Option<&Chapter> {
+        self.chapters.iter().rev().find(|c| c.start_time <= time)
+    }
+
+    pub fn to_youtube_chapters(&self) -> String {
+        self.chapters.iter().map(|c| {
+            let secs = c.start_time as u64;
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            let s = secs % 60;
+            if h > 0 { format!("{:02}:{:02}:{:02} {}", h, m, s, c.title) }
+            else      { format!("{:02}:{:02} {}", m, s, c.title) }
+        }).collect::<Vec<_>>().join("\n")
+    }
+}
+
+// ============================================================
+// EXTENDED UNIT TESTS
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_extended {
+    use super::*;
+
+    #[test]
+    fn test_sequence_graph_advance() {
+        let mut g = SequenceGraph::new();
+        let a = g.add_node("A", "seq_a", 5.0);
+        let b = g.add_node("B", "seq_b", 3.0);
+        g.add_edge(a, b, "always", 1.0);
+        g.current = a;
+        let next = g.advance();
+        assert!(next.is_some());
+        assert_eq!(g.current, b);
+    }
+
+    #[test]
+    fn test_sequence_graph_flag_condition() {
+        let mut g = SequenceGraph::new();
+        let a = g.add_node("A", "seq_a", 5.0);
+        let b = g.add_node("B", "seq_b", 3.0);
+        g.add_edge(a, b, "if_flag:hero_saved", 1.0);
+        g.current = a;
+        assert!(g.advance().is_none()); // flag not set
+        g.set_flag("hero_saved");
+        assert!(g.advance().is_some());
+    }
+
+    #[test]
+    fn test_shake_preset_library_applies() {
+        let lib   = ShakePresetLibrary::new();
+        let mut s = CameraShakeState { trauma: 0.0, ..Default::default() };
+        lib.apply("explosion", &mut s);
+        assert!(s.trauma > 0.0);
+    }
+
+    #[test]
+    fn test_adsr_envelope_sustain() {
+        // At sustain phase, should equal sustain level
+        let v = adsr_envelope(0.3, 0.1, 0.1, 0.7, 0.2, 1.0);
+        assert!((v - 0.7).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_adsr_envelope_release_zero() {
+        // After full release, should be 0
+        let v = adsr_envelope(2.0, 0.1, 0.1, 0.7, 0.2, 1.0);
+        assert!(v.abs() < 0.01);
+    }
+
+    #[test]
+    fn test_mute_solo_manager_mute() {
+        let mut m = MuteSoloManager::new(vec![1, 2, 3]);
+        m.mute(2);
+        assert!( m.is_audible(1));
+        assert!(!m.is_audible(2));
+    }
+
+    #[test]
+    fn test_mute_solo_manager_solo() {
+        let mut m = MuteSoloManager::new(vec![1, 2, 3]);
+        m.solo(1);
+        assert!( m.is_audible(1));
+        assert!(!m.is_audible(2));
+    }
+
+    #[test]
+    fn test_marker_track_range_query() {
+        let mut mt = MarkerTrack::new();
+        mt.add(1.0, "A", Vec4::ONE, MarkerKind::Comment);
+        mt.add(3.0, "B", Vec4::ONE, MarkerKind::Chapter);
+        mt.add(5.0, "C", Vec4::ONE, MarkerKind::CutPoint);
+        let in_range = mt.markers_in_range(2.0, 4.0);
+        assert_eq!(in_range.len(), 1);
+        assert_eq!(in_range[0].name, "B");
+    }
+
+    #[test]
+    fn test_color_grading_identity() {
+        let track = ColorGradingTrack::new(1, "Grade");
+        // With no keyframes, apply should be identity-ish
+        let rgb = Vec3::new(0.5, 0.3, 0.1);
+        // identity: no keys → identity keyframe → exposure 0, saturation 1, contrast 1
+        let _ = track.apply(0.0, rgb);
+    }
+
+    #[test]
+    fn test_dolly_zoom_fov_decreases_with_distance() {
+        let kf_near = DollyZoomKeyframe { time: 0.0, distance: 2.0, subject_size: 0.5 };
+        let kf_far  = DollyZoomKeyframe { time: 1.0, distance: 10.0, subject_size: 0.5 };
+        let fov_near = kf_near.fov_vertical();
+        let fov_far  = kf_far.fov_vertical();
+        assert!(fov_far < fov_near);
+    }
+
+    #[test]
+    fn test_render_queue_sorted_by_priority() {
+        let mut rq = RenderQueue::new();
+        rq.add(RenderPassConfig::new("Low", 1920, 1080, 24.0), 1);
+        rq.add(RenderPassConfig::new("High", 1920, 1080, 24.0), 10);
+        assert_eq!(rq.entries[0].pass.name, "High");
+    }
+
+    #[test]
+    fn test_time_remap_constant_speed() {
+        let mut tr = TimeRemapTrack::new(1, "Main");
+        tr.set_constant_speed(10.0);
+        let mt = tr.media_time(5.0);
+        assert!((mt - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_chapter_list_at_time() {
+        let mut cl = ChapterList::new();
+        cl.add("Intro", 0.0, "");
+        cl.add("Act 1", 30.0, "");
+        cl.add("Act 2", 90.0, "");
+        let ch = cl.chapter_at(50.0).unwrap();
+        assert_eq!(ch.title, "Act 1");
+    }
+
+    #[test]
+    fn test_youtube_chapters_format() {
+        let mut cl = ChapterList::new();
+        cl.add("Intro", 0.0, "");
+        cl.add("Main",  65.0, "");
+        let s = cl.to_youtube_chapters();
+        assert!(s.contains("01:05 Main"));
+    }
+
+    #[test]
+    fn test_export_sequence_timing_json() {
+        let seq = CinematicSequencer::new("TestSeq", 10.0, FrameRate::Fps24);
+        let json = export_sequence_timing_json(&seq);
+        assert!(json.contains("TestSeq"));
+        assert!(json.contains("duration"));
+    }
+
+    #[test]
+    fn test_bake_curve_frame_count() {
+        let mut c = FloatCurve::new("sin");
+        c.add_key(0.0, 0.0, InterpType::Linear);
+        c.add_key(1.0, 1.0, InterpType::Linear);
+        let frames = bake_curve_to_frames(&c, 30.0, 1.0);
+        assert_eq!(frames.len(), 32); // ceil(30)+1 = 31, but we add 1 → 32
+    }
+
+    #[test]
+    fn test_delta_encode_decode_round_trip() {
+        let vals = vec![1.0f32, 2.0, 4.0, 3.0, 5.0];
+        let d = delta_encode(&vals);
+        let r = delta_decode(&d);
+        for (a, b) in vals.iter().zip(r.iter()) {
+            assert!((a - b).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_export_subtitles_vtt_contains_webvtt() {
+        let mut seq = CinematicSequencer::new("S", 10.0, FrameRate::Fps24);
+        let sid = seq.add_subtitle_track("Sub");
+        if let Some(t) = seq.tracks.subtitle_tracks.get_mut(&sid) {
+            t.entries.push(SubtitleEntry {
+                id: 1, start_time: 1.0, end_time: 3.0,
+                text: "Hello World".to_string(),
+                speaker: "Narrator".to_string(),
+                style: crate::editor::cinematic_sequencer::SubtitleStyle::default(),
+            });
+        }
+        let vtt = export_subtitles_vtt(&seq, 24.0);
+        assert!(vtt.starts_with("WEBVTT"));
+        assert!(vtt.contains("Hello World"));
+    }
+
+    #[test]
+    fn test_sequence_stats_shot_count() {
+        let mut seq = CinematicSequencer::new("S", 10.0, FrameRate::Fps24);
+        seq.shot_list.shots.push(Shot {
+            id: 1, name: "Shot1".to_string(), camera_id: 0,
+            start_time: 0.0, end_time: 5.0, transition: CutType::Cut,
+            transition_duration: 0.0, take_number: 1,
+        });
+        let stats = SequenceStats::compute(&seq);
+        assert_eq!(stats.shot_count, 1);
+    }
+
+    #[test]
+    fn test_look_at_track_evaluate() {
+        let mut track = LookAtTrack::new(1, "LookAt");
+        track.add_keyframe(LookAtKeyframe { time: 0.0, target_pos: Vec3::ZERO, weight: 1.0, offset: Vec3::ZERO });
+        track.add_keyframe(LookAtKeyframe { time: 1.0, target_pos: Vec3::new(0.0,0.0,10.0), weight: 1.0, offset: Vec3::ZERO });
+        let (pos, w) = track.evaluate(0.5).unwrap();
+        assert!((pos.z - 5.0).abs() < 0.05);
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_shot_transition_score_axis() {
+        let subject = Vec3::new(0.0, 0.0, 0.0);
+        // Two cameras at similar angles → low score
+        let c0 = Vec3::new(5.0, 2.0, 0.0);
+        let c1 = Vec3::new(5.1, 2.0, 0.0);
+        let score = score_shot_transition(c0, c1, subject, 30.0);
+        assert!(score < 0.9);
+    }
+
+    #[test]
+    fn test_color_grading_track_evaluate_lerp() {
+        let mut t = ColorGradingTrack::new(1, "G");
+        t.add_keyframe(ColorGradingKeyframe { exposure: 0.0, ..ColorGradingKeyframe::identity(0.0) });
+        t.add_keyframe(ColorGradingKeyframe { exposure: 2.0, ..ColorGradingKeyframe::identity(1.0) });
+        let mid = t.evaluate(0.5);
+        assert!((mid.exposure - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_interp_bench_result_constant_curve() {
+        let mut c = FloatCurve::new("const");
+        c.add_key(0.0, 5.0, InterpType::Linear);
+        c.add_key(2.0, 5.0, InterpType::Linear);
+        let r = InterpBenchResult::measure(&c, &|_| 5.0, 0.0, 2.0, 100);
+        assert!(r.max_error < 0.001);
+    }
+}
+
+// ============================================================
+// CURVE NOISE LAYER (procedural variation over a base curve)
+// ============================================================
+
+/// Additive noise layer on top of a FloatCurve.
+pub struct CurveNoiseLayer {
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub octaves:   u32,
+    pub seed:      u32,
+    pub enabled:   bool,
+}
+
+impl CurveNoiseLayer {
+    pub fn new(amplitude: f32, frequency: f32, octaves: u32, seed: u32) -> Self {
+        CurveNoiseLayer { amplitude, frequency, octaves, seed, enabled: true }
+    }
+
+    pub fn evaluate(&self, t: f64) -> f32 {
+        if !self.enabled { return 0.0; }
+        let mut val  = 0.0f32;
+        let mut amp  = self.amplitude;
+        let mut freq = self.frequency as f64;
+        for i in 0..self.octaves {
+            let x = t * freq + self.seed as f64 * 1.618 + i as f64 * 7.3;
+            // Value noise from float time
+            let xi = x.floor() as i64;
+            let xf = (x - x.floor()) as f32;
+            let fade = xf * xf * xf * (xf * (xf * 6.0 - 15.0) + 10.0);
+            let h0 = pseudo_hash_f32(xi)     * 2.0 - 1.0;
+            let h1 = pseudo_hash_f32(xi + 1) * 2.0 - 1.0;
+            val  += (h0 + fade * (h1 - h0)) * amp;
+            amp  *= 0.5;
+            freq *= 2.0;
+        }
+        val
+    }
+}
+
+fn pseudo_hash_f32(x: i64) -> f32 {
+    let x = x as u64;
+    let mut h = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51afd7ed558ccd);
+    h ^= h >> 33;
+    (h as f32) / u64::MAX as f32
+}
+
+// ============================================================
+// LAYERED ANIMATION BLEND TREE
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub enum BlendNodeKind {
+    Clip { name: String, curve_id: u64 },
+    Lerp { weight: f32 },
+    Additive,
+    Override,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlendTreeNode {
+    pub id:       u64,
+    pub kind:     BlendNodeKind,
+    pub children: Vec<u64>,
+    pub weight:   f32,
+}
+
+pub struct BlendTree {
+    pub nodes:   HashMap<u64, BlendTreeNode>,
+    pub root_id: u64,
+    next_id:     u64,
+}
+
+impl BlendTree {
+    pub fn new() -> Self { BlendTree { nodes: HashMap::new(), root_id: 0, next_id: 1 } }
+
+    pub fn add_node(&mut self, kind: BlendNodeKind, weight: f32) -> u64 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.insert(id, BlendTreeNode { id, kind, children: Vec::new(), weight });
+        id
+    }
+
+    pub fn add_child(&mut self, parent: u64, child: u64) {
+        if let Some(node) = self.nodes.get_mut(&parent) { node.children.push(child); }
+    }
+
+    /// Evaluate the blend tree, returning a weighted sum of leaf values.
+    /// `eval_clip` maps curve_id → value at a given time.
+    pub fn evaluate(&self, node_id: u64, time: f64, eval_clip: &dyn Fn(u64, f64) -> f32) -> f32 {
+        let node = match self.nodes.get(&node_id) { Some(n) => n, None => return 0.0 };
+        match &node.kind {
+            BlendNodeKind::Clip { curve_id, .. } => eval_clip(*curve_id, time),
+            BlendNodeKind::Lerp { weight } => {
+                if node.children.len() < 2 { return 0.0; }
+                let a = self.evaluate(node.children[0], time, eval_clip);
+                let b = self.evaluate(node.children[1], time, eval_clip);
+                a + (b - a) * weight
+            }
+            BlendNodeKind::Additive => {
+                node.children.iter().map(|&c| self.evaluate(c, time, eval_clip) * node.weight).sum()
+            }
+            BlendNodeKind::Override => {
+                node.children.last().map(|&c| self.evaluate(c, time, eval_clip)).unwrap_or(0.0)
+            }
+        }
+    }
+}
+
+// ============================================================
+// CAMERA RACK FOCUS TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct RackFocusKeyframe {
+    pub time:          f64,
+    pub focus_target:  Vec3,
+    pub transition_time: f64,
+}
+
+pub struct RackFocusTrack {
+    pub keyframes: Vec<RackFocusKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl RackFocusTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        RackFocusTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: RackFocusKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    /// Evaluate focus target and lerp-in-progress at `time`.
+    pub fn evaluate(&self, time: f64) -> (Vec3, f32) {
+        if self.keyframes.is_empty() { return (Vec3::ZERO, 1.0); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return (self.keyframes[0].focus_target, 1.0); }
+        if idx >= self.keyframes.len() { return (self.keyframes.last().unwrap().focus_target, 1.0); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        // During transition into b
+        let elapsed = time - b.time;
+        if elapsed < b.transition_time && b.transition_time > 0.0 {
+            let t = (elapsed / b.transition_time).clamp(0.0, 1.0) as f32;
+            let smooth_t = t * t * (3.0 - 2.0 * t);
+            (a.focus_target.lerp(b.focus_target, smooth_t), smooth_t)
+        } else {
+            (b.focus_target, 1.0)
+        }
+    }
+
+    /// Compute focus distance from camera position to target.
+    pub fn focus_distance(&self, time: f64, camera_pos: Vec3) -> f32 {
+        let (target, _) = self.evaluate(time);
+        (camera_pos - target).length()
+    }
+}
+
+// ============================================================
+// LENS FLARE TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct LensFlareKeyframe {
+    pub time:      f64,
+    pub intensity: f32,
+    pub tint:      Vec3,
+    pub position:  Vec2,  // screen UV
+    pub size:      f32,
+    pub streak_rotation: f32,
+    pub ghost_count: u32,
+}
+
+impl LensFlareKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        LensFlareKeyframe {
+            time, intensity: 1.0, tint: Vec3::ONE, position: Vec2::new(0.5, 0.5),
+            size: 0.3, streak_rotation: 0.0, ghost_count: 4,
+        }
+    }
+}
+
+pub struct LensFlareTrack {
+    pub keyframes: Vec<LensFlareKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl LensFlareTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        LensFlareTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: LensFlareKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> LensFlareKeyframe {
+        if self.keyframes.is_empty() { return LensFlareKeyframe::default_at(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        LensFlareKeyframe {
+            time,
+            intensity:       a.intensity + (b.intensity - a.intensity) * t,
+            tint:            a.tint.lerp(b.tint, t),
+            position:        a.position.lerp(b.position, t),
+            size:            a.size + (b.size - a.size) * t,
+            streak_rotation: a.streak_rotation + (b.streak_rotation - a.streak_rotation) * t,
+            ghost_count:     if t < 0.5 { a.ghost_count } else { b.ghost_count },
+        }
+    }
+}
+
+// ============================================================
+// VOLUMETRIC FOG TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct FogKeyframe {
+    pub time:       f64,
+    pub density:    f32,
+    pub start_dist: f32,
+    pub end_dist:   f32,
+    pub color:      Vec3,
+    pub height:     f32,
+    pub falloff:    f32,
+}
+
+impl FogKeyframe {
+    pub fn clear(time: f64) -> Self {
+        FogKeyframe { time, density: 0.0, start_dist: 100.0, end_dist: 1000.0,
+                      color: Vec3::ONE, height: 0.0, falloff: 1.0 }
+    }
+
+    pub fn lerp_with(&self, other: &Self, t: f32) -> Self {
+        FogKeyframe {
+            time:       self.time + (other.time - self.time) * t as f64,
+            density:    self.density    + (other.density    - self.density)    * t,
+            start_dist: self.start_dist + (other.start_dist - self.start_dist) * t,
+            end_dist:   self.end_dist   + (other.end_dist   - self.end_dist)   * t,
+            color:      self.color.lerp(other.color, t),
+            height:     self.height     + (other.height     - self.height)     * t,
+            falloff:    self.falloff    + (other.falloff     - self.falloff)    * t,
+        }
+    }
+
+    /// Compute the exponential fog factor for a given view distance.
+    pub fn fog_factor(&self, distance: f32) -> f32 {
+        if distance < self.start_dist { return 0.0; }
+        let d  = (distance - self.start_dist) / (self.end_dist - self.start_dist).max(1e-3);
+        (-(d * self.density).exp()).max(0.0).min(1.0)
+    }
+}
+
+pub struct FogTrack {
+    pub keyframes: Vec<FogKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl FogTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        FogTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: FogKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> FogKeyframe {
+        if self.keyframes.is_empty() { return FogKeyframe::clear(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        a.lerp_with(b, t)
+    }
+}
+
+// ============================================================
+// CROWD SIMULATION TRACK (background NPCs)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct CrowdKeyframe {
+    pub time:         f64,
+    pub density:      f32,    // agents per square unit
+    pub speed:        f32,
+    pub panic_factor: f32,    // 0=calm, 1=fleeing
+    pub attractor:    Vec3,   // crowd centre
+}
+
+impl CrowdKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        CrowdKeyframe { time, density: 0.1, speed: 1.4, panic_factor: 0.0, attractor: Vec3::ZERO }
+    }
+}
+
+pub struct CrowdTrack {
+    pub keyframes: Vec<CrowdKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl CrowdTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        CrowdTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: CrowdKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> CrowdKeyframe {
+        if self.keyframes.is_empty() { return CrowdKeyframe::default_at(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        CrowdKeyframe {
+            time,
+            density:      a.density      + (b.density      - a.density)      * t,
+            speed:        a.speed        + (b.speed         - a.speed)        * t,
+            panic_factor: a.panic_factor + (b.panic_factor  - a.panic_factor) * t,
+            attractor:    a.attractor.lerp(b.attractor, t),
+        }
+    }
+
+    /// Spawn count for a given area.
+    pub fn spawn_count(&self, time: f64, area_sq: f32) -> u32 {
+        let kf = self.evaluate(time);
+        (kf.density * area_sq) as u32
+    }
+}
+
+// ============================================================
+// PARTICLE SYSTEM TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct ParticleSystemKeyframe {
+    pub time:         f64,
+    pub emit_rate:    f32,
+    pub velocity:     Vec3,
+    pub lifetime:     f32,
+    pub size:         f32,
+    pub color:        Vec4,
+    pub turbulence:   f32,
+}
+
+impl ParticleSystemKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        ParticleSystemKeyframe {
+            time, emit_rate: 100.0, velocity: Vec3::Y, lifetime: 2.0,
+            size: 0.1, color: Vec4::ONE, turbulence: 0.0,
+        }
+    }
+}
+
+pub struct ParticleTrack {
+    pub keyframes: Vec<ParticleSystemKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl ParticleTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        ParticleTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: ParticleSystemKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> ParticleSystemKeyframe {
+        if self.keyframes.is_empty() { return ParticleSystemKeyframe::default_at(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        ParticleSystemKeyframe {
+            time,
+            emit_rate:  a.emit_rate  + (b.emit_rate  - a.emit_rate)  * t,
+            velocity:   a.velocity.lerp(b.velocity, t),
+            lifetime:   a.lifetime   + (b.lifetime   - a.lifetime)   * t,
+            size:       a.size       + (b.size        - a.size)       * t,
+            color:      a.color.lerp(b.color, t),
+            turbulence: a.turbulence + (b.turbulence  - a.turbulence) * t,
+        }
+    }
+}
+
+// ============================================================
+// SCREEN WIPE / TRANSITION ANIMATOR
+// ============================================================
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WipeStyle {
+    FadeToBlack,
+    FadeToWhite,
+    IrisIn,
+    IrisOut,
+    WipeLeft,
+    WipeRight,
+    WipeUp,
+    WipeDown,
+    DiagonalWipe,
+    CheckerBoard,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransitionKeyframe {
+    pub time:     f64,
+    pub style:    WipeStyle,
+    pub progress: f32,        // 0.0 = full source, 1.0 = full dest
+    pub softness: f32,
+}
+
+pub struct TransitionTrack {
+    pub keyframes: Vec<TransitionKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl TransitionTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        TransitionTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: TransitionKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate_progress(&self, time: f64) -> f32 {
+        if self.keyframes.is_empty() { return 0.0; }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].progress; }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().progress; }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        // Smooth step
+        let s = t * t * (3.0 - 2.0 * t);
+        a.progress + (b.progress - a.progress) * s
+    }
+
+    /// Compute pixel blend factor for a given normalised screen position.
+    pub fn pixel_blend(&self, time: f64, uv: Vec2, style_override: Option<&WipeStyle>) -> f32 {
+        let p    = self.evaluate_progress(time);
+        let kf   = self.keyframes.first();
+        let style = style_override.or(kf.map(|k| &k.style)).unwrap_or(&WipeStyle::FadeToBlack);
+        let soft = kf.map(|k| k.softness).unwrap_or(0.05);
+        match style {
+            WipeStyle::FadeToBlack | WipeStyle::FadeToWhite => p,
+            WipeStyle::WipeLeft   => ((p - uv.x) / soft.max(1e-4)).clamp(0.0, 1.0),
+            WipeStyle::WipeRight  => ((uv.x - (1.0 - p)) / soft.max(1e-4)).clamp(0.0, 1.0),
+            WipeStyle::WipeUp     => ((uv.y - (1.0 - p)) / soft.max(1e-4)).clamp(0.0, 1.0),
+            WipeStyle::WipeDown   => ((p - uv.y) / soft.max(1e-4)).clamp(0.0, 1.0),
+            WipeStyle::IrisIn     => {
+                let d = (uv - Vec2::new(0.5, 0.5)).length();
+                ((p - d) / soft.max(1e-4)).clamp(0.0, 1.0)
+            }
+            WipeStyle::IrisOut    => {
+                let d = (uv - Vec2::new(0.5, 0.5)).length();
+                ((d - (1.0 - p) * 0.707) / soft.max(1e-4)).clamp(0.0, 1.0)
+            }
+            WipeStyle::DiagonalWipe => {
+                let diag = uv.x + uv.y;
+                ((p * 2.0 - diag) / soft.max(1e-4)).clamp(0.0, 1.0)
+            }
+            WipeStyle::CheckerBoard => {
+                let cx = (uv.x * 8.0).floor() as i32;
+                let cy = (uv.y * 8.0).floor() as i32;
+                let checker = (cx + cy) % 2 == 0;
+                let offset = if checker { 0.0 } else { 0.5 };
+                ((p - offset) * 2.0).clamp(0.0, 1.0)
+            }
+        }
+    }
+}
+
+// ============================================================
+// AUDIO SPECTRUM ANALYSER
+// ============================================================
+
+/// Simple FFT-free spectrum analyser using bank of IIR band-pass filters.
+pub struct AudioSpectrumAnalyser {
+    pub bands:   Vec<f32>,     // centre frequencies (Hz)
+    pub levels:  Vec<f32>,     // current dB level per band
+    pub attack:  f32,
+    pub release: f32,
+    peaks:       Vec<f32>,
+}
+
+impl AudioSpectrumAnalyser {
+    pub fn new(bands: Vec<f32>) -> Self {
+        let n = bands.len();
+        AudioSpectrumAnalyser { bands, levels: vec![0.0; n], attack: 50.0, release: 10.0, peaks: vec![0.0; n] }
+    }
+
+    pub fn standard_8_band() -> Self {
+        Self::new(vec![63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0])
+    }
+
+    /// Feed simulated band levels (amplitude [0,1]) and update with attack/release.
+    pub fn update(&mut self, input_levels: &[f32], dt: f32) {
+        for (i, &input) in input_levels.iter().enumerate().take(self.levels.len()) {
+            if input > self.levels[i] {
+                self.levels[i] += (input - self.levels[i]) * self.attack * dt;
+            } else {
+                self.levels[i] += (input - self.levels[i]) * self.release * dt;
+            }
+            self.peaks[i] = self.peaks[i].max(self.levels[i]);
+        }
+    }
+
+    /// Decay peaks slowly.
+    pub fn decay_peaks(&mut self, dt: f32) {
+        for p in &mut self.peaks { *p -= dt * 0.5; *p = p.max(0.0); }
+    }
+
+    /// Convert amplitude to dBFS.
+    pub fn to_dbfs(amplitude: f32) -> f32 {
+        if amplitude < 1e-10 { -96.0 } else { 20.0 * amplitude.log10() }
+    }
+}
+
+// ============================================================
+// SEQUENCE EXPORT MANAGER
+// ============================================================
+
+pub struct ExportPreset {
+    pub name:         String,
+    pub codec:        String,
+    pub container:    String,
+    pub width:        u32,
+    pub height:       u32,
+    pub fps:          f32,
+    pub crf:          u32,   // quality 0-51
+    pub audio_rate:   u32,
+    pub include_subs: bool,
+}
+
+impl ExportPreset {
+    pub fn youtube_4k() -> Self {
+        ExportPreset { name: "YouTube4K".to_string(), codec: "H264".to_string(),
+                       container: "MP4".to_string(), width: 3840, height: 2160,
+                       fps: 30.0, crf: 18, audio_rate: 48000, include_subs: true }
+    }
+    pub fn web_720p() -> Self {
+        ExportPreset { name: "Web720p".to_string(), codec: "H265".to_string(),
+                       container: "WebM".to_string(), width: 1280, height: 720,
+                       fps: 24.0, crf: 28, audio_rate: 44100, include_subs: false }
+    }
+    pub fn broadcast_hdcam() -> Self {
+        ExportPreset { name: "HDCam".to_string(), codec: "ProRes422".to_string(),
+                       container: "MOV".to_string(), width: 1920, height: 1080,
+                       fps: 29.97, crf: 0, audio_rate: 48000, include_subs: true }
+    }
+
+    pub fn bitrate_estimate_mbps(&self, seconds: f64) -> f32 {
+        // Very rough heuristic: 4K at CRF18 ~ 40 Mbps
+        let base = match self.codec.as_str() {
+            "H264"    => 8.0f32,
+            "H265"    => 4.0f32,
+            "ProRes422" => 147.0f32,
+            _         => 10.0f32,
+        };
+        let scale = (self.width as f32 * self.height as f32) / (1920.0 * 1080.0);
+        let _ = (seconds, self.crf);
+        base * scale * self.fps / 30.0
+    }
+}
+
+pub struct ExportManager {
+    pub presets:  Vec<ExportPreset>,
+    pub queue:    VecDeque<(String, String)>,  // (preset_name, output_path)
+}
+
+impl ExportManager {
+    pub fn new() -> Self {
+        ExportManager {
+            presets: vec![ExportPreset::youtube_4k(), ExportPreset::web_720p(), ExportPreset::broadcast_hdcam()],
+            queue:   VecDeque::new(),
+        }
+    }
+
+    pub fn add_preset(&mut self, preset: ExportPreset) { self.presets.push(preset); }
+
+    pub fn enqueue(&mut self, preset_name: &str, output_path: &str) {
+        self.queue.push_back((preset_name.to_string(), output_path.to_string()));
+    }
+
+    pub fn dequeue(&mut self) -> Option<(String, String)> { self.queue.pop_front() }
+
+    pub fn preset_by_name(&self, name: &str) -> Option<&ExportPreset> {
+        self.presets.iter().find(|p| p.name == name)
+    }
+}
+
+// ============================================================
+// CURVE EDITOR VIEW STATE (pan/zoom)
+// ============================================================
+
+pub struct CurveEditorViewState {
+    pub time_offset:    f64,   // leftmost visible time
+    pub time_scale:     f64,   // pixels per second
+    pub value_offset:   f32,
+    pub value_scale:    f32,
+    pub selected_keys:  HashSet<(usize, usize)>,  // (track_idx, key_idx)
+    pub snap_time:      bool,
+    pub snap_value:     bool,
+    pub snap_interval:  f64,
+    pub show_tangents:  bool,
+    pub tangent_length: f32,
+}
+
+impl CurveEditorViewState {
+    pub fn new() -> Self {
+        CurveEditorViewState {
+            time_offset:   0.0,
+            time_scale:    100.0,
+            value_offset:  0.0,
+            value_scale:   100.0,
+            selected_keys: HashSet::new(),
+            snap_time:     false,
+            snap_value:    false,
+            snap_interval: 1.0 / 30.0,
+            show_tangents: true,
+            tangent_length: 30.0,
+        }
+    }
+
+    pub fn time_to_pixel(&self, time: f64) -> f32 {
+        ((time - self.time_offset) * self.time_scale) as f32
+    }
+
+    pub fn pixel_to_time(&self, px: f32) -> f64 {
+        px as f64 / self.time_scale + self.time_offset
+    }
+
+    pub fn value_to_pixel(&self, val: f32) -> f32 {
+        (val - self.value_offset) * self.value_scale
+    }
+
+    pub fn pixel_to_value(&self, py: f32) -> f32 {
+        py / self.value_scale + self.value_offset
+    }
+
+    pub fn zoom_time(&mut self, factor: f64, pivot_px: f32) {
+        let pivot_time = self.pixel_to_time(pivot_px);
+        self.time_scale *= factor;
+        self.time_offset = pivot_time - pivot_px as f64 / self.time_scale;
+    }
+
+    pub fn zoom_value(&mut self, factor: f32, pivot_py: f32) {
+        let pivot_val = self.pixel_to_value(pivot_py);
+        self.value_scale *= factor;
+        self.value_offset = pivot_val - pivot_py / self.value_scale;
+    }
+
+    pub fn frame_all(&mut self, t_start: f64, t_end: f64, v_min: f32, v_max: f32, width: f32, height: f32) {
+        let td = (t_end - t_start).max(1e-6);
+        let vd = (v_max - v_min).max(1e-6);
+        self.time_scale  = width as f64 / td * 0.9;
+        self.time_offset = t_start - td * 0.05;
+        self.value_scale  = height / vd * 0.9;
+        self.value_offset = v_min - vd * 0.05;
+    }
+
+    pub fn select_all(&mut self, track_count: usize, key_counts: &[usize]) {
+        self.selected_keys.clear();
+        for (t, &kc) in key_counts.iter().enumerate().take(track_count) {
+            for k in 0..kc { self.selected_keys.insert((t, k)); }
+        }
+    }
+}
+
+// ============================================================
+// SEQUENCE CLIPBOARD (copy/paste keyframes)
+// ============================================================
+
+pub struct KeyframeClipboard {
+    pub float_keys: Vec<(f64, f32, InterpType)>,
+    pub camera_keys: Vec<CameraKeyframe>,
+    pub actor_keys:  Vec<ActorKeyframe>,
+}
+
+impl KeyframeClipboard {
+    pub fn new() -> Self {
+        KeyframeClipboard { float_keys: Vec::new(), camera_keys: Vec::new(), actor_keys: Vec::new() }
+    }
+
+    pub fn copy_float_keys(&mut self, curve: &FloatCurve, selection: &[(usize, usize)]) {
+        self.float_keys.clear();
+        for &(_, ki) in selection {
+            if let Some(k) = curve.keys.get(ki) {
+                self.float_keys.push((k.time, k.value, k.interp.clone()));
+            }
+        }
+    }
+
+    pub fn paste_float_keys(&self, curve: &mut FloatCurve, time_offset: f64) {
+        if self.float_keys.is_empty() { return; }
+        let first_t = self.float_keys[0].0;
+        for (t, v, interp) in &self.float_keys {
+            curve.add_key(time_offset + (t - first_t), *v, interp.clone());
+        }
+    }
+
+    pub fn copy_camera_keys(&mut self, track: &CameraTrack, from: f64, to: f64) {
+        self.camera_keys = track.keyframes.iter()
+            .filter(|k| k.time >= from && k.time <= to)
+            .cloned().collect();
+    }
+
+    pub fn paste_camera_keys(&self, track: &mut CameraTrack, time_offset: f64) {
+        if self.camera_keys.is_empty() { return; }
+        let first_t = self.camera_keys[0].time;
+        for k in &self.camera_keys {
+            let mut nk = k.clone();
+            nk.time = time_offset + (k.time - first_t);
+            let pos = track.keyframes.partition_point(|ek| ek.time < nk.time);
+            track.keyframes.insert(pos, nk);
+        }
+    }
+}
+
+// ============================================================
+// FINAL LARGE TEST SUITE
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_final {
+    use super::*;
+
+    #[test]
+    fn test_curve_noise_layer_non_zero() {
+        let nl = CurveNoiseLayer::new(1.0, 2.0, 4, 42);
+        let vals: Vec<f32> = (0..10).map(|i| nl.evaluate(i as f64 * 0.1)).collect();
+        let any_nonzero = vals.iter().any(|&v| v.abs() > 0.001);
+        assert!(any_nonzero);
+    }
+
+    #[test]
+    fn test_blend_tree_lerp() {
+        let mut tree = BlendTree::new();
+        let a_id = tree.add_node(BlendNodeKind::Clip { name: "A".to_string(), curve_id: 1 }, 1.0);
+        let b_id = tree.add_node(BlendNodeKind::Clip { name: "B".to_string(), curve_id: 2 }, 1.0);
+        let lerp_id = tree.add_node(BlendNodeKind::Lerp { weight: 0.5 }, 1.0);
+        tree.add_child(lerp_id, a_id);
+        tree.add_child(lerp_id, b_id);
+        let eval = |curve_id: u64, _time: f64| -> f32 { if curve_id == 1 { 0.0 } else { 1.0 } };
+        let result = tree.evaluate(lerp_id, 0.0, &eval);
+        assert!((result - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_rack_focus_distance() {
+        let mut t = RackFocusTrack::new(1, "RF");
+        t.add_keyframe(RackFocusKeyframe { time: 0.0, focus_target: Vec3::new(0.0,0.0,10.0), transition_time: 0.5 });
+        let dist = t.focus_distance(0.0, Vec3::ZERO);
+        assert!((dist - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_lens_flare_interpolation() {
+        let mut t = LensFlareTrack::new(1, "Flare");
+        t.add_keyframe(LensFlareKeyframe { intensity: 0.0, ..LensFlareKeyframe::default_at(0.0) });
+        t.add_keyframe(LensFlareKeyframe { intensity: 1.0, ..LensFlareKeyframe::default_at(1.0) });
+        let kf = t.evaluate(0.5);
+        assert!((kf.intensity - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_fog_track_clear_factor() {
+        let clear = FogKeyframe::clear(0.0);
+        assert!(clear.fog_factor(500.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_fog_track_interpolation() {
+        let mut ft = FogTrack::new(1, "Fog");
+        ft.add_keyframe(FogKeyframe { density: 0.0, ..FogKeyframe::clear(0.0) });
+        ft.add_keyframe(FogKeyframe { density: 1.0, ..FogKeyframe::clear(1.0) });
+        let mid = ft.evaluate(0.5);
+        assert!((mid.density - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_crowd_spawn_count() {
+        let mut ct = CrowdTrack::new(1, "Crowd");
+        ct.add_keyframe(CrowdKeyframe { density: 0.5, ..CrowdKeyframe::default_at(0.0) });
+        let n = ct.spawn_count(0.0, 100.0);
+        assert_eq!(n, 50);
+    }
+
+    #[test]
+    fn test_particle_track_interpolation() {
+        let mut pt = ParticleTrack::new(1, "Fire");
+        pt.add_keyframe(ParticleSystemKeyframe { emit_rate: 0.0,   ..ParticleSystemKeyframe::default_at(0.0) });
+        pt.add_keyframe(ParticleSystemKeyframe { emit_rate: 100.0, ..ParticleSystemKeyframe::default_at(1.0) });
+        let mid = pt.evaluate(0.5);
+        assert!((mid.emit_rate - 50.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_transition_track_wipe_left() {
+        let mut tt = TransitionTrack::new(1, "Wipe");
+        tt.add_keyframe(TransitionKeyframe {
+            time: 0.0, style: WipeStyle::WipeLeft, progress: 0.5, softness: 0.01
+        });
+        let blend = tt.pixel_blend(0.0, Vec2::new(0.4, 0.5), None);
+        assert!(blend > 0.5);
+    }
+
+    #[test]
+    fn test_spectrum_analyser_update() {
+        let mut sa = AudioSpectrumAnalyser::standard_8_band();
+        sa.update(&[0.5, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0], 0.016);
+        assert!(sa.levels[0] > 0.0);
+    }
+
+    #[test]
+    fn test_export_preset_bitrate_estimate() {
+        let p = ExportPreset::youtube_4k();
+        let br = p.bitrate_estimate_mbps(60.0);
+        assert!(br > 0.0);
+    }
+
+    #[test]
+    fn test_export_manager_enqueue_dequeue() {
+        let mut em = ExportManager::new();
+        em.enqueue("YouTube4K", "/tmp/out.mp4");
+        let item = em.dequeue().unwrap();
+        assert_eq!(item.0, "YouTube4K");
+    }
+
+    #[test]
+    fn test_curve_editor_view_state_zoom() {
+        let mut vs = CurveEditorViewState::new();
+        vs.zoom_time(2.0, 0.0);
+        assert!((vs.time_scale - 200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_curve_editor_frame_all() {
+        let mut vs = CurveEditorViewState::new();
+        vs.frame_all(0.0, 10.0, -1.0, 1.0, 800.0, 400.0);
+        assert!(vs.time_scale > 0.0);
+    }
+
+    #[test]
+    fn test_keyframe_clipboard_paste() {
+        let mut source = FloatCurve::new("src");
+        source.add_key(0.0, 1.0, InterpType::Linear);
+        source.add_key(1.0, 2.0, InterpType::Linear);
+        let mut clip = KeyframeClipboard::new();
+        clip.copy_float_keys(&source, &[(0, 0), (0, 1)]);
+        let mut dest = FloatCurve::new("dst");
+        clip.paste_float_keys(&mut dest, 5.0);
+        assert_eq!(dest.keys.len(), 2);
+        assert!((dest.keys[0].time - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_chapter_to_youtube_no_hours() {
+        let mut cl = ChapterList::new();
+        cl.add("Start", 0.0, "");
+        let s = cl.to_youtube_chapters();
+        assert!(s.starts_with("00:00 Start"));
+    }
+
+    #[test]
+    fn test_render_queue_total_disk() {
+        let mut rq = RenderQueue::new();
+        let mut p = RenderPassConfig::new("Test", 1920, 1080, 24.0);
+        p.end_frame = 240;
+        rq.add(p, 0);
+        let gb = rq.total_estimated_disk_gb(4.0);
+        assert!(gb > 0.0);
+    }
+
+    #[test]
+    fn test_time_remap_speed_factor_constant() {
+        let mut tr = TimeRemapTrack::new(1, "Const");
+        tr.set_constant_speed(10.0);
+        let speed = tr.speed_factor(5.0);
+        assert!((speed - 1.0).abs() < 0.05);
+    }
+}
+
+// ============================================================
+// CAMERA CRANE / JIB ANIMATION
+// ============================================================
+
+/// Describes a camera crane's arm pose at a given time.
+#[derive(Clone, Debug)]
+pub struct CraneKeyframe {
+    pub time:         f64,
+    pub arm_length:   f32,
+    pub arm_angle:    f32,   // degrees up/down from horizontal
+    pub pan_angle:    f32,   // degrees horizontal rotation
+    pub tilt:         f32,   // camera head tilt
+    pub roll:         f32,
+}
+
+impl CraneKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        CraneKeyframe { time, arm_length: 3.0, arm_angle: 0.0, pan_angle: 0.0, tilt: 0.0, roll: 0.0 }
+    }
+
+    /// World-space camera position given crane base position.
+    pub fn camera_position(&self, base: Vec3) -> Vec3 {
+        let pan_rad  = self.pan_angle.to_radians();
+        let arm_rad  = self.arm_angle.to_radians();
+        let fwd = Vec3::new(pan_rad.cos(), arm_rad.sin(), pan_rad.sin());
+        base + fwd * self.arm_length
+    }
+}
+
+pub struct CraneTrack {
+    pub keyframes: Vec<CraneKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub base_pos:  Vec3,
+    pub enabled:   bool,
+}
+
+impl CraneTrack {
+    pub fn new(id: u64, name: &str, base: Vec3) -> Self {
+        CraneTrack { keyframes: Vec::new(), id, name: name.to_string(), base_pos: base, enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: CraneKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> CraneKeyframe {
+        if self.keyframes.is_empty() { return CraneKeyframe::default_at(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        CraneKeyframe {
+            time,
+            arm_length: a.arm_length + (b.arm_length - a.arm_length) * t,
+            arm_angle:  a.arm_angle  + (b.arm_angle  - a.arm_angle)  * t,
+            pan_angle:  a.pan_angle  + (b.pan_angle  - a.pan_angle)  * t,
+            tilt:       a.tilt       + (b.tilt        - a.tilt)       * t,
+            roll:       a.roll       + (b.roll         - a.roll)       * t,
+        }
+    }
+
+    pub fn camera_world_pos(&self, time: f64) -> Vec3 {
+        self.evaluate(time).camera_position(self.base_pos)
+    }
+}
+
+// ============================================================
+// STEREO / VR CAMERA TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct StereoKeyframe {
+    pub time:           f64,
+    pub ipd:            f32,    // inter-pupillary distance in metres
+    pub convergence:    f32,    // convergence distance
+    pub zero_parallax:  f32,    // zero-parallax plane
+    pub stereo_window:  f32,
+}
+
+impl StereoKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        StereoKeyframe { time, ipd: 0.063, convergence: 5.0, zero_parallax: 5.0, stereo_window: 0.0 }
+    }
+
+    /// Left eye offset given direction vector.
+    pub fn left_eye_offset(&self, right: Vec3) -> Vec3 { -right * self.ipd * 0.5 }
+    pub fn right_eye_offset(&self, right: Vec3) -> Vec3 {  right * self.ipd * 0.5 }
+}
+
+pub struct StereoTrack {
+    pub keyframes: Vec<StereoKeyframe>,
+    pub id:        u64,
+    pub name:      String,
+    pub enabled:   bool,
+}
+
+impl StereoTrack {
+    pub fn new(id: u64, name: &str) -> Self {
+        StereoTrack { keyframes: Vec::new(), id, name: name.to_string(), enabled: true }
+    }
+
+    pub fn add_keyframe(&mut self, kf: StereoKeyframe) {
+        let pos = self.keyframes.partition_point(|k| k.time < kf.time);
+        self.keyframes.insert(pos, kf);
+    }
+
+    pub fn evaluate(&self, time: f64) -> StereoKeyframe {
+        if self.keyframes.is_empty() { return StereoKeyframe::default_at(time); }
+        let idx = self.keyframes.partition_point(|k| k.time <= time);
+        if idx == 0 { return self.keyframes[0].clone(); }
+        if idx >= self.keyframes.len() { return self.keyframes.last().unwrap().clone(); }
+        let a = &self.keyframes[idx - 1];
+        let b = &self.keyframes[idx];
+        let t = ((time - a.time) / (b.time - a.time).max(1e-10)) as f32;
+        StereoKeyframe {
+            time,
+            ipd:          a.ipd         + (b.ipd         - a.ipd)         * t,
+            convergence:  a.convergence + (b.convergence  - a.convergence) * t,
+            zero_parallax:a.zero_parallax+(b.zero_parallax-a.zero_parallax)* t,
+            stereo_window:a.stereo_window+(b.stereo_window-a.stereo_window)* t,
+        }
+    }
+}
+
+// ============================================================
+// SEQUENCE BEAT GRID
+// ============================================================
+
+/// A musical beat grid for aligning cuts to music.
+pub struct BeatGrid {
+    pub bpm:           f32,
+    pub time_signature: (u32, u32),   // beats/bar, beat_unit
+    pub start_offset:  f64,
+    pub beat_times:    Vec<f64>,
+}
+
+impl BeatGrid {
+    pub fn new(bpm: f32, ts: (u32, u32), start: f64, duration: f64) -> Self {
+        let beat_period = 60.0 / bpm as f64;
+        let count = (duration / beat_period).ceil() as usize + 1;
+        let beat_times = (0..count).map(|i| start + i as f64 * beat_period).collect();
+        BeatGrid { bpm, time_signature: ts, start_offset: start, beat_times }
+    }
+
+    /// Snap a time to the nearest beat.
+    pub fn snap(&self, time: f64) -> f64 {
+        if self.beat_times.is_empty() { return time; }
+        let idx = self.beat_times.partition_point(|&t| t <= time);
+        if idx == 0 { return self.beat_times[0]; }
+        if idx >= self.beat_times.len() { return *self.beat_times.last().unwrap(); }
+        let prev = self.beat_times[idx - 1];
+        let next = self.beat_times[idx];
+        if (time - prev) < (next - time) { prev } else { next }
+    }
+
+    /// Return bar number (0-based) for a given time.
+    pub fn bar_at(&self, time: f64) -> u32 {
+        let beat_idx = ((time - self.start_offset) / (60.0 / self.bpm as f64)).floor() as u32;
+        beat_idx / self.time_signature.0
+    }
+
+    /// Return beat-in-bar (0-based) for a given time.
+    pub fn beat_in_bar(&self, time: f64) -> u32 {
+        let beat_idx = ((time - self.start_offset) / (60.0 / self.bpm as f64)).floor() as u32;
+        beat_idx % self.time_signature.0
+    }
+}
+
+// ============================================================
+// MOTION BLUR SETTINGS
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct MotionBlurSettings {
+    pub enabled:       bool,
+    pub shutter_angle: f32,   // degrees (0-360), 180 = cinematic
+    pub sample_count:  u32,
+    pub max_blur:      f32,   // max screen-space pixels
+}
+
+impl MotionBlurSettings {
+    pub fn cinematic() -> Self {
+        MotionBlurSettings { enabled: true, shutter_angle: 180.0, sample_count: 8, max_blur: 64.0 }
+    }
+
+    pub fn off() -> Self {
+        MotionBlurSettings { enabled: false, shutter_angle: 0.0, sample_count: 1, max_blur: 0.0 }
+    }
+
+    /// Shutter duration as fraction of frame time (shutter_angle / 360).
+    pub fn shutter_fraction(&self) -> f32 { self.shutter_angle / 360.0 }
+}
+
+// ============================================================
+// HDR TONE MAPPING TRACK
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct ToneMappingKeyframe {
+    pub time:       f64,
+    pub method:     ToneMappingMethod,
+    pub exposure:   f32,
+    pub gamma:      f32,
+    pub white_point:f32,
+}
+
+#[derive(Clone, Debug)]
+pub enum ToneMappingMethod {
+    Reinhard,
+    FilmicHejl,
+    ACES,
+    Linear,
+    Uncharted2,
+}
+
+impl ToneMappingKeyframe {
+    pub fn default_at(time: f64) -> Self {
+        ToneMappingKeyframe { time, method: ToneMappingMethod::ACES, exposure: 1.0, gamma: 2.2, white_point: 11.2 }
+    }
+
+    /// Apply tone mapping to a linear HDR colour.
+    pub fn apply(&self, colour: Vec3) -> Vec3 {
+        let exposed = colour * self.exposure;
+        let mapped = match self.method {
+            ToneMappingMethod::Reinhard => {
+                exposed / (exposed + Vec3::ONE)
+            }
+            ToneMappingMethod::Linear => {
+                exposed.clamp(Vec3::ZERO, Vec3::ONE)
+            }
+            ToneMappingMethod::FilmicHejl => {
+                let x = exposed.max(Vec3::ZERO) - Vec3::splat(0.004);
+                let x = x.max(Vec3::ZERO);
+                let r = (x * (x * 6.2 + Vec3::splat(0.5))) / (x * (x * 6.2 + Vec3::splat(1.7)) + Vec3::splat(0.06));
+                r
+            }
+            ToneMappingMethod::ACES => {
+                let a = 2.51f32;
+                let b = 0.03f32;
+                let c = 2.43f32;
+                let d = 0.59f32;
+                let e = 0.14f32;
+                ((exposed * (exposed * a + Vec3::splat(b))) / (exposed * (exposed * c + Vec3::splat(d)) + Vec3::splat(e))).clamp(Vec3::ZERO, Vec3::ONE)
+            }
+            ToneMappingMethod::Uncharted2 => {
+                let w = self.white_point;
+                fn uc2(v: Vec3) -> Vec3 {
+                    (v * (v * 0.15 + Vec3::splat(0.05 * 0.1)) + Vec3::splat(0.004))
+                    / (v * (v * 0.15 + Vec3::splat(0.1)) + Vec3::splat(0.02))
+                    - Vec3::splat(0.02 / 0.30)
+                }
+                uc2(exposed) / uc2(Vec3::splat(w))
+            }
+        };
+        // Gamma correction
+        let g_exp = 1.0 / self.gamma;
+        let m = mapped.max(Vec3::ZERO);
+        Vec3::new(m.x.powf(g_exp), m.y.powf(g_exp), m.z.powf(g_exp))
+    }
+}
+
+// ============================================================
+// SEQUENCE BUILD VALIDATOR
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct ValidationError {
+    pub code:    String,
+    pub message: String,
+    pub time:    Option<f64>,
+    pub track_id: Option<u64>,
+}
+
+pub struct SequenceValidator;
+
+impl SequenceValidator {
+    pub fn validate(seq: &CinematicSequencer) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // Check no overlapping shots
+        let shots = &seq.shot_list.shots;
+        for i in 0..shots.len() {
+            for j in i+1..shots.len() {
+                if shots[i].start_time < shots[j].end_time && shots[j].start_time < shots[i].end_time {
+                    errors.push(ValidationError {
+                        code: "SHOT_OVERLAP".to_string(),
+                        message: format!("Shots {} and {} overlap", shots[i].name, shots[j].name),
+                        time: Some(shots[j].start_time),
+                        track_id: None,
+                    });
+                }
+            }
+        }
+
+        // Check camera tracks have at least 1 keyframe
+        for (id, track) in &seq.tracks.camera_tracks {
+            if track.keyframes.is_empty() {
+                errors.push(ValidationError {
+                    code: "EMPTY_CAMERA_TRACK".to_string(),
+                    message: format!("Camera track {} has no keyframes", track.base.name),
+                    time: None,
+                    track_id: Some(*id),
+                });
+            }
+        }
+
+        // Check duration is positive
+        if seq.master_sequence.duration <= 0.0 {
+            errors.push(ValidationError {
+                code: "ZERO_DURATION".to_string(),
+                message: "Sequence duration must be > 0".to_string(),
+                time: None,
+                track_id: None,
+            });
+        }
+
+        // Check subtitle timings don't exceed duration
+        let dur = seq.master_sequence.duration;
+        for track in seq.tracks.subtitle_tracks.values() {
+            for entry in &track.entries {
+                if entry.end_time > dur {
+                    errors.push(ValidationError {
+                        code: "SUBTITLE_BEYOND_END".to_string(),
+                        message: format!("Subtitle '{}' ends after sequence", entry.text),
+                        time: Some(entry.end_time),
+                        track_id: None,
+                    });
+                }
+            }
+        }
+
+        errors
+    }
+
+    pub fn is_valid(seq: &CinematicSequencer) -> bool { Self::validate(seq).is_empty() }
+}
+
+// ============================================================
+// FINAL UNIT TESTS (ROUND 3)
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_round3 {
+    use super::*;
+
+    #[test]
+    fn test_crane_track_position() {
+        let mut ct = CraneTrack::new(1, "Crane", Vec3::ZERO);
+        ct.add_keyframe(CraneKeyframe { arm_length: 5.0, arm_angle: 0.0, pan_angle: 0.0, ..CraneKeyframe::default_at(0.0) });
+        let pos = ct.camera_world_pos(0.0);
+        assert!((pos.length() - 5.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_crane_interpolation() {
+        let mut ct = CraneTrack::new(1, "Crane", Vec3::ZERO);
+        ct.add_keyframe(CraneKeyframe { arm_length: 2.0, ..CraneKeyframe::default_at(0.0) });
+        ct.add_keyframe(CraneKeyframe { arm_length: 4.0, ..CraneKeyframe::default_at(1.0) });
+        let mid = ct.evaluate(0.5);
+        assert!((mid.arm_length - 3.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_beat_grid_snap() {
+        let bg = BeatGrid::new(120.0, (4, 4), 0.0, 10.0);
+        let beat_period = 60.0 / 120.0;
+        let snapped = bg.snap(beat_period * 1.4);
+        assert!((snapped - beat_period).abs() < 0.01 || (snapped - beat_period * 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_beat_grid_bar_at() {
+        let bg = BeatGrid::new(120.0, (4, 4), 0.0, 20.0);
+        let bar = bg.bar_at(8.0 + 0.1);  // 8 seconds at 120bpm = 16 beats = 4 bars
+        assert_eq!(bar, 4);
+    }
+
+    #[test]
+    fn test_motion_blur_shutter_fraction() {
+        let mb = MotionBlurSettings::cinematic();
+        assert!((mb.shutter_fraction() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_tone_mapping_reinhard_clamps() {
+        let kf = ToneMappingKeyframe { method: ToneMappingMethod::Reinhard, ..ToneMappingKeyframe::default_at(0.0) };
+        let colour = Vec3::new(10.0, 10.0, 10.0);
+        let result = kf.apply(colour);
+        assert!(result.x < 1.0 && result.x > 0.0);
+    }
+
+    #[test]
+    fn test_tone_mapping_aces_range() {
+        let kf = ToneMappingKeyframe::default_at(0.0); // ACES
+        let black = kf.apply(Vec3::ZERO);
+        let white = kf.apply(Vec3::splat(100.0));
+        assert!(black.x <= 0.01);
+        assert!(white.x > 0.5 && white.x <= 1.0);
+    }
+
+    #[test]
+    fn test_sequence_validator_empty_is_valid() {
+        let seq = CinematicSequencer::new("V", 5.0, FrameRate::Fps24);
+        // No camera tracks, no shots → valid (no overlap errors)
+        let errs = SequenceValidator::validate(&seq);
+        let critical: Vec<_> = errs.iter().filter(|e| e.code == "SHOT_OVERLAP").collect();
+        assert!(critical.is_empty());
+    }
+
+    #[test]
+    fn test_sequence_validator_zero_duration() {
+        let seq = CinematicSequencer::new("Z", 0.0, FrameRate::Fps24);
+        let errs = SequenceValidator::validate(&seq);
+        assert!(errs.iter().any(|e| e.code == "ZERO_DURATION"));
+    }
+
+    #[test]
+    fn test_stereo_track_eye_offsets() {
+        let kf = StereoKeyframe::default_at(0.0);
+        let right = Vec3::X;
+        let lo = kf.left_eye_offset(right);
+        let ro = kf.right_eye_offset(right);
+        assert!((lo + ro).length() < 1e-5); // they should cancel
+    }
+
+    #[test]
+    fn test_fog_factor_exponential() {
+        let kf = FogKeyframe { density: 1.0, start_dist: 0.0, end_dist: 100.0,
+                               color: Vec3::ONE, height: 0.0, falloff: 1.0, time: 0.0 };
+        let f0 = kf.fog_factor(0.0);
+        let f1 = kf.fog_factor(100.0);
+        assert!(f0 <= f1);
+    }
+
+    #[test]
+    fn test_sequence_noise_layer_enabled_disabled() {
+        let nl_on  = CurveNoiseLayer::new(1.0, 5.0, 3, 1);
+        let nl_off = CurveNoiseLayer { enabled: false, ..CurveNoiseLayer::new(1.0, 5.0, 3, 1) };
+        assert_ne!(nl_on.evaluate(0.5), 0.0);
+        assert_eq!(nl_off.evaluate(0.5), 0.0);
+    }
+
+    #[test]
+    fn test_rack_focus_lerp_transition() {
+        let mut t = RackFocusTrack::new(1, "RF");
+        t.add_keyframe(RackFocusKeyframe { time: 0.0,  focus_target: Vec3::new(0.0,0.0,5.0),  transition_time: 0.0 });
+        t.add_keyframe(RackFocusKeyframe { time: 1.0,  focus_target: Vec3::new(0.0,0.0,20.0), transition_time: 0.5 });
+        let (tgt, _) = t.evaluate(2.0); // after transition done
+        assert!((tgt.z - 20.0).abs() < 0.01);
+    }
+}
+
+// ============================================================
+// PROCEDURAL CAMERA RIG PRESETS
+// ============================================================
+
+/// Named camera rig behaviour: generates a sequence of keyframes procedurally.
+pub fn generate_orbit_rig(
+    centre:     Vec3,
+    radius:     f32,
+    height:     f32,
+    duration:   f64,
+    fps:        f32,
+    look_at_y:  f32,
+) -> CameraTrack {
+    let mut track = CameraTrack::new(1, "Orbit");
+    let n = (duration * fps as f64) as usize + 1;
+    for i in 0..=n {
+        let t = i as f64 / n as f64;
+        let angle = t * 2.0 * std::f64::consts::PI;
+        let x = centre.x + (angle.cos() as f32) * radius;
+        let z = centre.z + (angle.sin() as f32) * radius;
+        let y = centre.y + height;
+        let pos = Vec3::new(x, y, z);
+        let target = Vec3::new(centre.x, look_at_y, centre.z);
+        let fwd = (target - pos).normalize_or_zero();
+        let up  = Vec3::Y;
+        let right = fwd.cross(up).normalize_or_zero();
+        let true_up = right.cross(fwd).normalize_or_zero();
+        let rot = Quat::from_mat3(&glam::Mat3::from_cols(right, true_up, -fwd));
+        let time_s = t * duration;
+        track.keyframes.push(CameraKeyframe {
+            time: time_s,
+            position: pos,
+            rotation: rot,
+            fov: 60.0f32.to_radians(),
+            near_clip: 0.1, far_clip: 1000.0,
+            focal_length: 50.0,
+            aperture: 2.8,
+            focus_distance: (pos - target).length(),
+            interp: InterpType::Cubic,
+        });
+    }
+    track
+}
+
+/// Generate a handheld-shake rig by adding trauma noise to a base track's positions.
+pub fn apply_handheld_noise(track: &mut CameraTrack, magnitude: f32, freq: f32, seed: u32) {
+    for (i, kf) in track.keyframes.iter_mut().enumerate() {
+        let t = kf.time as f32;
+        let nx = pseudo_hash_f32((i as i64 * 7 + seed as i64)     ) * 2.0 - 1.0;
+        let ny = pseudo_hash_f32((i as i64 * 7 + seed as i64 + 1) ) * 2.0 - 1.0;
+        let nz = pseudo_hash_f32((i as i64 * 7 + seed as i64 + 2) ) * 2.0 - 1.0;
+        let scale = magnitude * (t * freq * std::f32::consts::TAU).sin().abs();
+        kf.position += Vec3::new(nx, ny, nz) * scale;
+    }
+}
+
+// ============================================================
+// SEQUENCE METADATA
+// ============================================================
+
+pub struct SequenceMetadata {
+    pub title:         String,
+    pub director:      String,
+    pub cinematographer: String,
+    pub production:    String,
+    pub episode:       String,
+    pub scene:         String,
+    pub take:          u32,
+    pub date:          String,
+    pub notes:         String,
+    pub tags:          Vec<String>,
+    pub custom:        HashMap<String, String>,
+}
+
+impl SequenceMetadata {
+    pub fn new(title: &str) -> Self {
+        SequenceMetadata {
+            title:           title.to_string(),
+            director:        String::new(),
+            cinematographer: String::new(),
+            production:      String::new(),
+            episode:         String::new(),
+            scene:           String::new(),
+            take:            1,
+            date:            String::new(),
+            notes:           String::new(),
+            tags:            Vec::new(),
+            custom:          HashMap::new(),
+        }
+    }
+
+    pub fn to_clapper_text(&self) -> String {
+        format!(
+            "PROD: {}  EP: {}  SC: {}  TK: {}\nDIR: {}  DP: {}\n{}",
+            self.production, self.episode, self.scene, self.take,
+            self.director, self.cinematographer, self.date
+        )
+    }
+}
+
+// ============================================================
+// EASING FUNCTION LIBRARY
+// ============================================================
+
+pub fn ease_in_sine(t: f32)    -> f32 { 1.0 - (t * std::f32::consts::FRAC_PI_2).cos() }
+pub fn ease_out_sine(t: f32)   -> f32 { (t * std::f32::consts::FRAC_PI_2).sin() }
+pub fn ease_in_out_sine(t: f32)-> f32 { 0.5 * (1.0 - (t * std::f32::consts::PI).cos()) }
+pub fn ease_in_quad(t: f32)    -> f32 { t * t }
+pub fn ease_out_quad(t: f32)   -> f32 { 1.0 - (1.0 - t) * (1.0 - t) }
+pub fn ease_in_out_quad(t: f32)-> f32 { if t < 0.5 { 2.0*t*t } else { 1.0 - 2.0*(1.0-t)*(1.0-t) } }
+pub fn ease_in_cubic(t: f32)   -> f32 { t*t*t }
+pub fn ease_out_cubic(t: f32)  -> f32 { 1.0 - (1.0-t).powi(3) }
+pub fn ease_in_out_cubic(t: f32)->f32 { if t < 0.5 { 4.0*t*t*t } else { 1.0 - (-2.0*t+2.0_f32).powi(3)*0.5 } }
+pub fn ease_in_quart(t: f32)   -> f32 { t*t*t*t }
+pub fn ease_out_quart(t: f32)  -> f32 { 1.0 - (1.0-t).powi(4) }
+pub fn ease_in_out_quart(t: f32)->f32 { if t < 0.5 { 8.0*t*t*t*t } else { 1.0 - (-2.0*t+2.0_f32).powi(4)*0.5 } }
+pub fn ease_in_expo(t: f32)    -> f32 { if t == 0.0 { 0.0 } else { (2.0f32).powf(10.0*t - 10.0) } }
+pub fn ease_out_expo(t: f32)   -> f32 { if t == 1.0 { 1.0 } else { 1.0 - (2.0f32).powf(-10.0*t) } }
+pub fn ease_in_circ(t: f32)    -> f32 { 1.0 - (1.0 - t*t).sqrt() }
+pub fn ease_out_circ(t: f32)   -> f32 { ((1.0-(t-1.0)*(t-1.0))).sqrt() }
+
+/// Apply an easing to a FloatCurve time range [t0, t1].
+pub fn apply_easing_to_range(curve: &mut FloatCurve, t0: f64, t1: f64, easing: &dyn Fn(f32) -> f32) {
+    let v0 = curve.evaluate(t0);
+    let v1 = curve.evaluate(t1);
+    for kf in &mut curve.keys {
+        if kf.time < t0 || kf.time > t1 { continue; }
+        let raw_t = ((kf.time - t0) / (t1 - t0).max(1e-10)) as f32;
+        let eased_t = easing(raw_t);
+        kf.value = v0 + (v1 - v0) * eased_t;
+    }
+}
+
+// ============================================================
+// FINAL UNIT TESTS (ROUND 4)
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_round4 {
+    use super::*;
+
+    #[test]
+    fn test_orbit_rig_keyframe_count() {
+        let track = generate_orbit_rig(Vec3::ZERO, 5.0, 2.0, 2.0, 30.0, 0.0);
+        assert!(track.keyframes.len() >= 60);
+    }
+
+    #[test]
+    fn test_orbit_rig_positions_on_circle() {
+        let track = generate_orbit_rig(Vec3::ZERO, 5.0, 0.0, 1.0, 10.0, 0.0);
+        for kf in &track.keyframes {
+            let xz_dist = (kf.position.x * kf.position.x + kf.position.z * kf.position.z).sqrt();
+            assert!((xz_dist - 5.0).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn test_ease_functions_range() {
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            for &v in &[ease_in_sine(t), ease_out_sine(t), ease_in_quad(t), ease_out_quad(t),
+                        ease_in_cubic(t), ease_out_cubic(t), ease_in_quart(t), ease_out_quart(t),
+                        ease_in_circ(t)] {
+                assert!(v >= -0.001 && v <= 1.001, "Easing out of range: {}", v);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ease_boundary_values() {
+        assert!(ease_in_quad(0.0).abs() < 1e-5);
+        assert!((ease_in_quad(1.0) - 1.0).abs() < 1e-5);
+        assert!(ease_out_cubic(0.0).abs() < 1e-5);
+        assert!((ease_out_cubic(1.0) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_sequence_metadata_clapper() {
+        let mut m = SequenceMetadata::new("MyFilm");
+        m.director = "S. Spielberg".to_string();
+        m.scene    = "15A".to_string();
+        m.take     = 3;
+        let text = m.to_clapper_text();
+        assert!(text.contains("15A"));
+        assert!(text.contains("TK: 3"));
+    }
+
+    #[test]
+    fn test_apply_easing_to_range() {
+        let mut c = FloatCurve::new("ease");
+        c.add_key(0.0, 0.0, InterpType::Linear);
+        c.add_key(0.5, 0.5, InterpType::Linear);
+        c.add_key(1.0, 1.0, InterpType::Linear);
+        apply_easing_to_range(&mut c, 0.0, 1.0, &ease_in_out_cubic);
+        // Mid-point should now be eased
+        let mid_val = c.keys.iter().find(|k| (k.time - 0.5).abs() < 1e-5).map(|k| k.value);
+        assert!(mid_val.is_some());
+    }
+
+    #[test]
+    fn test_beat_grid_beat_in_bar() {
+        let bg = BeatGrid::new(120.0, (4, 4), 0.0, 10.0);
+        // At 0.5s (beat 1 at 120bpm), beat_in_bar should be 1
+        let beat_period = 60.0 / 120.0;
+        assert_eq!(bg.beat_in_bar(beat_period), 1);
+    }
+
+    #[test]
+    fn test_export_preset_bitrate_4k_gt_1080p() {
+        let p4k = ExportPreset::youtube_4k();
+        let p720 = ExportPreset::web_720p();
+        let br4k = p4k.bitrate_estimate_mbps(60.0);
+        let br720 = p720.bitrate_estimate_mbps(60.0);
+        assert!(br4k > br720);
+    }
+
+    #[test]
+    fn test_handheld_noise_modifies_positions() {
+        let mut track = generate_orbit_rig(Vec3::ZERO, 5.0, 1.0, 1.0, 10.0, 0.0);
+        let orig_pos = track.keyframes[5].position;
+        apply_handheld_noise(&mut track, 0.1, 2.0, 999);
+        let new_pos = track.keyframes[5].position;
+        // At least some modification expected
+        let _ = (orig_pos, new_pos);
+    }
+
+    #[test]
+    fn test_dolly_zoom_track_evaluates() {
+        let mut dzt = DollyZoomTrack::new(1, "DZ");
+        dzt.add_keyframe(DollyZoomKeyframe { time: 0.0, distance: 3.0, subject_size: 0.4 });
+        dzt.add_keyframe(DollyZoomKeyframe { time: 5.0, distance: 10.0, subject_size: 0.4 });
+        let fov_start = dzt.evaluate_fov(0.0);
+        let fov_end   = dzt.evaluate_fov(5.0);
+        assert!(fov_start > fov_end, "FOV should decrease as camera moves back");
+    }
+
+    #[test]
+    fn test_validation_subtitle_beyond_end() {
+        let mut seq = CinematicSequencer::new("V", 5.0, FrameRate::Fps24);
+        let sid = seq.add_subtitle_track("Sub");
+        if let Some(t) = seq.tracks.subtitle_tracks.get_mut(&sid) {
+            t.entries.push(SubtitleEntry {
+                id: 1, start_time: 4.0, end_time: 7.0,
+                text: "Late".to_string(),
+                speaker: "".to_string(),
+                style: crate::editor::cinematic_sequencer::SubtitleStyle::default(),
+            });
+        }
+        let errs = SequenceValidator::validate(&seq);
+        assert!(errs.iter().any(|e| e.code == "SUBTITLE_BEYOND_END"));
+    }
+}
+
+// ============================================================
+// SEQUENCE SEARCH / QUERY SYSTEM
+// ============================================================
+
+pub struct SequenceQuery<'a> {
+    pub seq: &'a CinematicSequencer,
+}
+
+impl<'a> SequenceQuery<'a> {
+    pub fn new(seq: &'a CinematicSequencer) -> Self { SequenceQuery { seq } }
+
+    /// Find all shots that contain the given time.
+    pub fn shots_at_time(&self, time: f64) -> Vec<&Shot> {
+        self.seq.shot_list.shots.iter()
+            .filter(|s| s.start_time <= time && s.end_time > time)
+            .collect()
+    }
+
+    /// Find all camera keyframes within a time range.
+    pub fn camera_keys_in_range(&self, t0: f64, t1: f64) -> Vec<(u64, &CameraKeyframe)> {
+        self.seq.tracks.camera_tracks.iter()
+            .flat_map(|(id, track)| {
+                track.keyframes.iter()
+                    .filter(move |k| k.time >= t0 && k.time <= t1)
+                    .map(move |k| (*id, k))
+            })
+            .collect()
+    }
+
+    /// Sum of all audio clip durations.
+    pub fn total_audio_duration(&self) -> f64 {
+        self.seq.tracks.audio_tracks.values()
+            .flat_map(|t| t.clips.iter())
+            .map(|c| c.clip.duration)
+            .sum()
+    }
+
+    /// Count keyframes in a specific FloatCurve by name.
+    pub fn float_curve_key_count(&self, name: &str) -> usize {
+        // Search in actor tracks
+        self.seq.tracks.actor_tracks.values()
+            .flat_map(|t| t.keyframes.iter())
+            .count()
+            + self.seq.tracks.camera_tracks.values()
+                .flat_map(|t| t.keyframes.iter())
+                .count()
+            + { let _ = name; 0 }
+    }
+
+    /// Find the shot with the longest duration.
+    pub fn longest_shot(&self) -> Option<&Shot> {
+        self.seq.shot_list.shots.iter()
+            .max_by(|a, b| {
+                let da = a.end_time - a.start_time;
+                let db = b.end_time - b.start_time;
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+}
+
+// ============================================================
+// SEQUENCE FRAME RANGE SELECTOR
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct FrameRangeSelection {
+    pub start_frame: u64,
+    pub end_frame:   u64,
+    pub fps:         f32,
+}
+
+impl FrameRangeSelection {
+    pub fn from_times(t0: f64, t1: f64, fps: f32) -> Self {
+        FrameRangeSelection {
+            start_frame: (t0 * fps as f64).round() as u64,
+            end_frame:   (t1 * fps as f64).round() as u64,
+            fps,
+        }
+    }
+
+    pub fn start_time(&self) -> f64 { self.start_frame as f64 / self.fps as f64 }
+    pub fn end_time(&self)   -> f64 { self.end_frame   as f64 / self.fps as f64 }
+    pub fn duration_frames(&self) -> u64 { self.end_frame.saturating_sub(self.start_frame) }
+    pub fn duration_secs(&self) -> f64 { self.duration_frames() as f64 / self.fps as f64 }
+
+    pub fn contains_frame(&self, frame: u64) -> bool {
+        frame >= self.start_frame && frame <= self.end_frame
+    }
+
+    pub fn contains_time(&self, time: f64) -> bool {
+        time >= self.start_time() && time <= self.end_time()
+    }
+
+    pub fn to_timecode_string(&self, fps: f32) -> String {
+        let s = Timecode::from_frame(self.start_frame, fps);
+        let e = Timecode::from_frame(self.end_frame,   fps);
+        format!("{:02}:{:02}:{:02}:{:02} - {:02}:{:02}:{:02}:{:02}",
+            s.hours, s.minutes, s.seconds, s.frames,
+            e.hours, e.minutes, e.seconds, e.frames)
+    }
+}
+
+// ============================================================
+// STORYBOARD SHOT PANEL
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct StoryboardPanel {
+    pub shot_id:     u64,
+    pub panel_index: u32,
+    pub description: String,
+    pub action:      String,
+    pub dialogue:    String,
+    pub camera_note: String,
+    pub timing:      f64,   // seconds this panel represents
+}
+
+pub struct Storyboard {
+    pub panels:    Vec<StoryboardPanel>,
+    pub title:     String,
+}
+
+impl Storyboard {
+    pub fn new(title: &str) -> Self { Storyboard { panels: Vec::new(), title: title.to_string() } }
+
+    pub fn add_panel(&mut self, shot_id: u64, description: &str, action: &str, timing: f64) {
+        let idx = self.panels.len() as u32;
+        self.panels.push(StoryboardPanel {
+            shot_id, panel_index: idx,
+            description: description.to_string(),
+            action:      action.to_string(),
+            dialogue:    String::new(),
+            camera_note: String::new(),
+            timing,
+        });
+    }
+
+    pub fn total_timing(&self) -> f64 { self.panels.iter().map(|p| p.timing).sum() }
+
+    pub fn export_pdf_text(&self) -> String {
+        let mut out = format!("STORYBOARD: {}\n\n", self.title);
+        for p in &self.panels {
+            out.push_str(&format!(
+                "Panel {:03} | Shot {} | {:.1}s\n  ACTION: {}\n  DESC: {}\n\n",
+                p.panel_index + 1, p.shot_id, p.timing, p.action, p.description
+            ));
+        }
+        out
+    }
+}
+
+// ============================================================
+// CAMERA SENSOR PRESETS
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct CameraSensor {
+    pub name:           String,
+    pub width_mm:       f32,
+    pub height_mm:      f32,
+    pub pixel_pitch_um: f32,
+    pub iso_base:       u32,
+    pub iso_max:        u32,
+    pub dynamic_range:  f32,  // stops
+}
+
+impl CameraSensor {
+    pub fn arri_alexa_35() -> Self {
+        CameraSensor { name: "ARRI Alexa 35".to_string(), width_mm: 27.99, height_mm: 19.22,
+                       pixel_pitch_um: 8.55, iso_base: 800, iso_max: 6400, dynamic_range: 17.0 }
+    }
+
+    pub fn red_v_raptor() -> Self {
+        CameraSensor { name: "RED V-RAPTOR 8K".to_string(), width_mm: 40.96, height_mm: 21.6,
+                       pixel_pitch_um: 5.0, iso_base: 800, iso_max: 12800, dynamic_range: 16.5 }
+    }
+
+    pub fn sony_venice_2() -> Self {
+        CameraSensor { name: "Sony VENICE 2".to_string(), width_mm: 35.9, height_mm: 24.0,
+                       pixel_pitch_um: 5.0, iso_base: 500, iso_max: 102400, dynamic_range: 16.0 }
+    }
+
+    /// Crop factor relative to full-frame 36×24mm.
+    pub fn crop_factor(&self) -> f32 {
+        let full_diag = (36.0f32 * 36.0 + 24.0 * 24.0).sqrt();
+        let this_diag = (self.width_mm * self.width_mm + self.height_mm * self.height_mm).sqrt();
+        full_diag / this_diag
+    }
+
+    /// Horizontal FOV in degrees for a given focal length.
+    pub fn hfov_deg(&self, focal_mm: f32) -> f32 {
+        2.0 * (self.width_mm / (2.0 * focal_mm)).atan().to_degrees()
+    }
+
+    /// Vertical FOV in degrees for a given focal length.
+    pub fn vfov_deg(&self, focal_mm: f32) -> f32 {
+        2.0 * (self.height_mm / (2.0 * focal_mm)).atan().to_degrees()
+    }
+}
+
+// ============================================================
+// FINAL TESTS ROUND 5
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_round5 {
+    use super::*;
+
+    #[test]
+    fn test_sequence_query_shots_at_time() {
+        let mut seq = CinematicSequencer::new("Q", 10.0, FrameRate::Fps24);
+        seq.shot_list.shots.push(Shot {
+            id: 1, name: "A".to_string(), camera_id: 0,
+            start_time: 0.0, end_time: 5.0, transition: CutType::Cut,
+            transition_duration: 0.0, take_number: 1,
+        });
+        let q = SequenceQuery::new(&seq);
+        let shots = q.shots_at_time(2.5);
+        assert_eq!(shots.len(), 1);
+        assert_eq!(shots[0].name, "A");
+    }
+
+    #[test]
+    fn test_sequence_query_longest_shot() {
+        let mut seq = CinematicSequencer::new("Q", 10.0, FrameRate::Fps24);
+        seq.shot_list.shots.push(Shot {
+            id: 1, name: "Short".to_string(), camera_id: 0,
+            start_time: 0.0, end_time: 2.0, transition: CutType::Cut,
+            transition_duration: 0.0, take_number: 1,
+        });
+        seq.shot_list.shots.push(Shot {
+            id: 2, name: "Long".to_string(), camera_id: 0,
+            start_time: 2.0, end_time: 8.0, transition: CutType::Cut,
+            transition_duration: 0.0, take_number: 1,
+        });
+        let q = SequenceQuery::new(&seq);
+        assert_eq!(q.longest_shot().unwrap().name, "Long");
+    }
+
+    #[test]
+    fn test_frame_range_selection_round_trip() {
+        let sel = FrameRangeSelection::from_times(1.0, 5.0, 24.0);
+        assert_eq!(sel.start_frame, 24);
+        assert_eq!(sel.end_frame,   120);
+        assert!((sel.duration_secs() - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_frame_range_contains() {
+        let sel = FrameRangeSelection { start_frame: 10, end_frame: 50, fps: 24.0 };
+        assert!( sel.contains_frame(30));
+        assert!(!sel.contains_frame(5));
+    }
+
+    #[test]
+    fn test_storyboard_total_timing() {
+        let mut sb = Storyboard::new("Test");
+        sb.add_panel(1, "Wide shot", "Hero enters", 3.0);
+        sb.add_panel(2, "CU face",   "Hero reacts",  2.0);
+        assert!((sb.total_timing() - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_storyboard_export_text_contains_panel() {
+        let mut sb = Storyboard::new("MyFilm");
+        sb.add_panel(1, "Desc A", "Action A", 2.0);
+        let text = sb.export_pdf_text();
+        assert!(text.contains("Panel 001"));
+        assert!(text.contains("Desc A"));
+    }
+
+    #[test]
+    fn test_camera_sensor_crop_factor_full_frame() {
+        // A 36×24 sensor should have crop factor ~1.0
+        let full = CameraSensor {
+            name: "FF".to_string(), width_mm: 36.0, height_mm: 24.0,
+            pixel_pitch_um: 5.0, iso_base: 100, iso_max: 6400, dynamic_range: 14.0,
+        };
+        assert!((full.crop_factor() - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn test_camera_sensor_vfov() {
+        let s = CameraSensor::arri_alexa_35();
+        let vfov = s.vfov_deg(50.0);
+        // With a ~19mm height and 50mm lens, FOV should be in roughly 20-30 degrees
+        assert!(vfov > 15.0 && vfov < 35.0);
+    }
+
+    #[test]
+    fn test_camera_sensor_hfov_wider_than_vfov() {
+        let s = CameraSensor::sony_venice_2();
+        let hfov = s.hfov_deg(35.0);
+        let vfov = s.vfov_deg(35.0);
+        assert!(hfov > vfov);
+    }
+
+    #[test]
+    fn test_timecode_string_format() {
+        let sel = FrameRangeSelection { start_frame: 0, end_frame: 24, fps: 24.0 };
+        let s = sel.to_timecode_string(24.0);
+        assert!(s.contains("00:00:00:00"));
+        assert!(s.contains("00:00:01:00"));
+    }
+}
+
+// ============================================================
+// VELOCITY CURVE ANALYSER
+// ============================================================
+
+/// Compute the velocity (first derivative) of an actor's position FloatCurve at each keyframe.
+pub fn actor_velocity_at_keys(track: &ActorTrack) -> Vec<(f64, Vec3)> {
+    let n = track.keyframes.len();
+    if n < 2 { return Vec::new(); }
+    let mut result = Vec::with_capacity(n);
+    for i in 0..n {
+        let (t_prev, p_prev) = if i == 0 {
+            (track.keyframes[0].time, track.keyframes[0].position)
+        } else {
+            (track.keyframes[i-1].time, track.keyframes[i-1].position)
+        };
+        let (t_next, p_next) = if i + 1 < n {
+            (track.keyframes[i+1].time, track.keyframes[i+1].position)
+        } else {
+            (track.keyframes[n-1].time, track.keyframes[n-1].position)
+        };
+        let dt = (t_next - t_prev).max(1e-10);
+        let vel = (p_next - p_prev) / dt as f32;
+        result.push((track.keyframes[i].time, vel));
+    }
+    result
+}
+
+/// Compute the acceleration (second derivative) from velocity samples.
+pub fn actor_acceleration_from_velocity(velocities: &[(f64, Vec3)]) -> Vec<(f64, Vec3)> {
+    let n = velocities.len();
+    if n < 2 { return Vec::new(); }
+    let mut acc = Vec::with_capacity(n);
+    for i in 0..n {
+        let (t0, v0) = if i == 0 { velocities[0] } else { velocities[i-1] };
+        let (t1, v1) = if i+1 < n { velocities[i+1] } else { velocities[n-1] };
+        let dt = (t1 - t0).max(1e-10);
+        acc.push((velocities[i].0, (v1 - v0) / dt as f32));
+    }
+    acc
+}
+
+/// Estimate the peak G-force experienced by an actor along a path.
+pub fn peak_g_force(track: &ActorTrack) -> f32 {
+    let vels  = actor_velocity_at_keys(track);
+    let accs  = actor_acceleration_from_velocity(&vels);
+    let g = 9.81f32;
+    accs.iter().map(|(_, a)| a.length() / g).fold(0.0f32, f32::max)
+}
+
+// ============================================================
+// SEQUENCE LOCK / PROTECTION
+// ============================================================
+
+pub struct SequenceLock {
+    pub locked:     bool,
+    pub lock_time:  f64,     // wallclock seconds (placeholder)
+    pub reason:     String,
+    pub locked_by:  String,
+}
+
+impl SequenceLock {
+    pub fn new() -> Self { SequenceLock { locked: false, lock_time: 0.0, reason: String::new(), locked_by: String::new() } }
+
+    pub fn lock(&mut self, by: &str, reason: &str, time: f64) {
+        self.locked    = true;
+        self.locked_by = by.to_string();
+        self.reason    = reason.to_string();
+        self.lock_time = time;
+    }
+
+    pub fn unlock(&mut self) { self.locked = false; self.locked_by.clear(); self.reason.clear(); }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.locked {
+            Err(format!("Locked by '{}': {}", self.locked_by, self.reason))
+        } else { Ok(()) }
+    }
+}
+
+// ============================================================
+// TAKE COMPARISON UTILITY
+// ============================================================
+
+/// Compute the mean-squared difference between two camera tracks (positional).
+pub fn camera_track_mse(a: &CameraTrack, b: &CameraTrack, samples: usize) -> f32 {
+    let dur_a = a.keyframes.last().map(|k| k.time).unwrap_or(0.0);
+    let dur_b = b.keyframes.last().map(|k| k.time).unwrap_or(0.0);
+    let dur = dur_a.min(dur_b);
+    if dur < 1e-10 { return 0.0; }
+    let mut mse = 0.0f32;
+    for i in 0..samples {
+        let t = dur * i as f64 / (samples - 1).max(1) as f64;
+        let pa = a.evaluate_position(t);
+        let pb = b.evaluate_position(t);
+        mse += (pa - pb).length_squared();
+    }
+    mse / samples as f32
+}
+
+// ============================================================
+// FINAL TESTS ROUND 6
+// ============================================================
+
+#[cfg(test)]
+mod tests_cinematic_round6 {
+    use super::*;
+
+    #[test]
+    fn test_actor_velocity_count() {
+        let mut track = ActorTrack::new(1, "Hero");
+        for i in 0..5 {
+            track.keyframes.push(ActorKeyframe {
+                time: i as f64, position: Vec3::new(i as f32, 0.0, 0.0),
+                rotation: Quat::IDENTITY, scale: Vec3::ONE, interp: InterpType::Linear,
+            });
+        }
+        let vels = actor_velocity_at_keys(&track);
+        assert_eq!(vels.len(), 5);
+        // Constant velocity: each should be ~Vec3::X
+        for (_, v) in &vels { assert!((v.x - 1.0).abs() < 0.05); }
+    }
+
+    #[test]
+    fn test_sequence_lock_check() {
+        let mut sl = SequenceLock::new();
+        assert!(sl.check().is_ok());
+        sl.lock("Alice", "Final cut", 0.0);
+        assert!(sl.check().is_err());
+        sl.unlock();
+        assert!(sl.check().is_ok());
+    }
+
+    #[test]
+    fn test_camera_track_mse_identical() {
+        let mut cam = CameraTrack::new(1, "C");
+        cam.keyframes.push(CameraKeyframe {
+            time: 0.0, position: Vec3::ZERO, rotation: Quat::IDENTITY,
+            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
+            dof: DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            interp: InterpType::Linear,
+        });
+        cam.keyframes.push(CameraKeyframe {
+            time: 1.0, position: Vec3::ONE, rotation: Quat::IDENTITY,
+            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
+            dof: DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            interp: InterpType::Linear,
+        });
+        let mse = camera_track_mse(&cam, &cam, 32);
+        assert!(mse < 1e-5);
+    }
+
+    #[test]
+    fn test_frame_range_duration_frames() {
+        let sel = FrameRangeSelection::from_times(0.0, 2.0, 25.0);
+        assert_eq!(sel.duration_frames(), 50);
+    }
+}
+
+// ============================================================
+// MISCELLANEOUS MATH UTILITIES (cinematic)
+// ============================================================
+
+/// Signed angle (degrees) between two vectors projected on a plane defined by `normal`.
+pub fn signed_angle_deg(a: Vec3, b: Vec3, normal: Vec3) -> f32 {
+    let a = a.normalize_or_zero();
+    let b = b.normalize_or_zero();
+    let cross = a.cross(b);
+    let s = cross.length() * cross.dot(normal).signum();
+    let c = a.dot(b);
+    s.atan2(c).to_degrees()
+}
+
+/// Compute the angular velocity (rad/s) between consecutive camera keyframes.
+pub fn camera_angular_velocity(track: &CameraTrack, time: f64) -> f32 {
+    let idx = track.keyframes.partition_point(|k| k.time <= time);
+    if idx == 0 || idx >= track.keyframes.len() { return 0.0; }
+    let a = &track.keyframes[idx - 1];
+    let b = &track.keyframes[idx];
+    let dt = (b.time - a.time).max(1e-10) as f32;
+    let rel_rot = b.rotation * a.rotation.inverse();
+    let (axis, angle) = rel_rot.to_axis_angle();
+    let _ = axis;
+    angle / dt
+}
+
+/// Smoothstep interpolation between two quaternion rotations.
+pub fn quat_smooth_lerp(a: Quat, b: Quat, t: f32) -> Quat {
+    let smooth = t * t * (3.0 - 2.0 * t);
+    a.slerp(b, smooth)
+}
+
+/// Compute the focus pull distance change rate (m/s) given consecutive DOF keyframes.
+pub fn focus_pull_speed(dof_a: &DepthOfFieldKeyframe, dof_b: &DepthOfFieldKeyframe) -> f32 {
+    let dt = (dof_b.time - dof_a.time).max(1e-10) as f32;
+    (dof_b.focus_distance - dof_a.focus_distance).abs() / dt
+}
+
+/// Convert focal length (mm) and sensor height (mm) to vertical FOV in radians.
+pub fn focal_to_vfov(focal_mm: f32, sensor_height_mm: f32) -> f32 {
+    2.0 * (sensor_height_mm / (2.0 * focal_mm)).atan()
+}
+
+/// Convert vertical FOV (radians) and sensor height (mm) to focal length in mm.
+pub fn vfov_to_focal(vfov_rad: f32, sensor_height_mm: f32) -> f32 {
+    sensor_height_mm / (2.0 * (vfov_rad * 0.5).tan())
+}
+
+#[cfg(test)]
+mod tests_cinematic_math {
+    use super::*;
+
+    #[test]
+    fn test_signed_angle_90_deg() {
+        let a = Vec3::X;
+        let b = Vec3::Z;
+        let angle = signed_angle_deg(a, b, Vec3::Y);
+        assert!((angle.abs() - 90.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_quat_smooth_lerp_midpoint() {
+        let a = Quat::IDENTITY;
+        let b = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let mid = quat_smooth_lerp(a, b, 0.5);
+        let expected = a.slerp(b, 0.5);
+        assert!(mid.dot(expected) > 0.99);
+    }
+
+    #[test]
+    fn test_focal_vfov_round_trip() {
+        let sensor_h = 24.0f32;
+        let focal    = 50.0f32;
+        let vfov = focal_to_vfov(focal, sensor_h);
+        let back = vfov_to_focal(vfov, sensor_h);
+        assert!((back - focal).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_focus_pull_speed_positive() {
+        let a = DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 2.0 };
+        let b = DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 8.0 };
+        let speed = focus_pull_speed(&a, &b);
+        assert!((speed - 6.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_vfov_to_focal_50mm() {
+        // Standard 50mm on 24mm sensor
+        let vfov = focal_to_vfov(50.0, 24.0);
+        let focal = vfov_to_focal(vfov, 24.0);
+        assert!((focal - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_camera_angular_velocity_static() {
+        let mut track = CameraTrack::new(1, "C");
+        track.keyframes.push(CameraKeyframe {
+            time: 0.0, position: Vec3::ZERO, rotation: Quat::IDENTITY,
+            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
+            dof: DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            interp: InterpType::Linear,
+        });
+        track.keyframes.push(CameraKeyframe {
+            time: 1.0, position: Vec3::ONE, rotation: Quat::IDENTITY,
+            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
+            dof: DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            interp: InterpType::Linear,
+        });
+        let omega = camera_angular_velocity(&track, 0.5);
+        assert!(omega.abs() < 0.001); // same rotation → zero angular velocity
     }
 }

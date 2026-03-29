@@ -45,7 +45,7 @@ pub enum LoadPriority {
     Prefetch = 4,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LodLevel {
     Lod0 = 0,
     Lod1 = 1,
@@ -2721,13 +2721,14 @@ impl LevelStreamingEditor {
     pub fn add_level(&mut self, name: String, asset: StreamingLevelAsset, bounds: Aabb) -> u64 {
         let id = self.next_level_id;
         self.next_level_id += 1;
+        let bounds_center = bounds.center();
         let mut level = StreamingLevel::new(id, name, asset, bounds);
         level.load_distance = self.config.default_load_distance;
         level.unload_distance = self.config.default_unload_distance;
         self.dependency_graph.add_level(id);
 
         // Register in world grid
-        let cell = self.world_grid.world_to_cell(bounds.center());
+        let cell = self.world_grid.world_to_cell(bounds_center);
         {
             let c = self.world_grid.get_or_create_cell(cell);
             c.level_ids.push(id);
@@ -3404,21 +3405,35 @@ impl LevelStreamingProfiler {
 
 #[derive(Debug, Clone)]
 pub struct LevelInstance {
-    pub id: u64,
+    pub instance_id: u64,
     pub level_id: u64,
     pub transform: Mat4,
-    pub is_active: bool,
+    pub override_lod: Option<LodLevel>,
+    pub visible: bool,
+    pub cast_shadows: bool,
+    pub custom_culling_distance: Option<f32>,
+    pub tags: HashSet<String>,
+    pub metadata: HashMap<String, String>,
+    pub creation_time: f64,
+    pub last_modified_time: f64,
     pub override_load_distance: Option<f32>,
     pub override_priority: Option<LoadPriority>,
 }
 
 impl LevelInstance {
-    pub fn new(id: u64, level_id: u64, transform: Mat4) -> Self {
+    pub fn new(instance_id: u64, level_id: u64, transform: Mat4) -> Self {
         Self {
-            id,
+            instance_id,
             level_id,
             transform,
-            is_active: true,
+            override_lod: None,
+            visible: true,
+            cast_shadows: true,
+            custom_culling_distance: None,
+            tags: HashSet::new(),
+            metadata: HashMap::new(),
+            creation_time: 0.0,
+            last_modified_time: 0.0,
             override_load_distance: None,
             override_priority: None,
         }
@@ -3426,6 +3441,46 @@ impl LevelInstance {
 
     pub fn world_position(&self) -> Vec3 {
         self.transform.transform_point3(Vec3::ZERO)
+    }
+
+    pub fn position(&self) -> Vec3 {
+        Vec3::new(self.transform.w_axis.x, self.transform.w_axis.y, self.transform.w_axis.z)
+    }
+
+    pub fn rotation_quat(&self) -> Quat {
+        let m = &self.transform;
+        let sx = Vec3::new(m.x_axis.x, m.x_axis.y, m.x_axis.z).length();
+        let sy = Vec3::new(m.y_axis.x, m.y_axis.y, m.y_axis.z).length();
+        let sz = Vec3::new(m.z_axis.x, m.z_axis.y, m.z_axis.z).length();
+        let rm = Mat4::from_cols(
+            m.x_axis / sx,
+            m.y_axis / sy,
+            m.z_axis / sz,
+            Vec4::W,
+        );
+        Quat::from_mat4(&rm)
+    }
+
+    pub fn scale(&self) -> Vec3 {
+        let m = &self.transform;
+        Vec3::new(
+            Vec3::new(m.x_axis.x, m.x_axis.y, m.x_axis.z).length(),
+            Vec3::new(m.y_axis.x, m.y_axis.y, m.y_axis.z).length(),
+            Vec3::new(m.z_axis.x, m.z_axis.y, m.z_axis.z).length(),
+        )
+    }
+
+    pub fn add_tag(&mut self, tag: &str) {
+        self.tags.insert(tag.to_string());
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.contains(tag)
+    }
+
+    pub fn set_metadata(&mut self, key: &str, value: &str) {
+        self.metadata.insert(key.to_string(), value.to_string());
+        self.last_modified_time += 0.001;
     }
 }
 
@@ -3478,12 +3533,12 @@ impl LevelInstanceManager {
                 let wp = inst.world_position();
                 (wp - pos).length() <= radius
             })
-            .map(|inst| inst.id)
+            .map(|inst| inst.instance_id)
             .collect()
     }
 
     pub fn active_instance_count(&self) -> usize {
-        self.instances.values().filter(|i| i.is_active).count()
+        self.instances.values().filter(|i| i.visible).count()
     }
 }
 
@@ -4664,5 +4719,3273 @@ mod tests {
         mgr.update_entry(1, LodLevel::Lod0, 100.0, 10.0);
         mgr.update_entry(2, LodLevel::Lod1, 50.0, 5.0);
         assert!((mgr.total_usage_mb() - 165.0).abs() < 1e-4);
+    }
+}
+
+// ============================================================
+// STREAMING DISTANCE CACHE
+// ============================================================
+
+#[derive(Debug)]
+pub struct StreamingDistanceCache {
+    pub distances: HashMap<u64, f32>,
+    pub last_camera_pos: Vec3,
+    pub dirty_threshold_sq: f32,
+    pub frame_updated: u64,
+}
+
+impl StreamingDistanceCache {
+    pub fn new() -> Self {
+        Self {
+            distances: HashMap::new(),
+            last_camera_pos: Vec3::splat(f32::MAX),
+            dirty_threshold_sq: 1.0,
+            frame_updated: 0,
+        }
+    }
+
+    pub fn update(&mut self, camera_pos: Vec3, levels: &[StreamingLevel], frame: u64) {
+        let moved_sq = (camera_pos - self.last_camera_pos).length_squared();
+        if moved_sq < self.dirty_threshold_sq && frame == self.frame_updated {
+            return;
+        }
+        self.last_camera_pos = camera_pos;
+        self.frame_updated = frame;
+        for level in levels {
+            let dist = level.bounds.distance_to_point(camera_pos);
+            self.distances.insert(level.id, dist);
+        }
+    }
+
+    pub fn get(&self, level_id: u64) -> Option<f32> {
+        self.distances.get(&level_id).copied()
+    }
+
+    pub fn invalidate(&mut self) {
+        self.last_camera_pos = Vec3::splat(f32::MAX);
+    }
+
+    pub fn nearest_level_id(&self) -> Option<u64> {
+        self.distances.iter()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(&id, _)| id)
+    }
+}
+
+// ============================================================
+// DYNAMIC OBJECT STREAMING TRACKER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct DynamicStreamingObject {
+    pub id: u64,
+    pub name: String,
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub bounds_radius: f32,
+    pub current_cell: CellCoord,
+    pub visible: bool,
+    pub importance: f32,
+    pub last_move_time_ms: f64,
+}
+
+impl DynamicStreamingObject {
+    pub fn new(id: u64, name: String, position: Vec3, bounds_radius: f32) -> Self {
+        Self {
+            id,
+            name,
+            position,
+            velocity: Vec3::ZERO,
+            bounds_radius,
+            current_cell: CellCoord::new(0, 0, 0),
+            visible: true,
+            importance: 1.0,
+            last_move_time_ms: 0.0,
+        }
+    }
+
+    pub fn update_position(&mut self, new_pos: Vec3, dt_s: f32, time_ms: f64) {
+        let delta = new_pos - self.position;
+        if dt_s > 1e-6 {
+            self.velocity = delta / dt_s;
+        }
+        self.position = new_pos;
+        if delta.length_squared() > 0.001 {
+            self.last_move_time_ms = time_ms;
+        }
+    }
+
+    pub fn predicted_position(&self, lookahead_s: f32) -> Vec3 {
+        self.position + self.velocity * lookahead_s
+    }
+
+    pub fn bounds_sphere(&self) -> Sphere {
+        Sphere::new(self.position, self.bounds_radius)
+    }
+
+    pub fn speed(&self) -> f32 { self.velocity.length() }
+}
+
+#[derive(Debug)]
+pub struct DynamicObjectTracker {
+    pub objects: HashMap<u64, DynamicStreamingObject>,
+    pub next_id: u64,
+    pub grid: WorldPartitionGrid,
+    pub total_moves: u64,
+}
+
+impl DynamicObjectTracker {
+    pub fn new(cell_size: f32) -> Self {
+        Self {
+            objects: HashMap::new(),
+            next_id: 1,
+            grid: WorldPartitionGrid::new(cell_size, Vec3::ZERO),
+            total_moves: 0,
+        }
+    }
+
+    pub fn spawn(&mut self, name: String, pos: Vec3, radius: f32) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut obj = DynamicStreamingObject::new(id, name, pos, radius);
+        obj.current_cell = self.grid.world_to_cell(pos);
+        self.grid.register_object(id, pos);
+        self.objects.insert(id, obj);
+        id
+    }
+
+    pub fn despawn(&mut self, id: u64) {
+        if let Some(_obj) = self.objects.remove(&id) {
+            self.grid.unregister_object(id);
+        }
+    }
+
+    pub fn update_position(&mut self, id: u64, new_pos: Vec3, dt_s: f32, time_ms: f64) {
+        if let Some(obj) = self.objects.get_mut(&id) {
+            let old_cell = obj.current_cell;
+            obj.update_position(new_pos, dt_s, time_ms);
+            let new_cell = self.grid.world_to_cell(new_pos);
+            obj.current_cell = new_cell;
+            if old_cell != new_cell {
+                self.grid.register_object(id, new_pos);
+                self.total_moves += 1;
+            }
+        }
+    }
+
+    pub fn query_near(&self, pos: Vec3, radius: f32) -> Vec<u64> {
+        self.grid.query_objects_in_radius(pos, radius)
+    }
+
+    pub fn objects_in_cell(&self, coord: CellCoord) -> Vec<u64> {
+        self.grid.cells.get(&coord)
+            .map(|c| c.dynamic_object_ids.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn total_objects(&self) -> usize { self.objects.len() }
+
+    pub fn objects_by_importance(&self) -> Vec<&DynamicStreamingObject> {
+        let mut sorted: Vec<&DynamicStreamingObject> = self.objects.values().collect();
+        sorted.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        sorted
+    }
+
+    pub fn fast_moving_objects(&self, speed_threshold: f32) -> Vec<u64> {
+        self.objects.iter()
+            .filter(|(_, o)| o.speed() > speed_threshold)
+            .map(|(&id, _)| id)
+            .collect()
+    }
+}
+
+// ============================================================
+// LEVEL STREAMING ANALYTICS
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct StreamingAnalyticsSession {
+    pub session_id: u64,
+    pub start_time_ms: f64,
+    pub end_time_ms: f64,
+    pub total_loads: u32,
+    pub total_unloads: u32,
+    pub total_evictions: u32,
+    pub peak_memory_mb: f32,
+    pub total_bandwidth_mb: f32,
+    pub stall_events: u32,
+    pub average_load_latency_ms: f32,
+    pub prefetch_hit_rate: f32,
+    pub unique_levels_loaded: HashSet<u64>,
+}
+
+impl StreamingAnalyticsSession {
+    pub fn new(session_id: u64, start_ms: f64) -> Self {
+        Self {
+            session_id,
+            start_time_ms: start_ms,
+            end_time_ms: start_ms,
+            total_loads: 0,
+            total_unloads: 0,
+            total_evictions: 0,
+            peak_memory_mb: 0.0,
+            total_bandwidth_mb: 0.0,
+            stall_events: 0,
+            average_load_latency_ms: 0.0,
+            prefetch_hit_rate: 0.0,
+            unique_levels_loaded: HashSet::new(),
+        }
+    }
+
+    pub fn record_load(&mut self, level_id: u64, latency_ms: f32, mb: f32) {
+        self.total_loads += 1;
+        self.total_bandwidth_mb += mb;
+        self.unique_levels_loaded.insert(level_id);
+        let n = self.total_loads as f32;
+        self.average_load_latency_ms = self.average_load_latency_ms * (n - 1.0) / n + latency_ms / n;
+    }
+
+    pub fn record_unload(&mut self) { self.total_unloads += 1; }
+    pub fn record_eviction(&mut self) { self.total_evictions += 1; }
+    pub fn record_stall(&mut self) { self.stall_events += 1; }
+
+    pub fn update_peak_memory(&mut self, used_mb: f32) {
+        self.peak_memory_mb = self.peak_memory_mb.max(used_mb);
+    }
+
+    pub fn duration_s(&self) -> f32 {
+        ((self.end_time_ms - self.start_time_ms) / 1000.0) as f32
+    }
+
+    pub fn average_bandwidth_mb_s(&self) -> f32 {
+        let d = self.duration_s();
+        if d > 0.0 { self.total_bandwidth_mb / d } else { 0.0 }
+    }
+
+    pub fn finalize(&mut self, end_ms: f64) {
+        self.end_time_ms = end_ms;
+    }
+
+    pub fn efficiency_score(&self) -> f32 {
+        // Ratio of unique levels loaded vs total loads (high = low redundancy)
+        if self.total_loads == 0 { return 1.0; }
+        self.unique_levels_loaded.len() as f32 / self.total_loads as f32
+    }
+}
+
+// ============================================================
+// REGION OF INTEREST SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct RegionOfInterest {
+    pub id: u64,
+    pub name: String,
+    pub bounds: Aabb,
+    pub boost_priority: LoadPriority,
+    pub boost_load_distance: f32,
+    pub is_active: bool,
+    pub activation_condition: String,
+    pub activation_time_ms: f64,
+}
+
+impl RegionOfInterest {
+    pub fn new(id: u64, name: String, bounds: Aabb, priority: LoadPriority) -> Self {
+        Self {
+            id,
+            name,
+            bounds,
+            boost_priority: priority,
+            boost_load_distance: 200.0,
+            is_active: false,
+            activation_condition: String::new(),
+            activation_time_ms: 0.0,
+        }
+    }
+
+    pub fn activate(&mut self, time_ms: f64) {
+        self.is_active = true;
+        self.activation_time_ms = time_ms;
+    }
+
+    pub fn deactivate(&mut self) { self.is_active = false; }
+
+    pub fn camera_in_range(&self, camera_pos: Vec3, margin: f32) -> bool {
+        self.is_active && self.bounds.expand_by(margin).contains_point(camera_pos)
+    }
+
+    pub fn overlap_area_with(&self, other: &Aabb) -> f32 {
+        let ix = (self.bounds.max.x.min(other.max.x) - self.bounds.min.x.max(other.min.x)).max(0.0);
+        let iy = (self.bounds.max.y.min(other.max.y) - self.bounds.min.y.max(other.min.y)).max(0.0);
+        let iz = (self.bounds.max.z.min(other.max.z) - self.bounds.min.z.max(other.min.z)).max(0.0);
+        ix * iy * iz
+    }
+}
+
+#[derive(Debug)]
+pub struct RegionOfInterestManager {
+    pub regions: HashMap<u64, RegionOfInterest>,
+    pub active_regions: HashSet<u64>,
+    pub next_id: u64,
+}
+
+impl RegionOfInterestManager {
+    pub fn new() -> Self {
+        Self {
+            regions: HashMap::new(),
+            active_regions: HashSet::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn add_region(&mut self, name: String, bounds: Aabb, priority: LoadPriority) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.regions.insert(id, RegionOfInterest::new(id, name, bounds, priority));
+        id
+    }
+
+    pub fn update(&mut self, camera_pos: Vec3, time_ms: f64) {
+        self.active_regions.clear();
+        for (id, region) in &mut self.regions {
+            let in_range = region.bounds.expand_by(region.boost_load_distance).contains_point(camera_pos);
+            if in_range && !region.is_active {
+                region.activate(time_ms);
+            } else if !in_range && region.is_active {
+                region.deactivate();
+            }
+            if region.is_active {
+                self.active_regions.insert(*id);
+            }
+        }
+    }
+
+    pub fn priority_for_level(&self, level: &StreamingLevel) -> LoadPriority {
+        for &id in &self.active_regions {
+            if let Some(region) = self.regions.get(&id) {
+                if region.bounds.intersects(&level.bounds) {
+                    return region.boost_priority;
+                }
+            }
+        }
+        level.priority
+    }
+
+    pub fn any_active_near(&self, pos: Vec3, radius: f32) -> bool {
+        self.active_regions.iter().any(|&id| {
+            self.regions.get(&id).map_or(false, |r| r.bounds.distance_to_point(pos) <= radius)
+        })
+    }
+}
+
+// ============================================================
+// STREAMING CHECKPOINT SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct StreamingCheckpoint {
+    pub id: u64,
+    pub name: String,
+    pub camera_position: Vec3,
+    pub camera_direction: Vec3,
+    pub loaded_level_ids: Vec<u64>,
+    pub memory_used_mb: f32,
+    pub timestamp_ms: f64,
+    pub save_slot: u32,
+}
+
+impl StreamingCheckpoint {
+    pub fn capture(
+        id: u64,
+        name: String,
+        camera_pos: Vec3,
+        camera_dir: Vec3,
+        levels: &[StreamingLevel],
+        memory_mb: f32,
+        time_ms: f64,
+    ) -> Self {
+        let loaded: Vec<u64> = levels.iter()
+            .filter(|l| l.state == StreamingState::Loaded)
+            .map(|l| l.id)
+            .collect();
+        Self {
+            id,
+            name,
+            camera_position: camera_pos,
+            camera_direction: camera_dir,
+            loaded_level_ids: loaded,
+            memory_used_mb: memory_mb,
+            timestamp_ms: time_ms,
+            save_slot: 0,
+        }
+    }
+
+    pub fn warm_up_requests(&self) -> Vec<u64> {
+        self.loaded_level_ids.clone()
+    }
+}
+
+#[derive(Debug)]
+pub struct CheckpointManager {
+    pub checkpoints: HashMap<u64, StreamingCheckpoint>,
+    pub next_id: u64,
+    pub auto_checkpoint_interval_ms: f64,
+    pub last_auto_checkpoint_ms: f64,
+    pub max_checkpoints: usize,
+}
+
+impl CheckpointManager {
+    pub fn new() -> Self {
+        Self {
+            checkpoints: HashMap::new(),
+            next_id: 1,
+            auto_checkpoint_interval_ms: 60_000.0,
+            last_auto_checkpoint_ms: 0.0,
+            max_checkpoints: 16,
+        }
+    }
+
+    pub fn save(
+        &mut self,
+        name: String,
+        camera_pos: Vec3,
+        camera_dir: Vec3,
+        levels: &[StreamingLevel],
+        memory_mb: f32,
+        time_ms: f64,
+    ) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let cp = StreamingCheckpoint::capture(id, name, camera_pos, camera_dir, levels, memory_mb, time_ms);
+        if self.checkpoints.len() >= self.max_checkpoints {
+            if let Some(&oldest_id) = self.checkpoints.keys().next() {
+                self.checkpoints.remove(&oldest_id);
+            }
+        }
+        self.checkpoints.insert(id, cp);
+        id
+    }
+
+    pub fn maybe_auto_checkpoint(
+        &mut self,
+        camera_pos: Vec3,
+        camera_dir: Vec3,
+        levels: &[StreamingLevel],
+        memory_mb: f32,
+        time_ms: f64,
+    ) -> Option<u64> {
+        if time_ms - self.last_auto_checkpoint_ms >= self.auto_checkpoint_interval_ms {
+            self.last_auto_checkpoint_ms = time_ms;
+            Some(self.save("Auto".into(), camera_pos, camera_dir, levels, memory_mb, time_ms))
+        } else { None }
+    }
+
+    pub fn get_latest(&self) -> Option<&StreamingCheckpoint> {
+        self.checkpoints.values()
+            .max_by(|a, b| a.timestamp_ms.partial_cmp(&b.timestamp_ms).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
+    pub fn delete_checkpoint(&mut self, id: u64) -> bool {
+        self.checkpoints.remove(&id).is_some()
+    }
+
+    pub fn total_saved_level_ids(&self) -> HashSet<u64> {
+        let mut set = HashSet::new();
+        for cp in self.checkpoints.values() {
+            for &id in &cp.loaded_level_ids { set.insert(id); }
+        }
+        set
+    }
+}
+
+// ============================================================
+// LOD TRANSITION SMOOTHER
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LodTransition {
+    pub level_id: u64,
+    pub from_lod: LodLevel,
+    pub to_lod: LodLevel,
+    pub progress: f32,
+    pub duration_s: f32,
+    pub blend_distance: f32,
+}
+
+impl LodTransition {
+    pub fn new(level_id: u64, from: LodLevel, to: LodLevel, duration_s: f32) -> Self {
+        Self {
+            level_id,
+            from_lod: from,
+            to_lod: to,
+            progress: 0.0,
+            duration_s,
+            blend_distance: 50.0,
+        }
+    }
+
+    pub fn update_progress(&mut self, dt_s: f32) -> bool {
+        self.progress += dt_s / self.duration_s.max(0.001);
+        self.progress >= 1.0
+    }
+
+    pub fn blend_alpha(&self) -> f32 {
+        let t = self.progress.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t) // smooth step
+    }
+
+    pub fn is_complete(&self) -> bool { self.progress >= 1.0 }
+
+    pub fn reversed(&self) -> Self {
+        LodTransition::new(self.level_id, self.to_lod, self.from_lod, self.duration_s)
+    }
+}
+
+#[derive(Debug)]
+pub struct LodTransitionManager {
+    pub transitions: HashMap<u64, LodTransition>,
+    pub completed: VecDeque<(u64, LodLevel)>,
+}
+
+impl LodTransitionManager {
+    pub fn new() -> Self {
+        Self {
+            transitions: HashMap::new(),
+            completed: VecDeque::with_capacity(64),
+        }
+    }
+
+    pub fn begin_transition(&mut self, level_id: u64, from: LodLevel, to: LodLevel, duration_s: f32) {
+        self.transitions.insert(level_id, LodTransition::new(level_id, from, to, duration_s));
+    }
+
+    pub fn update(&mut self, dt_s: f32) {
+        let mut to_complete: Vec<u64> = Vec::new();
+        for (id, t) in &mut self.transitions {
+            if t.update_progress(dt_s) {
+                to_complete.push(*id);
+            }
+        }
+        for id in to_complete {
+            if let Some(t) = self.transitions.remove(&id) {
+                if self.completed.len() >= 64 { self.completed.pop_front(); }
+                self.completed.push_back((id, t.to_lod));
+            }
+        }
+    }
+
+    pub fn get_blend_alpha(&self, level_id: u64) -> f32 {
+        self.transitions.get(&level_id).map(|t| t.blend_alpha()).unwrap_or(1.0)
+    }
+
+    pub fn is_transitioning(&self, level_id: u64) -> bool {
+        self.transitions.contains_key(&level_id)
+    }
+
+    pub fn active_count(&self) -> usize { self.transitions.len() }
+
+    pub fn cancel_transition(&mut self, level_id: u64) {
+        self.transitions.remove(&level_id);
+    }
+}
+
+// ============================================================
+// STREAMING FLOW OPTIMIZER
+// ============================================================
+
+pub struct StreamingFlowOptimizer;
+
+impl StreamingFlowOptimizer {
+    pub fn reorder_by_geography(requests: &mut Vec<LoadRequest>, levels: &HashMap<u64, StreamingLevel>) {
+        requests.sort_by(|a, b| {
+            let pos_a = levels.get(&a.level_id).map(|l| l.bounds.center()).unwrap_or(Vec3::ZERO);
+            let pos_b = levels.get(&b.level_id).map(|l| l.bounds.center()).unwrap_or(Vec3::ZERO);
+            pos_a.x.partial_cmp(&pos_b.x).unwrap_or(std::cmp::Ordering::Equal)
+                .then(pos_a.z.partial_cmp(&pos_b.z).unwrap_or(std::cmp::Ordering::Equal))
+        });
+    }
+
+    pub fn optimal_batch_size(bandwidth_mb_s: f32, average_level_mb: f32, target_latency_ms: f32) -> usize {
+        if average_level_mb <= 0.0 || bandwidth_mb_s <= 0.0 { return 1; }
+        let load_time_ms = average_level_mb / bandwidth_mb_s * 1000.0;
+        let batch = (target_latency_ms / load_time_ms).ceil() as usize;
+        batch.clamp(1, MAX_CONCURRENT_LOADS)
+    }
+
+    pub fn estimate_memory_after_loads(
+        current_mb: f32,
+        budget_mb: f32,
+        loads: &[u64],
+        levels: &HashMap<u64, StreamingLevel>,
+    ) -> bool {
+        let additional: f32 = loads.iter()
+            .filter_map(|id| levels.get(id))
+            .map(|l| l.memory_estimate_mb())
+            .sum();
+        current_mb + additional <= budget_mb
+    }
+
+    pub fn urgency_score(
+        level: &StreamingLevel,
+        camera_pos: Vec3,
+        camera_vel: Vec3,
+        time_to_load_ms: f32,
+    ) -> f32 {
+        let dist = level.bounds.distance_to_point(camera_pos);
+        let speed = camera_vel.length();
+        if speed < 0.1 { return 1.0 / dist.max(0.1); }
+        let dir = camera_vel / speed;
+        let to_level = (level.bounds.center() - camera_pos).normalize_or_zero();
+        let dot = dir.dot(to_level).clamp(0.0, 1.0);
+        let time_to_reach = dist / speed;
+        let load_time_s = time_to_load_ms / 1000.0;
+        if time_to_reach < load_time_s { 100.0 }
+        else { dot * 10.0 / time_to_reach }
+    }
+
+    pub fn speed_adjusted_radius(base_radius: f32, speed_m_s: f32, load_latency_s: f32) -> f32 {
+        base_radius + speed_m_s * load_latency_s * 1.5
+    }
+
+    pub fn compute_load_stagger_offset(
+        index: usize,
+        total: usize,
+        max_bandwidth_mb_s: f32,
+        level_size_mb: f32,
+    ) -> f32 {
+        if max_bandwidth_mb_s <= 0.0 || total == 0 { return 0.0; }
+        let load_time = level_size_mb / max_bandwidth_mb_s;
+        index as f32 * load_time / total as f32
+    }
+
+    pub fn streaming_load_factor(
+        loading_levels: usize,
+        max_concurrent: usize,
+        queue_depth: usize,
+    ) -> f32 {
+        let in_flight_factor = loading_levels as f32 / max_concurrent.max(1) as f32;
+        let queue_factor = (queue_depth as f32 / 16.0).min(1.0);
+        (in_flight_factor * 0.7 + queue_factor * 0.3).clamp(0.0, 1.0)
+    }
+}
+
+// ============================================================
+// SECTOR WAYPOINT PATHFINDER
+// ============================================================
+
+#[derive(Debug)]
+pub struct SectorWaypointPathfinder {
+    pub adjacency: HashMap<u64, Vec<u64>>,
+}
+
+impl SectorWaypointPathfinder {
+    pub fn new(sector_graph: &SectorGraph) -> Self {
+        let mut adjacency = HashMap::new();
+        for (id, sector) in &sector_graph.sectors {
+            adjacency.insert(*id, sector.adjacent_sectors.clone());
+        }
+        Self { adjacency }
+    }
+
+    pub fn find_sector_path(&self, start: u64, end: u64) -> Option<Vec<u64>> {
+        if start == end { return Some(vec![start]); }
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut queue: VecDeque<(u64, Vec<u64>)> = VecDeque::new();
+        queue.push_back((start, vec![start]));
+        visited.insert(start);
+        while let Some((current, path)) = queue.pop_front() {
+            if let Some(neighbors) = self.adjacency.get(&current) {
+                for &next in neighbors {
+                    if next == end {
+                        let mut full_path = path.clone();
+                        full_path.push(next);
+                        return Some(full_path);
+                    }
+                    if !visited.contains(&next) {
+                        visited.insert(next);
+                        let mut new_path = path.clone();
+                        new_path.push(next);
+                        queue.push_back((next, new_path));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn preload_levels_for_path(&self, path: &[u64], sector_graph: &SectorGraph) -> Vec<u64> {
+        let mut levels = Vec::new();
+        for &sector_id in path {
+            if let Some(sector) = sector_graph.sectors.get(&sector_id) {
+                for &lid in &sector.level_ids {
+                    if !levels.contains(&lid) { levels.push(lid); }
+                }
+            }
+        }
+        levels
+    }
+
+    pub fn estimate_travel_time_s(
+        &self,
+        path: &[u64],
+        sector_graph: &SectorGraph,
+        speed_m_s: f32,
+    ) -> f32 {
+        if path.len() < 2 { return 0.0; }
+        let mut total_dist = 0.0f32;
+        for i in 0..(path.len() - 1) {
+            let a = sector_graph.sectors.get(&path[i]).map(|s| s.bounds.center());
+            let b = sector_graph.sectors.get(&path[i + 1]).map(|s| s.bounds.center());
+            if let (Some(a), Some(b)) = (a, b) {
+                total_dist += (b - a).length();
+            }
+        }
+        if speed_m_s > 0.0 { total_dist / speed_m_s } else { f32::MAX }
+    }
+
+    pub fn reachable_sectors_within_distance(&self, start: u64, max_hops: usize) -> HashSet<u64> {
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut queue: VecDeque<(u64, usize)> = VecDeque::new();
+        queue.push_back((start, 0));
+        visited.insert(start);
+        while let Some((id, depth)) = queue.pop_front() {
+            if depth >= max_hops { continue; }
+            if let Some(neighbors) = self.adjacency.get(&id) {
+                for &next in neighbors {
+                    if visited.insert(next) {
+                        queue.push_back((next, depth + 1));
+                    }
+                }
+            }
+        }
+        visited
+    }
+}
+
+// ============================================================
+// LEVEL ASSET CATALOGUE
+// ============================================================
+
+#[derive(Debug, Clone)]
+pub struct LevelAssetEntry {
+    pub asset: StreamingLevelAsset,
+    pub tags: Vec<String>,
+    pub last_used_frame: u64,
+    pub load_count: u32,
+    pub is_pinned: bool,
+}
+
+impl LevelAssetEntry {
+    pub fn new(asset: StreamingLevelAsset) -> Self {
+        Self {
+            asset,
+            tags: Vec::new(),
+            last_used_frame: 0,
+            load_count: 0,
+            is_pinned: false,
+        }
+    }
+
+    pub fn mark_used(&mut self, frame: u64) {
+        self.last_used_frame = frame;
+        self.load_count += 1;
+    }
+
+    pub fn size_mb(&self) -> f32 {
+        self.asset.size_bytes as f32 / (1024.0 * 1024.0)
+    }
+}
+
+#[derive(Debug)]
+pub struct LevelAssetCatalogue {
+    pub entries: HashMap<u64, LevelAssetEntry>,
+    pub total_size_bytes: u64,
+    pub tags_index: HashMap<String, Vec<u64>>,
+}
+
+impl LevelAssetCatalogue {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            total_size_bytes: 0,
+            tags_index: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, asset: StreamingLevelAsset) {
+        let id = asset.id;
+        let size = asset.size_bytes;
+        self.total_size_bytes += size;
+        self.entries.insert(id, LevelAssetEntry::new(asset));
+    }
+
+    pub fn tag_asset(&mut self, asset_id: u64, tag: &str) {
+        if let Some(entry) = self.entries.get_mut(&asset_id) {
+            if !entry.tags.contains(&tag.to_string()) {
+                entry.tags.push(tag.to_string());
+            }
+        }
+        self.tags_index.entry(tag.to_string()).or_default().push(asset_id);
+    }
+
+    pub fn assets_by_tag(&self, tag: &str) -> Vec<&LevelAssetEntry> {
+        self.tags_index.get(tag)
+            .map(|ids| ids.iter().filter_map(|id| self.entries.get(id)).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn largest_assets(&self, n: usize) -> Vec<&LevelAssetEntry> {
+        let mut sorted: Vec<&LevelAssetEntry> = self.entries.values().collect();
+        sorted.sort_by(|a, b| b.asset.size_bytes.cmp(&a.asset.size_bytes));
+        sorted.into_iter().take(n).collect()
+    }
+
+    pub fn pin_asset(&mut self, id: u64) {
+        if let Some(e) = self.entries.get_mut(&id) { e.is_pinned = true; }
+    }
+
+    pub fn unpin_asset(&mut self, id: u64) {
+        if let Some(e) = self.entries.get_mut(&id) { e.is_pinned = false; }
+    }
+
+    pub fn total_size_mb(&self) -> f32 {
+        self.total_size_bytes as f32 / (1024.0 * 1024.0)
+    }
+
+    pub fn unpinned_assets_sorted_by_lru(&self, current_frame: u64) -> Vec<u64> {
+        let mut sorted: Vec<&LevelAssetEntry> = self.entries.values()
+            .filter(|e| !e.is_pinned)
+            .collect();
+        sorted.sort_by_key(|e| e.last_used_frame);
+        sorted.iter().map(|e| e.asset.id).collect()
+    }
+}
+
+// ============================================================
+// STREAMING WORLD COMPOSER
+// ============================================================
+
+#[derive(Debug)]
+pub struct StreamingWorldComposer {
+    pub world_name: String,
+    pub base_level_ids: Vec<u64>,
+    pub layer_groups: HashMap<String, Vec<u64>>,
+    pub streaming_sets: HashMap<String, Vec<u64>>,
+    pub world_bounds: Aabb,
+    pub camera_start: Vec3,
+    pub camera_start_dir: Vec3,
+    pub description: String,
+}
+
+impl StreamingWorldComposer {
+    pub fn new(world_name: String) -> Self {
+        Self {
+            world_name,
+            base_level_ids: Vec::new(),
+            layer_groups: HashMap::new(),
+            streaming_sets: HashMap::new(),
+            world_bounds: Aabb::new(-Vec3::splat(10000.0), Vec3::splat(10000.0)),
+            camera_start: Vec3::ZERO,
+            camera_start_dir: Vec3::NEG_Z,
+            description: String::new(),
+        }
+    }
+
+    pub fn add_to_layer(&mut self, layer: &str, level_id: u64) {
+        self.layer_groups.entry(layer.to_string()).or_default().push(level_id);
+    }
+
+    pub fn create_streaming_set(&mut self, set_name: &str, level_ids: Vec<u64>) {
+        self.streaming_sets.insert(set_name.to_string(), level_ids);
+    }
+
+    pub fn get_streaming_set(&self, set_name: &str) -> Vec<u64> {
+        self.streaming_sets.get(set_name).cloned().unwrap_or_default()
+    }
+
+    pub fn levels_in_layer(&self, layer: &str) -> Vec<u64> {
+        self.layer_groups.get(layer).cloned().unwrap_or_default()
+    }
+
+    pub fn all_managed_level_ids(&self) -> Vec<u64> {
+        let mut result = self.base_level_ids.clone();
+        for ids in self.layer_groups.values() {
+            for &id in ids {
+                if !result.contains(&id) { result.push(id); }
+            }
+        }
+        result
+    }
+
+    pub fn layer_names(&self) -> Vec<&str> {
+        self.layer_groups.keys().map(|s| s.as_str()).collect()
+    }
+
+    pub fn set_world_bounds_from_levels(&mut self, levels: &[StreamingLevel]) {
+        let managed = self.all_managed_level_ids();
+        let mut merged = Aabb::new(Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for l in levels {
+            if managed.contains(&l.id) {
+                merged = merged.merge(&l.bounds);
+            }
+        }
+        if merged.min.x <= merged.max.x {
+            self.world_bounds = merged;
+        }
+    }
+
+    pub fn count_layers(&self) -> usize { self.layer_groups.len() }
+}
+
+// ============================================================
+// UTILITY FUNCTIONS
+// ============================================================
+
+pub fn compute_cell_priority_scores(
+    cells: &mut HashMap<CellCoord, WorldCell>,
+    camera_pos: Vec3,
+    camera_dir: Vec3,
+    budget_pressure: f32,
+) {
+    for cell in cells.values_mut() {
+        let _ = cell.compute_priority_score(camera_pos, camera_dir);
+        if budget_pressure > 0.8 {
+            cell.load_priority_score *= 1.0 - (budget_pressure - 0.8) * 2.0;
+        }
+    }
+}
+
+pub fn cells_by_priority(cells: &HashMap<CellCoord, WorldCell>, top_n: usize) -> Vec<CellCoord> {
+    let mut sorted: Vec<(&CellCoord, f32)> = cells.iter()
+        .map(|(k, v)| (k, v.load_priority_score))
+        .collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.into_iter().take(top_n).map(|(k, _)| *k).collect()
+}
+
+pub fn estimate_level_load_time_ms(
+    size_bytes: u64,
+    bandwidth_mb_s: f32,
+    decompression_factor: f32,
+) -> f32 {
+    if bandwidth_mb_s <= 0.0 { return f32::MAX; }
+    let mb = size_bytes as f32 / (1024.0 * 1024.0);
+    let io_time_ms = mb / bandwidth_mb_s * 1000.0;
+    let decomp_time_ms = mb * decompression_factor;
+    io_time_ms + decomp_time_ms
+}
+
+pub fn lru_eviction_order(
+    levels: &[StreamingLevel],
+    lru_order: &VecDeque<u64>,
+) -> Vec<u64> {
+    let mut result = Vec::new();
+    for &id in lru_order.iter() {
+        if let Some(l) = levels.iter().find(|l| l.id == id) {
+            if l.state == StreamingState::Loaded && l.persistence != LevelPersistence::AlwaysLoaded {
+                result.push(id);
+            }
+        }
+    }
+    result
+}
+
+pub fn should_stream_via_portal(
+    portal: &Portal,
+    camera_pos: Vec3,
+    max_portal_stream_dist: f32,
+) -> bool {
+    let dist = (portal.center - camera_pos).length();
+    portal.is_open && dist < max_portal_stream_dist
+}
+
+pub fn occlusion_cull_sectors(
+    sectors: &[u64],
+    visible_pvs: &HashSet<u64>,
+) -> (Vec<u64>, Vec<u64>) {
+    let mut visible = Vec::new();
+    let mut culled = Vec::new();
+    for &id in sectors {
+        if visible_pvs.contains(&id) { visible.push(id); } else { culled.push(id); }
+    }
+    (visible, culled)
+}
+
+pub fn compute_portal_screen_coverage(portal: &Portal, camera_pos: Vec3, fov_y: f32) -> f32 {
+    let dist = (portal.center - camera_pos).length().max(0.01);
+    let angular_h = 2.0 * (portal.half_extents.x / dist).atan();
+    let angular_v = 2.0 * (portal.half_extents.y / dist).atan();
+    (angular_h / fov_y).min(1.0) * (angular_v / fov_y).min(1.0)
+}
+
+pub fn compute_streaming_jitter(load_times: &[f32]) -> f32 {
+    if load_times.len() < 2 { return 0.0; }
+    let mean = load_times.iter().sum::<f32>() / load_times.len() as f32;
+    let var = load_times.iter().map(|&t| (t - mean).powi(2)).sum::<f32>() / load_times.len() as f32;
+    var.sqrt()
+}
+
+pub fn priority_weighted_sort(requests: &mut Vec<LoadRequest>) {
+    requests.sort_by(|a, b| b.score().partial_cmp(&a.score()).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+pub fn build_adjacency_matrix(sectors: &HashMap<u64, Sector>) -> HashMap<(u64, u64), f32> {
+    let mut matrix = HashMap::new();
+    for (id, sector) in sectors {
+        for &adj_id in &sector.adjacent_sectors {
+            let a = sector.bounds.center();
+            let b = sectors.get(&adj_id).map(|s| s.bounds.center()).unwrap_or(Vec3::ZERO);
+            matrix.insert((*id, adj_id), (b - a).length());
+        }
+    }
+    matrix
+}
+
+pub fn level_memory_breakdown(levels: &[StreamingLevel]) -> HashMap<LodLevel, f32> {
+    let mut breakdown: HashMap<LodLevel, f32> = HashMap::new();
+    for level in levels {
+        if level.state == StreamingState::Loaded {
+            *breakdown.entry(level.current_lod).or_insert(0.0) += level.memory_footprint_mb;
+        }
+    }
+    breakdown
+}
+
+pub fn sector_coverage_area(sector: &Sector) -> f32 {
+    let s = sector.bounds.size();
+    s.x * s.z
+}
+
+pub fn streaming_priority_from_coverage(coverage_ratio: f32, base_priority: LoadPriority) -> LoadPriority {
+    if coverage_ratio > 0.25 { LoadPriority::Critical }
+    else if coverage_ratio > 0.1 { LoadPriority::High }
+    else if coverage_ratio > 0.01 { LoadPriority::Medium }
+    else { base_priority }
+}
+
+pub fn sector_transition_fade_curve(progress: f32, transition: SectorTransitionType) -> f32 {
+    match transition {
+        SectorTransitionType::Immediate => 1.0,
+        SectorTransitionType::Fade => {
+            if progress < 0.5 { progress * 2.0 } else { (1.0 - progress) * 2.0 }
+        }
+        SectorTransitionType::Portal => { let t = progress; t * t * (3.0 - 2.0 * t) }
+        SectorTransitionType::Teleport => { if progress < 0.1 || progress > 0.9 { 0.0 } else { 1.0 } }
+    }
+}
+
+// CellCoord ordering for dedup
+impl PartialOrd for CellCoord {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for CellCoord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.x.cmp(&other.x).then(self.y.cmp(&other.y)).then(self.z.cmp(&other.z))
+    }
+}
+
+pub fn cells_to_activate(
+    camera_pos: Vec3,
+    camera_vel: Vec3,
+    cell_size: f32,
+    base_radius: f32,
+    lookahead_s: f32,
+    grid_origin: Vec3,
+) -> Vec<CellCoord> {
+    let predicted = camera_pos + camera_vel * lookahead_s;
+    let world_to_coord = |p: Vec3| {
+        let rel = p - grid_origin;
+        CellCoord::new((rel.x / cell_size).floor() as i32, (rel.z / cell_size).floor() as i32, (rel.y / cell_size).floor() as i32)
+    };
+    let center = world_to_coord(camera_pos);
+    let pred = world_to_coord(predicted);
+    let cell_r = (base_radius / cell_size).ceil() as i32 + 1;
+    let mut coords = Vec::new();
+    for &base in &[center, pred] {
+        for dz in -cell_r..=cell_r {
+            for dx in -cell_r..=cell_r {
+                coords.push(CellCoord::new(base.x + dx, base.y, base.z + dz));
+            }
+        }
+    }
+    coords.sort();
+    coords.dedup();
+    coords
+}
+
+// ============================================================
+// FULL STREAMING WORLD MANAGER
+// ============================================================
+
+#[derive(Debug)]
+pub struct StreamingWorldManager {
+    pub editor: FullLevelStreamingEditor,
+    pub dynamic_tracker: DynamicObjectTracker,
+    pub composer: StreamingWorldComposer,
+    pub roi_manager: RegionOfInterestManager,
+    pub checkpoint_mgr: CheckpointManager,
+    pub lod_transitions: LodTransitionManager,
+    pub analytics: StreamingAnalyticsSession,
+    pub asset_catalogue: LevelAssetCatalogue,
+    pub command_history: CommandHistory,
+    pub distance_cache: StreamingDistanceCache,
+    pub settings_panel: LevelStreamingSettingsPanel,
+    pub pathfinder: Option<SectorWaypointPathfinder>,
+    pub flow_state: WorldFlowState,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct WorldFlowState {
+    pub is_loading_world: bool,
+    pub load_progress: f32,
+    pub current_phase: String,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub is_simulation_mode: bool,
+    pub last_checkpoint_id: Option<u64>,
+}
+
+impl StreamingWorldManager {
+    pub fn new(world_name: String) -> Self {
+        let config = LevelStreamingEditorConfig::default();
+        let settings = LevelStreamingSettingsPanel::new(&config);
+        let editor = FullLevelStreamingEditor::new(config);
+        Self {
+            editor,
+            dynamic_tracker: DynamicObjectTracker::new(DEFAULT_CELL_SIZE),
+            composer: StreamingWorldComposer::new(world_name),
+            roi_manager: RegionOfInterestManager::new(),
+            checkpoint_mgr: CheckpointManager::new(),
+            lod_transitions: LodTransitionManager::new(),
+            analytics: StreamingAnalyticsSession::new(1, 0.0),
+            asset_catalogue: LevelAssetCatalogue::new(),
+            command_history: CommandHistory::new(128),
+            distance_cache: StreamingDistanceCache::new(),
+            settings_panel: settings,
+            pathfinder: None,
+            flow_state: WorldFlowState::default(),
+        }
+    }
+
+    pub fn tick(&mut self, dt_s: f32) {
+        let cam_pos = self.editor.core.camera_position;
+        let cam_dir = self.editor.core.camera_direction;
+        let time_ms = self.editor.core.current_time_ms;
+
+        self.editor.tick(dt_s);
+        self.roi_manager.update(cam_pos, time_ms);
+        self.lod_transitions.update(dt_s);
+
+        let levels_vec: Vec<StreamingLevel> = self.editor.core.levels.values().cloned().collect();
+        let memory_mb = self.editor.core.memory_manager.used_mb;
+        self.analytics.update_peak_memory(memory_mb);
+
+        let _ = self.checkpoint_mgr.maybe_auto_checkpoint(cam_pos, cam_dir, &levels_vec, memory_mb, time_ms);
+        self.distance_cache.update(cam_pos, &levels_vec, self.editor.core.current_frame);
+
+        if self.settings_panel.has_unsaved_changes() {
+            self.settings_panel.apply_to_config(&mut self.editor.core.config);
+            self.editor.core.set_memory_budget(self.editor.core.config.memory_budget_mb);
+        }
+
+        let completed: Vec<(u64, LodLevel)> = self.lod_transitions.completed.drain(..).collect();
+        for (level_id, new_lod) in completed {
+            if let Some(level) = self.editor.core.levels.get_mut(&level_id) {
+                level.current_lod = new_lod;
+            }
+        }
+
+        if self.pathfinder.is_none() && !self.editor.core.sector_graph.sectors.is_empty() {
+            self.pathfinder = Some(SectorWaypointPathfinder::new(&self.editor.core.sector_graph));
+        }
+    }
+
+    pub fn do_command(&mut self, cmd: StreamingEditorCommand) {
+        apply_streaming_command(&mut self.editor, &cmd);
+        self.command_history.push(cmd);
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(cmd) = self.command_history.undo() {
+            undo_streaming_command(&mut self.editor, &cmd);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(cmd) = self.command_history.redo() {
+            apply_streaming_command(&mut self.editor, &cmd);
+        }
+    }
+
+    pub fn save_checkpoint(&mut self) -> Option<u64> {
+        let cam_pos = self.editor.core.camera_position;
+        let cam_dir = self.editor.core.camera_direction;
+        let levels_vec: Vec<StreamingLevel> = self.editor.core.levels.values().cloned().collect();
+        let memory_mb = self.editor.core.memory_manager.used_mb;
+        let time_ms = self.editor.core.current_time_ms;
+        let id = self.checkpoint_mgr.save("Manual".into(), cam_pos, cam_dir, &levels_vec, memory_mb, time_ms);
+        self.flow_state.last_checkpoint_id = Some(id);
+        Some(id)
+    }
+
+    pub fn find_path_to_sector(&self, from_sector: u64, to_sector: u64) -> Option<Vec<u64>> {
+        self.pathfinder.as_ref()?.find_sector_path(from_sector, to_sector)
+    }
+
+    pub fn world_report(&self) -> WorldStreamingReport {
+        let core_report = self.editor.core.get_streaming_report();
+        WorldStreamingReport {
+            core: core_report,
+            dynamic_objects: self.dynamic_tracker.total_objects(),
+            active_roi_count: self.roi_manager.active_regions.len(),
+            lod_transitions_active: self.lod_transitions.active_count(),
+            analytics_total_loads: self.analytics.total_loads,
+            analytics_bandwidth_mb_s: self.analytics.average_bandwidth_mb_s(),
+            asset_catalogue_mb: self.asset_catalogue.total_size_mb(),
+            has_unsaved_settings: self.settings_panel.has_unsaved_changes(),
+            can_undo: self.command_history.can_undo(),
+            can_redo: self.command_history.can_redo(),
+        }
+    }
+
+    pub fn spawn_dynamic_object(&mut self, name: String, pos: Vec3, radius: f32) -> u64 {
+        self.dynamic_tracker.spawn(name, pos, radius)
+    }
+
+    pub fn update_dynamic_object(&mut self, id: u64, new_pos: Vec3, dt_s: f32) {
+        let time_ms = self.editor.core.current_time_ms;
+        self.dynamic_tracker.update_position(id, new_pos, dt_s, time_ms);
+    }
+
+    pub fn get_levels_to_stream_for_object(&self, object_id: u64, extra_radius: f32) -> Vec<u64> {
+        if let Some(obj) = self.dynamic_tracker.objects.get(&object_id) {
+            return self.editor.core.query_levels_near(obj.position, obj.bounds_radius + extra_radius);
+        }
+        Vec::new()
+    }
+
+    pub fn set_simulation_speed(&mut self, speed: f32) {
+        self.editor.core.simulator.playback_speed = speed.max(0.0);
+        self.flow_state.is_simulation_mode = speed > 0.0 && self.editor.core.simulator.is_running;
+    }
+
+    pub fn full_reset(&mut self) {
+        self.editor.core.reset_simulation();
+        self.analytics = StreamingAnalyticsSession::new(self.analytics.session_id + 1, self.editor.core.current_time_ms);
+        self.flow_state = WorldFlowState::default();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorldStreamingReport {
+    pub core: StreamingReport,
+    pub dynamic_objects: usize,
+    pub active_roi_count: usize,
+    pub lod_transitions_active: usize,
+    pub analytics_total_loads: u32,
+    pub analytics_bandwidth_mb_s: f32,
+    pub asset_catalogue_mb: f32,
+    pub has_unsaved_settings: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
+// ============================================================
+// EXTENDED TESTS
+// ============================================================
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn test_dynamic_object_tracker() {
+        let mut tracker = DynamicObjectTracker::new(512.0);
+        let id = tracker.spawn("Npc1".into(), Vec3::ZERO, 1.0);
+        assert!(tracker.objects.contains_key(&id));
+        tracker.update_position(id, Vec3::new(600.0, 0.0, 0.0), 1.0, 1000.0);
+        let obj = &tracker.objects[&id];
+        assert_ne!(obj.current_cell, CellCoord::new(0, 0, 0));
+    }
+
+    #[test]
+    fn test_streaming_world_manager_tick() {
+        let mut mgr = StreamingWorldManager::new("TestWorld".into());
+        mgr.editor.core.update_camera(Vec3::new(100.0, 0.0, 100.0), Vec3::NEG_Z, Mat4::IDENTITY);
+        mgr.tick(0.016);
+        let report = mgr.world_report();
+        assert_eq!(report.core.total_levels, 0);
+    }
+
+    #[test]
+    fn test_distance_cache() {
+        let mut cache = StreamingDistanceCache::new();
+        let asset = StreamingLevelAsset { id:1, name:"a".into(), file_path:"".into(),
+            size_bytes:0, uncompressed_size_bytes:0, dependencies:vec![], load_time_estimate_ms:0.0 };
+        let level = StreamingLevel::new(1,"a".into(),asset,Aabb::new(Vec3::new(100.,0.,0.),Vec3::new(200.,10.,10.)));
+        cache.update(Vec3::ZERO, &[level], 1);
+        assert!(cache.get(1).is_some());
+        let dist = cache.get(1).unwrap();
+        assert!((dist - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_lod_transition_smooth_step() {
+        let mut t = LodTransition::new(1, LodLevel::Lod0, LodLevel::Lod1, 1.0);
+        t.progress = 0.5;
+        let alpha = t.blend_alpha();
+        // smooth step at 0.5 = 0.5
+        assert!((alpha - 0.5).abs() < 0.01);
+        t.progress = 0.0;
+        assert!((t.blend_alpha() - 0.0).abs() < 0.01);
+        t.progress = 1.0;
+        assert!((t.blend_alpha() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_analytics_session() {
+        let mut session = StreamingAnalyticsSession::new(1, 0.0);
+        session.record_load(1, 250.0, 50.0);
+        session.record_load(2, 150.0, 30.0);
+        assert_eq!(session.total_loads, 2);
+        assert!((session.average_load_latency_ms - 200.0).abs() < 1.0);
+        assert_eq!(session.unique_levels_loaded.len(), 2);
+    }
+
+    #[test]
+    fn test_region_of_interest() {
+        let mut mgr = RegionOfInterestManager::new();
+        let bounds = Aabb::new(Vec3::ZERO, Vec3::splat(100.0));
+        let id = mgr.add_region("Combat".into(), bounds, LoadPriority::High);
+        mgr.update(Vec3::new(50.0, 0.0, 50.0), 0.0);
+        assert!(mgr.active_regions.contains(&id));
+        mgr.update(Vec3::new(500.0, 0.0, 500.0), 100.0);
+        assert!(!mgr.active_regions.contains(&id));
+    }
+
+    #[test]
+    fn test_checkpoint_save_restore() {
+        let mut mgr = CheckpointManager::new();
+        let id = mgr.save("Test".into(), Vec3::ZERO, Vec3::NEG_Z, &[], 128.0, 1000.0);
+        let cp = mgr.checkpoints.get(&id).unwrap();
+        assert_eq!(cp.memory_used_mb, 128.0);
+        assert_eq!(cp.loaded_level_ids.len(), 0);
+    }
+
+    #[test]
+    fn test_sector_pathfinding() {
+        let mut sg = SectorGraph::new();
+        sg.add_sector(Sector::new(1,"A".into(),Aabb::new(Vec3::ZERO,Vec3::splat(10.))));
+        sg.add_sector(Sector::new(2,"B".into(),Aabb::new(Vec3::splat(10.),Vec3::splat(20.))));
+        sg.add_sector(Sector::new(3,"C".into(),Aabb::new(Vec3::splat(20.),Vec3::splat(30.))));
+        sg.add_portal(Portal::new(1,1,2,Vec3::new(10.,5.,5.),Vec3::X,Vec2::splat(2.)));
+        sg.add_portal(Portal::new(2,2,3,Vec3::new(20.,5.,5.),Vec3::X,Vec2::splat(2.)));
+        let pf = SectorWaypointPathfinder::new(&sg);
+        let path = pf.find_sector_path(1,3).unwrap();
+        assert_eq!(path, vec![1,2,3]);
+    }
+
+    #[test]
+    fn test_asset_catalogue() {
+        let mut cat = LevelAssetCatalogue::new();
+        let asset = StreamingLevelAsset { id:1, name:"Forest".into(), file_path:"".into(),
+            size_bytes:1024*1024, uncompressed_size_bytes:0, dependencies:vec![], load_time_estimate_ms:200.0 };
+        cat.register(asset);
+        cat.tag_asset(1,"outdoor");
+        assert_eq!(cat.assets_by_tag("outdoor").len(), 1);
+        assert!((cat.total_size_mb() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cells_to_activate_velocity() {
+        let coords = cells_to_activate(
+            Vec3::ZERO, Vec3::new(20.0,0.0,0.0), 512.0, 256.0, 2.0, Vec3::ZERO
+        );
+        assert!(!coords.is_empty());
+        // All coords should be unique (dedup)
+        let mut sorted = coords.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), coords.len());
+    }
+
+    #[test]
+    fn test_streaming_flow_optimizer_batch_size() {
+        let batch = StreamingFlowOptimizer::optimal_batch_size(100.0, 25.0, 500.0);
+        assert!(batch >= 1 && batch <= MAX_CONCURRENT_LOADS);
+    }
+
+    #[test]
+    fn test_world_composer_layers() {
+        let mut composer = StreamingWorldComposer::new("World".into());
+        composer.add_to_layer("terrain", 1);
+        composer.add_to_layer("terrain", 2);
+        composer.add_to_layer("buildings", 3);
+        assert_eq!(composer.levels_in_layer("terrain").len(), 2);
+        assert_eq!(composer.all_managed_level_ids().len(), 3);
+        assert_eq!(composer.count_layers(), 2);
+    }
+
+    #[test]
+    fn test_lod_analysis() {
+        let asset = StreamingLevelAsset { id:1, name:"T".into(), file_path:"".into(),
+            size_bytes:10*1024*1024, uncompressed_size_bytes:0, dependencies:vec![], load_time_estimate_ms:0.0 };
+        let mut level = StreamingLevel::new(1,"T".into(),asset,Aabb::new(Vec3::ZERO,Vec3::splat(100.)));
+        level.distance_to_camera = 50.0;
+        level.current_lod = LodLevel::Lod0;
+        let mgr = CombinedBudgetManager::new(1000.0);
+        let analysis = analyze_lod_distribution(&[level.clone()], &mgr);
+        assert_eq!(analysis.len(), 1);
+        assert_eq!(analysis[0].current_lod, LodLevel::Lod0);
+    }
+
+    #[test]
+    fn test_streaming_importance() {
+        let asset = StreamingLevelAsset { id:1, name:"T".into(), file_path:"".into(),
+            size_bytes:0, uncompressed_size_bytes:0, dependencies:vec![], load_time_estimate_ms:0.0 };
+        let level = StreamingLevel::new(1,"T".into(),asset,Aabb::new(Vec3::new(50.,0.,0.),Vec3::new(150.,50.,50.)));
+        let importance = compute_streaming_importance(
+            &level, Vec3::ZERO, Vec3::X, 5.0
+        );
+        assert!(importance.is_finite() && importance > 0.0);
+    }
+
+    #[test]
+    fn test_hysteresis() {
+        assert!(hysteresis_check_load(80.0, 100.0, 10.0));
+        assert!(!hysteresis_check_load(95.0, 100.0, 10.0));
+        assert!(hysteresis_check_unload(125.0, 110.0, 10.0));
+        assert!(!hysteresis_check_unload(115.0, 110.0, 10.0));
+    }
+}
+
+// ============================================================
+// SECTION: Streaming Tile Map (2D overhead layout)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct StreamingTile {
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub tile_size_world: f32,
+    pub level_ids: Vec<u64>,
+    pub terrain_height_min: f32,
+    pub terrain_height_max: f32,
+    pub is_water: bool,
+    pub biome_id: u32,
+    pub detail_density: f32,
+    pub last_visited_time: f64,
+}
+
+impl StreamingTile {
+    pub fn new(tile_x: i32, tile_y: i32, tile_size: f32) -> Self {
+        Self {
+            tile_x,
+            tile_y,
+            tile_size_world: tile_size,
+            level_ids: Vec::new(),
+            terrain_height_min: 0.0,
+            terrain_height_max: 100.0,
+            is_water: false,
+            biome_id: 0,
+            detail_density: 1.0,
+            last_visited_time: 0.0,
+        }
+    }
+
+    pub fn world_center(&self) -> Vec3 {
+        Vec3::new(
+            (self.tile_x as f32 + 0.5) * self.tile_size_world,
+            (self.terrain_height_min + self.terrain_height_max) * 0.5,
+            (self.tile_y as f32 + 0.5) * self.tile_size_world,
+        )
+    }
+
+    pub fn world_bounds(&self) -> Aabb {
+        let min = Vec3::new(
+            self.tile_x as f32 * self.tile_size_world,
+            self.terrain_height_min,
+            self.tile_y as f32 * self.tile_size_world,
+        );
+        let max = Vec3::new(
+            (self.tile_x + 1) as f32 * self.tile_size_world,
+            self.terrain_height_max,
+            (self.tile_y + 1) as f32 * self.tile_size_world,
+        );
+        Aabb::new(min, max)
+    }
+
+    pub fn distance_to_point(&self, point: Vec3) -> f32 {
+        let center = self.world_center();
+        let half = self.tile_size_world * 0.5;
+        let dx = (center.x - point.x).abs() - half;
+        let dz = (center.z - point.z).abs() - half;
+        (dx.max(0.0) * dx.max(0.0) + dz.max(0.0) * dz.max(0.0)).sqrt()
+    }
+
+    pub fn contains_point_2d(&self, x: f32, z: f32) -> bool {
+        let min_x = self.tile_x as f32 * self.tile_size_world;
+        let min_z = self.tile_y as f32 * self.tile_size_world;
+        let max_x = min_x + self.tile_size_world;
+        let max_z = min_z + self.tile_size_world;
+        x >= min_x && x < max_x && z >= min_z && z < max_z
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingTileMap {
+    pub tile_size_world: f32,
+    pub tiles: HashMap<(i32, i32), StreamingTile>,
+    pub world_origin: Vec3,
+    pub max_tiles: usize,
+}
+
+impl StreamingTileMap {
+    pub fn new(tile_size_world: f32) -> Self {
+        Self {
+            tile_size_world,
+            tiles: HashMap::new(),
+            world_origin: Vec3::ZERO,
+            max_tiles: 1024,
+        }
+    }
+
+    pub fn world_to_tile(&self, world_pos: Vec3) -> (i32, i32) {
+        let tx = ((world_pos.x - self.world_origin.x) / self.tile_size_world).floor() as i32;
+        let tz = ((world_pos.z - self.world_origin.z) / self.tile_size_world).floor() as i32;
+        (tx, tz)
+    }
+
+    pub fn get_or_create(&mut self, tile_x: i32, tile_y: i32) -> &mut StreamingTile {
+        self.tiles.entry((tile_x, tile_y)).or_insert_with(|| {
+            StreamingTile::new(tile_x, tile_y, self.tile_size_world)
+        })
+    }
+
+    pub fn get(&self, tile_x: i32, tile_y: i32) -> Option<&StreamingTile> {
+        self.tiles.get(&(tile_x, tile_y))
+    }
+
+    pub fn tiles_in_radius(&self, center: Vec3, radius: f32) -> Vec<(i32, i32)> {
+        let tile_radius = (radius / self.tile_size_world).ceil() as i32 + 1;
+        let (cx, cz) = self.world_to_tile(center);
+        let mut result = Vec::new();
+        for tx in (cx - tile_radius)..=(cx + tile_radius) {
+            for tz in (cz - tile_radius)..=(cz + tile_radius) {
+                if let Some(tile) = self.tiles.get(&(tx, tz)) {
+                    if tile.distance_to_point(center) <= radius {
+                        result.push((tx, tz));
+                    }
+                } else {
+                    // Check distance from center to potential tile
+                    let half = self.tile_size_world * 0.5;
+                    let tc_x = (tx as f32 + 0.5) * self.tile_size_world;
+                    let tc_z = (tz as f32 + 0.5) * self.tile_size_world;
+                    let dx = (center.x - tc_x).abs() - half;
+                    let dz = (center.z - tc_z).abs() - half;
+                    let dist = (dx.max(0.0).powi(2) + dz.max(0.0).powi(2)).sqrt();
+                    if dist <= radius {
+                        result.push((tx, tz));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn tiles_in_frustum(&self, frustum: &Frustum) -> Vec<(i32, i32)> {
+        self.tiles.iter()
+            .filter(|(_, tile)| frustum.test_aabb(&tile.world_bounds()))
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
+    pub fn add_level_to_tile(&mut self, tile_x: i32, tile_y: i32, level_id: u64) {
+        let tile = self.get_or_create(tile_x, tile_y);
+        if !tile.level_ids.contains(&level_id) {
+            tile.level_ids.push(level_id);
+        }
+    }
+
+    pub fn remove_level_from_all(&mut self, level_id: u64) {
+        for tile in self.tiles.values_mut() {
+            tile.level_ids.retain(|&id| id != level_id);
+        }
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    pub fn stale_tiles(&self, current_time: f64, max_age_seconds: f64) -> Vec<(i32, i32)> {
+        self.tiles.iter()
+            .filter(|(_, t)| current_time - t.last_visited_time > max_age_seconds)
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
+    pub fn evict_stale(&mut self, current_time: f64, max_age_seconds: f64) -> usize {
+        let stale = self.stale_tiles(current_time, max_age_seconds);
+        let count = stale.len();
+        for key in stale {
+            self.tiles.remove(&key);
+        }
+        count
+    }
+}
+
+// ============================================================
+// SECTION: Level Instancer (manages multiple placed instances)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct LevelInstancer {
+    pub instances: HashMap<u64, LevelInstance>,
+    pub next_instance_id: u64,
+    pub spatial_index: HashMap<(i32, i32), Vec<u64>>, // tile -> instance ids
+    pub tile_size: f32,
+}
+
+impl LevelInstancer {
+    pub fn new(tile_size: f32) -> Self {
+        Self {
+            instances: HashMap::new(),
+            next_instance_id: 1,
+            spatial_index: HashMap::new(),
+            tile_size,
+        }
+    }
+
+    pub fn place_instance(&mut self, level_id: u64, transform: Mat4) -> u64 {
+        let id = self.next_instance_id;
+        self.next_instance_id += 1;
+        let instance = LevelInstance::new(id, level_id, transform);
+        let tile_key = self.world_to_tile(instance.position());
+        self.spatial_index.entry(tile_key).or_insert_with(Vec::new).push(id);
+        self.instances.insert(id, instance);
+        id
+    }
+
+    fn world_to_tile(&self, pos: Vec3) -> (i32, i32) {
+        ((pos.x / self.tile_size).floor() as i32,
+         (pos.z / self.tile_size).floor() as i32)
+    }
+
+    pub fn remove_instance(&mut self, id: u64) -> Option<LevelInstance> {
+        if let Some(inst) = self.instances.remove(&id) {
+            let tile_key = self.world_to_tile(inst.position());
+            if let Some(list) = self.spatial_index.get_mut(&tile_key) {
+                list.retain(|&i| i != id);
+            }
+            Some(inst)
+        } else {
+            None
+        }
+    }
+
+    pub fn instances_in_radius(&self, center: Vec3, radius: f32) -> Vec<u64> {
+        let tile_r = (radius / self.tile_size).ceil() as i32 + 1;
+        let (cx, cz) = self.world_to_tile(center);
+        let mut result = Vec::new();
+        for tx in (cx - tile_r)..=(cx + tile_r) {
+            for tz in (cz - tile_r)..=(cz + tile_r) {
+                if let Some(ids) = self.spatial_index.get(&(tx, tz)) {
+                    for &id in ids {
+                        if let Some(inst) = self.instances.get(&id) {
+                            let dist = (inst.position() - center).length();
+                            if dist <= radius {
+                                result.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn instances_with_tag(&self, tag: &str) -> Vec<u64> {
+        self.instances.values()
+            .filter(|i| i.has_tag(tag))
+            .map(|i| i.instance_id)
+            .collect()
+    }
+
+    pub fn instances_for_level(&self, level_id: u64) -> Vec<u64> {
+        self.instances.values()
+            .filter(|i| i.level_id == level_id)
+            .map(|i| i.instance_id)
+            .collect()
+    }
+
+    pub fn update_transform(&mut self, id: u64, new_transform: Mat4) {
+        let old_pos = self.instances.get(&id).map(|i| i.position());
+        if let Some(inst) = self.instances.get_mut(&id) {
+            inst.transform = new_transform;
+            inst.last_modified_time += 0.001;
+        }
+        if let Some(old_pos) = old_pos {
+            let old_tile = self.world_to_tile(old_pos);
+            let new_pos = self.instances.get(&id).map(|i| i.position()).unwrap_or(old_pos);
+            let new_tile = self.world_to_tile(new_pos);
+            if old_tile != new_tile {
+                if let Some(list) = self.spatial_index.get_mut(&old_tile) {
+                    list.retain(|&i| i != id);
+                }
+                self.spatial_index.entry(new_tile).or_insert_with(Vec::new).push(id);
+            }
+        }
+    }
+
+    pub fn count_by_level(&self) -> HashMap<u64, usize> {
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for inst in self.instances.values() {
+            *counts.entry(inst.level_id).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    pub fn visible_instances_in_frustum(&self, frustum: &Frustum, level_bounds: &HashMap<u64, Aabb>) -> Vec<u64> {
+        self.instances.values()
+            .filter(|inst| {
+                if !inst.visible { return false; }
+                if let Some(bounds) = level_bounds.get(&inst.level_id) {
+                    // Transform bounds by instance transform (approximate AABB)
+                    let pos = inst.position();
+                    let translated = Aabb::new(bounds.min + pos, bounds.max + pos);
+                    frustum.test_aabb(&translated)
+                } else {
+                    true
+                }
+            })
+            .map(|i| i.instance_id)
+            .collect()
+    }
+}
+
+// ============================================================
+// SECTION: Terrain Patch LOD System
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct TerrainPatch {
+    pub patch_id: u32,
+    pub grid_x: i32,
+    pub grid_z: i32,
+    pub patch_size: f32,
+    pub current_lod: u32,
+    pub max_lod: u32,
+    pub height_data: Vec<f32>, // flattened height grid
+    pub height_grid_res: u32,  // resolution per side
+    pub vertex_count: u32,
+    pub is_stitched: bool,
+    pub neighbor_lods: [u32; 4], // N, S, E, W
+    pub morph_fraction: f32,     // for smooth LOD transitions
+}
+
+impl TerrainPatch {
+    pub fn new(patch_id: u32, grid_x: i32, grid_z: i32, patch_size: f32, max_lod: u32) -> Self {
+        let base_res = 64u32;
+        let res = base_res;
+        let height_data = vec![0.0f32; (res * res) as usize];
+        Self {
+            patch_id,
+            grid_x,
+            grid_z,
+            patch_size,
+            current_lod: 0,
+            max_lod,
+            height_data,
+            height_grid_res: res,
+            vertex_count: res * res,
+            is_stitched: false,
+            neighbor_lods: [0; 4],
+            morph_fraction: 0.0,
+        }
+    }
+
+    pub fn world_position(&self) -> Vec3 {
+        Vec3::new(
+            self.grid_x as f32 * self.patch_size,
+            0.0,
+            self.grid_z as f32 * self.patch_size,
+        )
+    }
+
+    pub fn world_bounds(&self) -> Aabb {
+        let min_x = self.grid_x as f32 * self.patch_size;
+        let min_z = self.grid_z as f32 * self.patch_size;
+        let h_min = self.height_data.iter().copied().fold(f32::INFINITY, f32::min);
+        let h_max = self.height_data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        Aabb::new(
+            Vec3::new(min_x, h_min, min_z),
+            Vec3::new(min_x + self.patch_size, h_max, min_z + self.patch_size),
+        )
+    }
+
+    pub fn sample_height_bilinear(&self, local_x: f32, local_z: f32) -> f32 {
+        // Sample height using bilinear interpolation
+        let res = self.height_grid_res as f32;
+        let u = (local_x / self.patch_size) * (res - 1.0);
+        let v = (local_z / self.patch_size) * (res - 1.0);
+        let x0 = u.floor() as usize;
+        let z0 = v.floor() as usize;
+        let x1 = (x0 + 1).min(self.height_grid_res as usize - 1);
+        let z1 = (z0 + 1).min(self.height_grid_res as usize - 1);
+        let fx = u - u.floor();
+        let fz = v - v.floor();
+        let res_u = self.height_grid_res as usize;
+        let h00 = self.height_data[z0 * res_u + x0];
+        let h10 = self.height_data[z0 * res_u + x1];
+        let h01 = self.height_data[z1 * res_u + x0];
+        let h11 = self.height_data[z1 * res_u + x1];
+        h00 * (1.0 - fx) * (1.0 - fz)
+            + h10 * fx * (1.0 - fz)
+            + h01 * (1.0 - fx) * fz
+            + h11 * fx * fz
+    }
+
+    pub fn compute_normal_at(&self, local_x: f32, local_z: f32) -> Vec3 {
+        let step = self.patch_size / self.height_grid_res as f32;
+        let hx_plus  = self.sample_height_bilinear((local_x + step).min(self.patch_size), local_z);
+        let hx_minus = self.sample_height_bilinear((local_x - step).max(0.0), local_z);
+        let hz_plus  = self.sample_height_bilinear(local_x, (local_z + step).min(self.patch_size));
+        let hz_minus = self.sample_height_bilinear(local_x, (local_z - step).max(0.0));
+        let grad_x = (hx_plus - hx_minus) / (2.0 * step);
+        let grad_z = (hz_plus - hz_minus) / (2.0 * step);
+        Vec3::new(-grad_x, 1.0, -grad_z).normalize()
+    }
+
+    pub fn desired_lod_for_distance(&self, distance: f32) -> u32 {
+        let thresholds = [50.0, 150.0, 400.0, 900.0, 2000.0];
+        for (lod, &threshold) in thresholds.iter().enumerate() {
+            if distance < threshold {
+                return lod as u32;
+            }
+        }
+        self.max_lod
+    }
+
+    pub fn update_lod(&mut self, camera_pos: Vec3) {
+        let center = self.world_position() + Vec3::splat(self.patch_size * 0.5);
+        let dist = (camera_pos - center).length();
+        let desired = self.desired_lod_for_distance(dist);
+        if desired != self.current_lod {
+            self.morph_fraction = 0.0;
+        } else {
+            self.morph_fraction = (self.morph_fraction + 0.05).min(1.0);
+        }
+        self.current_lod = desired.min(self.max_lod);
+        // Recompute vertex count for this LOD
+        let step = 1u32 << self.current_lod;
+        let reduced_res = (self.height_grid_res / step).max(2);
+        self.vertex_count = reduced_res * reduced_res;
+    }
+
+    pub fn needs_stitching(&self) -> bool {
+        self.neighbor_lods.iter().any(|&n| n != self.current_lod)
+    }
+
+    pub fn stitch_skirt_vertices(&self) -> Vec<Vec3> {
+        // Generate skirt vertices around the patch edge to hide T-junctions
+        let mut skirt = Vec::new();
+        let step = 1u32 << self.current_lod;
+        let res = self.height_grid_res / step;
+        let cell_size = self.patch_size / res as f32;
+        let base = self.world_position();
+        // Bottom edge (z=0)
+        for i in 0..=res {
+            let x = base.x + i as f32 * cell_size;
+            let h = self.sample_height_bilinear(i as f32 * cell_size, 0.0);
+            skirt.push(Vec3::new(x, h, base.z));
+            skirt.push(Vec3::new(x, h - 1.0, base.z)); // skirt hanging down
+        }
+        skirt
+    }
+}
+
+// ============================================================
+// SECTION: Terrain Manager
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct TerrainManager {
+    pub patches: HashMap<(i32, i32), TerrainPatch>,
+    pub patch_size: f32,
+    pub max_lod: u32,
+    pub streaming_radius: f32,
+    pub total_vertices_rendered: u32,
+    pub total_patches_visible: u32,
+}
+
+impl TerrainManager {
+    pub fn new(patch_size: f32, max_lod: u32, streaming_radius: f32) -> Self {
+        Self {
+            patches: HashMap::new(),
+            patch_size,
+            max_lod,
+            streaming_radius,
+            total_vertices_rendered: 0,
+            total_patches_visible: 0,
+        }
+    }
+
+    pub fn get_or_create_patch(&mut self, grid_x: i32, grid_z: i32) -> &mut TerrainPatch {
+        let sz = self.patch_size;
+        let ml = self.max_lod;
+        let next_id = self.patches.len() as u32 + 1;
+        self.patches.entry((grid_x, grid_z)).or_insert_with(|| {
+            TerrainPatch::new(next_id, grid_x, grid_z, sz, ml)
+        })
+    }
+
+    pub fn update(&mut self, camera_pos: Vec3) {
+        let tile_r = (self.streaming_radius / self.patch_size).ceil() as i32 + 1;
+        let cx = (camera_pos.x / self.patch_size).floor() as i32;
+        let cz = (camera_pos.z / self.patch_size).floor() as i32;
+        let mut total_verts = 0u32;
+        let mut visible = 0u32;
+        for tx in (cx - tile_r)..=(cx + tile_r) {
+            for tz in (cz - tile_r)..=(cz + tile_r) {
+                let center = Vec3::new(
+                    (tx as f32 + 0.5) * self.patch_size,
+                    camera_pos.y,
+                    (tz as f32 + 0.5) * self.patch_size,
+                );
+                let dist = (camera_pos - center).length();
+                if dist <= self.streaming_radius {
+                    let patch = self.get_or_create_patch(tx, tz);
+                    patch.update_lod(camera_pos);
+                    total_verts += patch.vertex_count;
+                    visible += 1;
+                }
+            }
+        }
+        // Update neighbor LODs for stitching
+        let keys: Vec<(i32, i32)> = self.patches.keys().copied().collect();
+        for &(tx, tz) in &keys {
+            let neighbors = [
+                ((tx, tz - 1), 0usize),
+                ((tx, tz + 1), 1),
+                ((tx + 1, tz), 2),
+                ((tx - 1, tz), 3),
+            ];
+            let my_lod = self.patches[&(tx, tz)].current_lod;
+            let _ = my_lod;
+            let mut nlods = [0u32; 4];
+            for (nkey, dir) in &neighbors {
+                nlods[*dir] = self.patches.get(nkey).map(|p| p.current_lod).unwrap_or(0);
+            }
+            if let Some(patch) = self.patches.get_mut(&(tx, tz)) {
+                patch.neighbor_lods = nlods;
+            }
+        }
+        self.total_vertices_rendered = total_verts;
+        self.total_patches_visible = visible;
+    }
+
+    pub fn sample_height_world(&self, world_x: f32, world_z: f32) -> f32 {
+        let gx = (world_x / self.patch_size).floor() as i32;
+        let gz = (world_z / self.patch_size).floor() as i32;
+        if let Some(patch) = self.patches.get(&(gx, gz)) {
+            let local_x = world_x - gx as f32 * self.patch_size;
+            let local_z = world_z - gz as f32 * self.patch_size;
+            patch.sample_height_bilinear(local_x.max(0.0), local_z.max(0.0))
+        } else {
+            0.0
+        }
+    }
+
+    pub fn visible_patch_count(&self) -> usize {
+        self.patches.len()
+    }
+
+    pub fn patches_needing_stitch(&self) -> Vec<(i32, i32)> {
+        self.patches.iter()
+            .filter(|(_, p)| p.needs_stitching())
+            .map(|(&k, _)| k)
+            .collect()
+    }
+}
+
+// ============================================================
+// SECTION: Streaming Priority Queue with Deadline Scheduling
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct DeadlineRequest {
+    pub id: u64,
+    pub priority: f32,
+    pub deadline_seconds: f64,
+    pub estimated_load_ms: f32,
+    pub size_bytes: u64,
+    pub level_id: u64,
+    pub request_time: f64,
+    pub cancelled: bool,
+}
+
+impl DeadlineRequest {
+    pub fn urgency_at(&self, current_time: f64) -> f32 {
+        let remaining = (self.deadline_seconds - current_time).max(0.001) as f32;
+        let normalized_load = self.estimated_load_ms / 1000.0;
+        self.priority * (normalized_load / remaining).min(100.0)
+    }
+
+    pub fn is_overdue(&self, current_time: f64) -> bool {
+        current_time > self.deadline_seconds
+    }
+
+    pub fn slack_ms(&self, current_time: f64) -> f32 {
+        ((self.deadline_seconds - current_time) * 1000.0 - self.estimated_load_ms as f64).max(0.0) as f32
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DeadlineScheduler {
+    pub requests: Vec<DeadlineRequest>,
+    pub next_request_id: u64,
+    pub total_scheduled: u64,
+    pub total_completed: u64,
+    pub total_missed: u64,
+    pub bandwidth_bytes_per_sec: f64,
+    pub inflight_bytes: u64,
+    pub max_inflight_bytes: u64,
+}
+
+impl DeadlineScheduler {
+    pub fn new(bandwidth_bytes_per_sec: f64) -> Self {
+        Self {
+            requests: Vec::new(),
+            next_request_id: 1,
+            total_scheduled: 0,
+            total_completed: 0,
+            total_missed: 0,
+            bandwidth_bytes_per_sec,
+            inflight_bytes: 0,
+            max_inflight_bytes: 64 * 1024 * 1024, // 64 MB in flight
+        }
+    }
+
+    pub fn submit(&mut self, level_id: u64, priority: f32, deadline: f64, size_bytes: u64,
+                  estimated_load_ms: f32, current_time: f64) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.requests.push(DeadlineRequest {
+            id,
+            priority,
+            deadline_seconds: deadline,
+            estimated_load_ms,
+            size_bytes,
+            level_id,
+            request_time: current_time,
+            cancelled: false,
+        });
+        self.total_scheduled += 1;
+        id
+    }
+
+    pub fn cancel(&mut self, request_id: u64) {
+        if let Some(r) = self.requests.iter_mut().find(|r| r.id == request_id) {
+            r.cancelled = true;
+        }
+    }
+
+    pub fn update(&mut self, current_time: f64, delta_seconds: f64) {
+        // Remove cancelled requests
+        self.requests.retain(|r| !r.cancelled);
+        // Check for missed deadlines
+        let missed: Vec<u64> = self.requests.iter()
+            .filter(|r| r.is_overdue(current_time))
+            .map(|r| r.id)
+            .collect();
+        self.total_missed += missed.len() as u64;
+        self.requests.retain(|r| !r.is_overdue(current_time));
+        // Compute available bandwidth this tick
+        let available_bytes = (self.bandwidth_bytes_per_sec * delta_seconds) as u64;
+        self.inflight_bytes = self.inflight_bytes.saturating_sub(available_bytes);
+    }
+
+    pub fn next_batch(&mut self, current_time: f64, max_count: usize) -> Vec<u64> {
+        // Sort by Earliest Deadline First (EDF) with priority tie-breaking
+        let mut sortable: Vec<(usize, f32)> = self.requests.iter().enumerate()
+            .map(|(i, r)| (i, r.urgency_at(current_time)))
+            .collect();
+        sortable.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut result = Vec::new();
+        let mut inflight = self.inflight_bytes;
+        for (idx, _urgency) in sortable.iter().take(max_count) {
+            let r = &self.requests[*idx];
+            if inflight + r.size_bytes <= self.max_inflight_bytes {
+                inflight += r.size_bytes;
+                result.push(r.id);
+            }
+        }
+        self.inflight_bytes = inflight;
+        result
+    }
+
+    pub fn complete_request(&mut self, request_id: u64) {
+        if let Some(pos) = self.requests.iter().position(|r| r.id == request_id) {
+            let r = self.requests.remove(pos);
+            self.inflight_bytes = self.inflight_bytes.saturating_sub(r.size_bytes);
+            self.total_completed += 1;
+        }
+    }
+
+    pub fn utilization(&self) -> f32 {
+        self.inflight_bytes as f32 / self.max_inflight_bytes as f32
+    }
+
+    pub fn deadline_miss_rate(&self) -> f32 {
+        if self.total_scheduled == 0 { return 0.0; }
+        self.total_missed as f32 / self.total_scheduled as f32
+    }
+}
+
+// ============================================================
+// SECTION: Spatial Hash Acceleration
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct SpatialHash3D {
+    pub cell_size: f32,
+    cells: HashMap<(i32, i32, i32), Vec<u64>>,
+    pub object_cells: HashMap<u64, (i32, i32, i32)>,
+}
+
+impl SpatialHash3D {
+    pub fn new(cell_size: f32) -> Self {
+        Self {
+            cell_size,
+            cells: HashMap::new(),
+            object_cells: HashMap::new(),
+        }
+    }
+
+    fn hash_pos(&self, pos: Vec3) -> (i32, i32, i32) {
+        (
+            (pos.x / self.cell_size).floor() as i32,
+            (pos.y / self.cell_size).floor() as i32,
+            (pos.z / self.cell_size).floor() as i32,
+        )
+    }
+
+    pub fn insert(&mut self, object_id: u64, pos: Vec3) {
+        let key = self.hash_pos(pos);
+        self.cells.entry(key).or_insert_with(Vec::new).push(object_id);
+        self.object_cells.insert(object_id, key);
+    }
+
+    pub fn remove(&mut self, object_id: u64) {
+        if let Some(&key) = self.object_cells.get(&object_id) {
+            if let Some(list) = self.cells.get_mut(&key) {
+                list.retain(|&id| id != object_id);
+            }
+            self.object_cells.remove(&object_id);
+        }
+    }
+
+    pub fn update(&mut self, object_id: u64, new_pos: Vec3) {
+        self.remove(object_id);
+        self.insert(object_id, new_pos);
+    }
+
+    pub fn query_radius(&self, center: Vec3, radius: f32) -> Vec<u64> {
+        let r_cells = (radius / self.cell_size).ceil() as i32 + 1;
+        let cc = self.hash_pos(center);
+        let mut result = Vec::new();
+        for x in (cc.0 - r_cells)..=(cc.0 + r_cells) {
+            for y in (cc.1 - r_cells)..=(cc.1 + r_cells) {
+                for z in (cc.2 - r_cells)..=(cc.2 + r_cells) {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        result.extend_from_slice(list);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn query_aabb(&self, aabb: &Aabb) -> Vec<u64> {
+        let min_key = self.hash_pos(aabb.min);
+        let max_key = self.hash_pos(aabb.max);
+        let mut result = Vec::new();
+        for x in min_key.0..=max_key.0 {
+            for y in min_key.1..=max_key.1 {
+                for z in min_key.2..=max_key.2 {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        result.extend_from_slice(list);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn object_count(&self) -> usize {
+        self.object_cells.len()
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn average_occupancy(&self) -> f32 {
+        if self.cells.is_empty() { return 0.0; }
+        let total: usize = self.cells.values().map(|v| v.len()).sum();
+        total as f32 / self.cells.len() as f32
+    }
+}
+
+// ============================================================
+// SECTION: Volumetric Fog Streaming Zone
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct FogZone {
+    pub zone_id: u32,
+    pub bounds: Aabb,
+    pub fog_density: f32,
+    pub fog_color: Vec3,
+    pub scatter_coefficient: f32,
+    pub absorption_coefficient: f32,
+    pub height_falloff: f32,    // exponential height fog falloff
+    pub height_offset: f32,
+    pub animation_speed: f32,
+    pub turbulence: f32,
+    pub enabled: bool,
+    pub blend_distance: f32,    // transition zone width
+}
+
+impl FogZone {
+    pub fn new(zone_id: u32, bounds: Aabb) -> Self {
+        Self {
+            zone_id,
+            bounds,
+            fog_density: 0.01,
+            fog_color: Vec3::new(0.7, 0.75, 0.8),
+            scatter_coefficient: 0.005,
+            absorption_coefficient: 0.003,
+            height_falloff: 0.01,
+            height_offset: 0.0,
+            animation_speed: 0.1,
+            turbulence: 0.5,
+            enabled: true,
+            blend_distance: 50.0,
+        }
+    }
+
+    pub fn density_at(&self, world_pos: Vec3, time: f64) -> f32 {
+        if !self.enabled { return 0.0; }
+        if !self.bounds.contains_point(world_pos) { return 0.0; }
+        // Height-based exponential falloff
+        let h = (world_pos.y - self.height_offset).max(0.0);
+        let height_factor = (-self.height_falloff * h).exp();
+        // Turbulence using sine approximation
+        let t = time as f32;
+        let noise = (world_pos.x * 0.1 + t * self.animation_speed).sin()
+            * (world_pos.z * 0.1 + t * self.animation_speed * 0.7).cos()
+            * self.turbulence * 0.5 + 0.5;
+        let blend = self.blend_factor(world_pos);
+        self.fog_density * height_factor * (1.0 + noise) * blend
+    }
+
+    fn blend_factor(&self, pos: Vec3) -> f32 {
+        // Smooth blend at zone boundaries
+        let min_dist = [
+            pos.x - self.bounds.min.x,
+            self.bounds.max.x - pos.x,
+            pos.y - self.bounds.min.y,
+            self.bounds.max.y - pos.y,
+            pos.z - self.bounds.min.z,
+            self.bounds.max.z - pos.z,
+        ].iter().copied().fold(f32::INFINITY, f32::min);
+        let t = (min_dist / self.blend_distance).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    pub fn transmittance_along_ray(&self, start: Vec3, end: Vec3, samples: u32, time: f64) -> f32 {
+        // Beer-Lambert law: T = exp(-integral(sigma_t * ds))
+        let mut optical_depth = 0.0f32;
+        let dir = end - start;
+        let total_len = dir.length();
+        if total_len < 1e-6 { return 1.0; }
+        let step = total_len / samples as f32;
+        let d = dir / total_len;
+        for i in 0..samples {
+            let t = (i as f32 + 0.5) * step;
+            let pos = start + d * t;
+            let density = self.density_at(pos, time);
+            optical_depth += density * step * (self.scatter_coefficient + self.absorption_coefficient);
+        }
+        (-optical_depth).exp()
+    }
+
+    pub fn phase_function_henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
+        // Henyey-Greenstein phase function for anisotropic scattering
+        let g2 = g * g;
+        let denom = (1.0 + g2 - 2.0 * g * cos_theta).powf(1.5);
+        (1.0 - g2) / (4.0 * std::f32::consts::PI * denom.max(1e-10))
+    }
+}
+
+// ============================================================
+// SECTION: Level Streaming Scene Graph Node
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct SceneNode {
+    pub node_id: u64,
+    pub name: String,
+    pub local_transform: Mat4,
+    pub world_transform: Mat4,
+    pub parent_id: Option<u64>,
+    pub children: Vec<u64>,
+    pub level_id: Option<u64>,
+    pub is_static: bool,
+    pub dirty: bool,
+    pub visibility_distance: f32,
+    pub lod_bias: f32,
+}
+
+impl SceneNode {
+    pub fn new(node_id: u64, name: &str) -> Self {
+        Self {
+            node_id,
+            name: name.to_string(),
+            local_transform: Mat4::IDENTITY,
+            world_transform: Mat4::IDENTITY,
+            parent_id: None,
+            children: Vec::new(),
+            level_id: None,
+            is_static: false,
+            dirty: true,
+            visibility_distance: 1000.0,
+            lod_bias: 0.0,
+        }
+    }
+
+    pub fn set_local_transform(&mut self, transform: Mat4) {
+        self.local_transform = transform;
+        self.dirty = true;
+    }
+
+    pub fn world_position(&self) -> Vec3 {
+        Vec3::new(
+            self.world_transform.w_axis.x,
+            self.world_transform.w_axis.y,
+            self.world_transform.w_axis.z,
+        )
+    }
+
+    pub fn is_visible_from(&self, camera_pos: Vec3) -> bool {
+        let dist = (self.world_position() - camera_pos).length();
+        dist <= self.visibility_distance
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SceneGraph {
+    pub nodes: HashMap<u64, SceneNode>,
+    pub root_nodes: Vec<u64>,
+    pub next_node_id: u64,
+}
+
+impl SceneGraph {
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+            root_nodes: Vec::new(),
+            next_node_id: 1,
+        }
+    }
+
+    pub fn create_node(&mut self, name: &str) -> u64 {
+        let id = self.next_node_id;
+        self.next_node_id += 1;
+        self.nodes.insert(id, SceneNode::new(id, name));
+        self.root_nodes.push(id);
+        id
+    }
+
+    pub fn attach_child(&mut self, parent_id: u64, child_id: u64) {
+        if let Some(parent) = self.nodes.get_mut(&parent_id) {
+            if !parent.children.contains(&child_id) {
+                parent.children.push(child_id);
+            }
+        }
+        if let Some(child) = self.nodes.get_mut(&child_id) {
+            child.parent_id = Some(parent_id);
+            child.dirty = true;
+        }
+        self.root_nodes.retain(|&id| id != child_id);
+    }
+
+    pub fn detach_child(&mut self, child_id: u64) {
+        let parent_id = self.nodes.get(&child_id).and_then(|n| n.parent_id);
+        if let Some(pid) = parent_id {
+            if let Some(parent) = self.nodes.get_mut(&pid) {
+                parent.children.retain(|&id| id != child_id);
+            }
+        }
+        if let Some(node) = self.nodes.get_mut(&child_id) {
+            node.parent_id = None;
+            node.dirty = true;
+        }
+        if !self.root_nodes.contains(&child_id) {
+            self.root_nodes.push(child_id);
+        }
+    }
+
+    pub fn update_world_transforms(&mut self) {
+        // Iterative BFS to propagate dirty transforms
+        let roots = self.root_nodes.clone();
+        let mut queue = std::collections::VecDeque::new();
+        for root in roots {
+            if let Some(node) = self.nodes.get_mut(&root) {
+                if node.dirty {
+                    node.world_transform = node.local_transform;
+                    node.dirty = false;
+                }
+            }
+            queue.push_back(root);
+        }
+        while let Some(nid) = queue.pop_front() {
+            let (parent_world, children) = if let Some(node) = self.nodes.get(&nid) {
+                (node.world_transform, node.children.clone())
+            } else {
+                continue;
+            };
+            for child_id in children {
+                if let Some(child) = self.nodes.get_mut(&child_id) {
+                    if child.dirty {
+                        child.world_transform = parent_world * child.local_transform;
+                        child.dirty = false;
+                    }
+                }
+                queue.push_back(child_id);
+            }
+        }
+    }
+
+    pub fn find_by_name(&self, name: &str) -> Option<u64> {
+        self.nodes.values()
+            .find(|n| n.name == name)
+            .map(|n| n.node_id)
+    }
+
+    pub fn collect_subtree(&self, root_id: u64) -> Vec<u64> {
+        let mut result = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(root_id);
+        while let Some(nid) = queue.pop_front() {
+            result.push(nid);
+            if let Some(node) = self.nodes.get(&nid) {
+                for &child in &node.children {
+                    queue.push_back(child);
+                }
+            }
+        }
+        result
+    }
+
+    pub fn depth_of(&self, node_id: u64) -> u32 {
+        let mut depth = 0u32;
+        let mut current = node_id;
+        loop {
+            if let Some(node) = self.nodes.get(&current) {
+                if let Some(pid) = node.parent_id {
+                    depth += 1;
+                    current = pid;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        depth
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn root_count(&self) -> usize {
+        self.root_nodes.len()
+    }
+
+    pub fn remove_subtree(&mut self, root_id: u64) -> usize {
+        let subtree = self.collect_subtree(root_id);
+        let count = subtree.len();
+        self.detach_child(root_id);
+        for id in &subtree {
+            self.nodes.remove(id);
+        }
+        self.root_nodes.retain(|id| !subtree.contains(id));
+        count
+    }
+}
+
+// ============================================================
+// SECTION: Streaming World Metrics Dashboard
+// ============================================================
+
+#[derive(Clone, Debug, Default)]
+pub struct StreamingMetricsDashboard {
+    pub frame_number: u64,
+    pub current_time: f64,
+    // Load/unload counts
+    pub loads_this_frame: u32,
+    pub unloads_this_frame: u32,
+    pub total_loads: u64,
+    pub total_unloads: u64,
+    // Memory
+    pub peak_memory_mb: f32,
+    pub current_memory_mb: f32,
+    pub memory_budget_mb: f32,
+    // Performance
+    pub avg_load_time_ms: f32,
+    pub max_load_time_ms: f32,
+    pub streaming_stalls: u32,
+    pub frames_with_load: u32,
+    // Counts
+    pub active_levels: u32,
+    pub loading_levels: u32,
+    pub visible_levels: u32,
+    pub culled_levels: u32,
+    // Bandwidth
+    pub bytes_loaded_this_sec: u64,
+    pub bytes_unloaded_this_sec: u64,
+    pub bandwidth_utilization: f32,
+    // History ring buffer
+    pub memory_history: VecDeque<f32>,
+    pub fps_history: VecDeque<f32>,
+    history_capacity: usize,
+}
+
+impl StreamingMetricsDashboard {
+    pub fn new(history_capacity: usize) -> Self {
+        Self {
+            memory_history: VecDeque::with_capacity(history_capacity),
+            fps_history: VecDeque::with_capacity(history_capacity),
+            history_capacity,
+            memory_budget_mb: 512.0,
+            ..Default::default()
+        }
+    }
+
+    pub fn begin_frame(&mut self, time: f64, fps: f32) {
+        self.frame_number += 1;
+        self.current_time = time;
+        self.loads_this_frame = 0;
+        self.unloads_this_frame = 0;
+        // Update history
+        if self.memory_history.len() >= self.history_capacity {
+            self.memory_history.pop_front();
+        }
+        self.memory_history.push_back(self.current_memory_mb);
+        if self.fps_history.len() >= self.history_capacity {
+            self.fps_history.pop_front();
+        }
+        self.fps_history.push_back(fps);
+    }
+
+    pub fn record_load(&mut self, load_time_ms: f32, bytes: u64) {
+        self.loads_this_frame += 1;
+        self.total_loads += 1;
+        self.bytes_loaded_this_sec += bytes;
+        if load_time_ms > self.max_load_time_ms {
+            self.max_load_time_ms = load_time_ms;
+        }
+        // Rolling average
+        let n = self.total_loads as f32;
+        self.avg_load_time_ms = (self.avg_load_time_ms * (n - 1.0) + load_time_ms) / n;
+    }
+
+    pub fn record_unload(&mut self, bytes: u64) {
+        self.unloads_this_frame += 1;
+        self.total_unloads += 1;
+        self.bytes_unloaded_this_sec += bytes;
+    }
+
+    pub fn record_stall(&mut self) {
+        self.streaming_stalls += 1;
+    }
+
+    pub fn update_memory(&mut self, used_mb: f32) {
+        self.current_memory_mb = used_mb;
+        if used_mb > self.peak_memory_mb {
+            self.peak_memory_mb = used_mb;
+        }
+    }
+
+    pub fn memory_utilization(&self) -> f32 {
+        if self.memory_budget_mb < 1.0 { return 0.0; }
+        self.current_memory_mb / self.memory_budget_mb
+    }
+
+    pub fn average_fps(&self) -> f32 {
+        if self.fps_history.is_empty() { return 0.0; }
+        self.fps_history.iter().sum::<f32>() / self.fps_history.len() as f32
+    }
+
+    pub fn min_fps(&self) -> f32 {
+        self.fps_history.iter().copied().fold(f32::INFINITY, f32::min)
+    }
+
+    pub fn memory_trend(&self) -> f32 {
+        // Slope of memory over last N frames (linear regression simplified)
+        let n = self.memory_history.len();
+        if n < 2 { return 0.0; }
+        let x_mean = (n as f32 - 1.0) * 0.5;
+        let y_mean: f32 = self.memory_history.iter().sum::<f32>() / n as f32;
+        let mut numer = 0.0f32;
+        let mut denom = 0.0f32;
+        for (i, &y) in self.memory_history.iter().enumerate() {
+            let x = i as f32 - x_mean;
+            numer += x * (y - y_mean);
+            denom += x * x;
+        }
+        if denom.abs() < 1e-10 { return 0.0; }
+        numer / denom
+    }
+
+    pub fn is_memory_critical(&self) -> bool {
+        self.memory_utilization() > 0.9
+    }
+
+    pub fn is_bandwidth_saturated(&self) -> bool {
+        self.bandwidth_utilization > 0.95
+    }
+
+    pub fn report_summary(&self) -> HashMap<String, f32> {
+        let mut map = HashMap::new();
+        map.insert("memory_mb".to_string(), self.current_memory_mb);
+        map.insert("memory_utilization".to_string(), self.memory_utilization());
+        map.insert("avg_load_ms".to_string(), self.avg_load_time_ms);
+        map.insert("max_load_ms".to_string(), self.max_load_time_ms);
+        map.insert("stalls".to_string(), self.streaming_stalls as f32);
+        map.insert("total_loads".to_string(), self.total_loads as f32);
+        map.insert("avg_fps".to_string(), self.average_fps());
+        map.insert("memory_trend_mb_per_frame".to_string(), self.memory_trend());
+        map
+    }
+}
+
+// ============================================================
+// SECTION: Integrated Level Streaming World Manager (Complete)
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct IntegratedStreamingWorld {
+    pub scene_graph: SceneGraph,
+    pub terrain: TerrainManager,
+    pub tile_map: StreamingTileMap,
+    pub instancer: LevelInstancer,
+    pub fog_zones: Vec<FogZone>,
+    pub deadline_scheduler: DeadlineScheduler,
+    pub spatial_hash: SpatialHash3D,
+    pub metrics: StreamingMetricsDashboard,
+    pub camera_pos: Vec3,
+    pub camera_dir: Vec3,
+    pub camera_velocity: Vec3,
+    pub current_time: f64,
+    pub delta_time: f32,
+    pub stream_radius_main: f32,
+    pub stream_radius_secondary: f32,
+    pub frame_count: u64,
+}
+
+impl IntegratedStreamingWorld {
+    pub fn new() -> Self {
+        Self {
+            scene_graph: SceneGraph::new(),
+            terrain: TerrainManager::new(256.0, 5, 2000.0),
+            tile_map: StreamingTileMap::new(512.0),
+            instancer: LevelInstancer::new(256.0),
+            fog_zones: Vec::new(),
+            deadline_scheduler: DeadlineScheduler::new(100.0 * 1024.0 * 1024.0), // 100 MB/s
+            spatial_hash: SpatialHash3D::new(128.0),
+            metrics: StreamingMetricsDashboard::new(120),
+            camera_pos: Vec3::ZERO,
+            camera_dir: Vec3::NEG_Z,
+            camera_velocity: Vec3::ZERO,
+            current_time: 0.0,
+            delta_time: 0.016,
+            stream_radius_main: 800.0,
+            stream_radius_secondary: 1500.0,
+            frame_count: 0,
+        }
+    }
+
+    pub fn update(&mut self, camera_pos: Vec3, camera_dir: Vec3, delta_time: f32) {
+        let prev_pos = self.camera_pos;
+        self.camera_pos = camera_pos;
+        self.camera_dir = camera_dir.normalize_or_zero();
+        self.camera_velocity = (camera_pos - prev_pos) / delta_time.max(1e-6);
+        self.delta_time = delta_time;
+        self.current_time += delta_time as f64;
+        self.frame_count += 1;
+        // Update subsystems
+        let fps = if delta_time > 1e-6 { 1.0 / delta_time } else { 60.0 };
+        self.metrics.begin_frame(self.current_time, fps);
+        self.terrain.update(camera_pos);
+        self.deadline_scheduler.update(self.current_time, delta_time as f64);
+        self.scene_graph.update_world_transforms();
+        let mem_mb = self.estimate_memory_mb();
+        self.metrics.update_memory(mem_mb);
+    }
+
+    fn estimate_memory_mb(&self) -> f32 {
+        let terrain_verts = self.terrain.total_vertices_rendered as f32 * 32.0; // 32 bytes/vert
+        let scene_nodes = self.scene_graph.node_count() as f32 * 256.0;
+        let instances = self.instancer.instances.len() as f32 * 512.0;
+        let tiles = self.tile_map.tile_count() as f32 * 128.0;
+        (terrain_verts + scene_nodes + instances + tiles) / (1024.0 * 1024.0)
+    }
+
+    pub fn add_fog_zone(&mut self, bounds: Aabb) -> u32 {
+        let id = self.fog_zones.len() as u32 + 1;
+        self.fog_zones.push(FogZone::new(id, bounds));
+        id
+    }
+
+    pub fn fog_density_at(&self, pos: Vec3) -> f32 {
+        self.fog_zones.iter()
+            .filter(|z| z.enabled)
+            .map(|z| z.density_at(pos, self.current_time))
+            .sum()
+    }
+
+    pub fn schedule_level_load(&mut self, level_id: u64, priority: f32, size_bytes: u64) -> u64 {
+        let deadline = self.current_time + 2.0; // 2 second deadline
+        let est_ms = size_bytes as f32 / (100.0 * 1024.0); // estimate at 100 MB/s
+        self.deadline_scheduler.submit(level_id, priority, deadline, size_bytes, est_ms, self.current_time)
+    }
+
+    pub fn place_level_instance(&mut self, level_id: u64, position: Vec3) -> u64 {
+        let transform = Mat4::from_translation(position);
+        let instance_id = self.instancer.place_instance(level_id, transform);
+        self.spatial_hash.insert(instance_id, position);
+        // Create scene node
+        let node_id = self.scene_graph.create_node(&format!("Level_{}", instance_id));
+        if let Some(node) = self.scene_graph.nodes.get_mut(&node_id) {
+            node.local_transform = transform;
+            node.world_transform = transform;
+            node.level_id = Some(level_id);
+            node.dirty = false;
+        }
+        instance_id
+    }
+
+    pub fn instances_near(&self, center: Vec3, radius: f32) -> Vec<u64> {
+        self.spatial_hash.query_radius(center, radius)
+    }
+
+    pub fn terrain_height_at(&self, x: f32, z: f32) -> f32 {
+        self.terrain.sample_height_world(x, z)
+    }
+
+    pub fn predicted_camera_position(&self, look_ahead_seconds: f32) -> Vec3 {
+        self.camera_pos + self.camera_velocity * look_ahead_seconds
+            + Vec3::Y * 0.5 * (-9.8) * look_ahead_seconds * look_ahead_seconds
+    }
+
+    pub fn tiles_to_preload(&self, look_ahead_seconds: f32) -> Vec<(i32, i32)> {
+        let future_pos = self.predicted_camera_position(look_ahead_seconds);
+        let mut tiles = self.tile_map.tiles_in_radius(future_pos, self.stream_radius_main);
+        let current_tiles = self.tile_map.tiles_in_radius(self.camera_pos, self.stream_radius_main);
+        tiles.retain(|t| !current_tiles.contains(t));
+        tiles
+    }
+
+    pub fn memory_mb(&self) -> f32 { self.metrics.current_memory_mb }
+    pub fn is_critical(&self) -> bool { self.metrics.is_memory_critical() }
+    pub fn frame_count(&self) -> u64 { self.frame_count }
+    pub fn avg_fps(&self) -> f32 { self.metrics.average_fps() }
+}
+
+// ============================================================
+// SECTION: Additional Unit Tests
+// ============================================================
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_streaming_tile_bounds() {
+        let tile = StreamingTile::new(2, 3, 100.0);
+        let bounds = tile.world_bounds();
+        assert!((bounds.min.x - 200.0).abs() < 0.01);
+        assert!((bounds.max.x - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_streaming_tile_contains() {
+        let tile = StreamingTile::new(0, 0, 100.0);
+        assert!(tile.contains_point_2d(50.0, 50.0));
+        assert!(!tile.contains_point_2d(150.0, 50.0));
+    }
+
+    #[test]
+    fn test_tile_map_world_to_tile() {
+        let map = StreamingTileMap::new(128.0);
+        let (tx, tz) = map.world_to_tile(Vec3::new(300.0, 0.0, 300.0));
+        assert_eq!(tx, 2);
+        assert_eq!(tz, 2);
+    }
+
+    #[test]
+    fn test_tile_map_tiles_in_radius() {
+        let mut map = StreamingTileMap::new(100.0);
+        map.get_or_create(0, 0).last_visited_time = 0.0;
+        map.get_or_create(1, 0).last_visited_time = 0.0;
+        map.get_or_create(0, 1).last_visited_time = 0.0;
+        let tiles = map.tiles_in_radius(Vec3::new(50.0, 0.0, 50.0), 200.0);
+        assert!(!tiles.is_empty());
+    }
+
+    #[test]
+    fn test_tile_map_evict_stale() {
+        let mut map = StreamingTileMap::new(100.0);
+        map.get_or_create(0, 0).last_visited_time = 0.0;
+        map.get_or_create(1, 1).last_visited_time = 0.0;
+        let evicted = map.evict_stale(100.0, 50.0);
+        assert_eq!(evicted, 2);
+        assert_eq!(map.tile_count(), 0);
+    }
+
+    #[test]
+    fn test_level_instance_position() {
+        let t = Mat4::from_translation(Vec3::new(10.0, 5.0, -3.0));
+        let inst = LevelInstance::new(1, 42, t);
+        let pos = inst.position();
+        assert!((pos.x - 10.0).abs() < 0.01);
+        assert!((pos.y - 5.0).abs() < 0.01);
+        assert!((pos.z + 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_level_instancer_place_and_query() {
+        let mut instancer = LevelInstancer::new(100.0);
+        let t = Mat4::from_translation(Vec3::new(50.0, 0.0, 50.0));
+        let id = instancer.place_instance(1, t);
+        let found = instancer.instances_in_radius(Vec3::new(50.0, 0.0, 50.0), 10.0);
+        assert!(found.contains(&id));
+    }
+
+    #[test]
+    fn test_level_instancer_remove() {
+        let mut instancer = LevelInstancer::new(100.0);
+        let t = Mat4::IDENTITY;
+        let id = instancer.place_instance(5, t);
+        assert!(instancer.instances.contains_key(&id));
+        instancer.remove_instance(id);
+        assert!(!instancer.instances.contains_key(&id));
+    }
+
+    #[test]
+    fn test_terrain_patch_height_sample() {
+        let mut patch = TerrainPatch::new(1, 0, 0, 100.0, 5);
+        // Fill with a known height
+        for h in &mut patch.height_data { *h = 42.0; }
+        let h = patch.sample_height_bilinear(50.0, 50.0);
+        assert!((h - 42.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_terrain_patch_lod_selection() {
+        let mut patch = TerrainPatch::new(1, 0, 0, 256.0, 5);
+        patch.update_lod(Vec3::new(128.0, 0.0, 128.0)); // near center
+        assert_eq!(patch.current_lod, 0); // should be highest quality
+        patch.update_lod(Vec3::new(10000.0, 0.0, 10000.0)); // very far
+        assert!(patch.current_lod > 0);
+    }
+
+    #[test]
+    fn test_terrain_manager_update() {
+        let mut mgr = TerrainManager::new(256.0, 4, 1000.0);
+        mgr.update(Vec3::new(0.0, 0.0, 0.0));
+        assert!(mgr.visible_patch_count() > 0);
+    }
+
+    #[test]
+    fn test_deadline_scheduler_submit_complete() {
+        let mut sched = DeadlineScheduler::new(100.0 * 1024.0 * 1024.0);
+        let id = sched.submit(1, 1.0, 2.0, 1024, 1.0, 0.0);
+        sched.complete_request(id);
+        assert_eq!(sched.total_completed, 1);
+        assert!(sched.requests.is_empty());
+    }
+
+    #[test]
+    fn test_deadline_scheduler_miss_rate() {
+        let mut sched = DeadlineScheduler::new(1.0);
+        sched.submit(1, 1.0, 0.001, 1024, 1.0, 0.0);
+        sched.update(1.0, 1.0); // past the deadline
+        assert_eq!(sched.total_missed, 1);
+    }
+
+    #[test]
+    fn test_spatial_hash_insert_query() {
+        let mut sh = SpatialHash3D::new(10.0);
+        sh.insert(1, Vec3::new(5.0, 0.0, 5.0));
+        sh.insert(2, Vec3::new(100.0, 0.0, 100.0));
+        let result = sh.query_radius(Vec3::new(5.0, 0.0, 5.0), 5.0);
+        assert!(result.contains(&1));
+        assert!(!result.contains(&2));
+    }
+
+    #[test]
+    fn test_spatial_hash_update() {
+        let mut sh = SpatialHash3D::new(10.0);
+        sh.insert(1, Vec3::new(5.0, 0.0, 5.0));
+        sh.update(1, Vec3::new(200.0, 0.0, 200.0));
+        let near = sh.query_radius(Vec3::new(5.0, 0.0, 5.0), 5.0);
+        assert!(!near.contains(&1));
+        let far = sh.query_radius(Vec3::new(200.0, 0.0, 200.0), 5.0);
+        assert!(far.contains(&1));
+    }
+
+    #[test]
+    fn test_fog_zone_density() {
+        let bounds = Aabb::new(Vec3::new(-100.0, -50.0, -100.0), Vec3::new(100.0, 50.0, 100.0));
+        let zone = FogZone::new(1, bounds);
+        let d = zone.density_at(Vec3::new(0.0, 0.0, 0.0), 0.0);
+        assert!(d >= 0.0 && d.is_finite());
+        let d_outside = zone.density_at(Vec3::new(1000.0, 0.0, 0.0), 0.0);
+        assert_eq!(d_outside, 0.0);
+    }
+
+    #[test]
+    fn test_fog_transmittance() {
+        let bounds = Aabb::new(Vec3::new(-200.0, -100.0, -200.0), Vec3::new(200.0, 100.0, 200.0));
+        let zone = FogZone::new(1, bounds);
+        let t = zone.transmittance_along_ray(
+            Vec3::new(-100.0, 0.0, 0.0),
+            Vec3::new(100.0, 0.0, 0.0),
+            16,
+            0.0,
+        );
+        assert!(t > 0.0 && t <= 1.0);
+    }
+
+    #[test]
+    fn test_henyey_greenstein_forward() {
+        // Forward scattering (cos_theta=1): should be maximum
+        let g = 0.8;
+        let forward = FogZone::phase_function_henyey_greenstein(1.0, g);
+        let backward = FogZone::phase_function_henyey_greenstein(-1.0, g);
+        assert!(forward > backward);
+    }
+
+    #[test]
+    fn test_scene_graph_attach() {
+        let mut sg = SceneGraph::new();
+        let parent = sg.create_node("parent");
+        let child = sg.create_node("child");
+        sg.attach_child(parent, child);
+        assert!(sg.nodes[&parent].children.contains(&child));
+        assert_eq!(sg.nodes[&child].parent_id, Some(parent));
+        assert!(!sg.root_nodes.contains(&child));
+    }
+
+    #[test]
+    fn test_scene_graph_world_transform() {
+        let mut sg = SceneGraph::new();
+        let parent = sg.create_node("parent");
+        let child = sg.create_node("child");
+        sg.attach_child(parent, child);
+        let t_parent = Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0));
+        let t_child = Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0));
+        sg.nodes.get_mut(&parent).unwrap().local_transform = t_parent;
+        sg.nodes.get_mut(&parent).unwrap().world_transform = t_parent;
+        sg.nodes.get_mut(&child).unwrap().local_transform = t_child;
+        sg.nodes.get_mut(&child).unwrap().dirty = true;
+        sg.update_world_transforms();
+        let child_pos = sg.nodes[&child].world_transform.w_axis.x;
+        assert!((child_pos - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_scene_graph_depth() {
+        let mut sg = SceneGraph::new();
+        let a = sg.create_node("a");
+        let b = sg.create_node("b");
+        let c = sg.create_node("c");
+        sg.attach_child(a, b);
+        sg.attach_child(b, c);
+        assert_eq!(sg.depth_of(c), 2);
+        assert_eq!(sg.depth_of(a), 0);
+    }
+
+    #[test]
+    fn test_scene_graph_subtree_removal() {
+        let mut sg = SceneGraph::new();
+        let a = sg.create_node("a");
+        let b = sg.create_node("b");
+        let c = sg.create_node("c");
+        sg.attach_child(a, b);
+        sg.attach_child(b, c);
+        let removed = sg.remove_subtree(b);
+        assert_eq!(removed, 2); // b and c
+        assert!(sg.nodes.contains_key(&a));
+        assert!(!sg.nodes.contains_key(&b));
+        assert!(!sg.nodes.contains_key(&c));
+    }
+
+    #[test]
+    fn test_metrics_dashboard_memory_trend() {
+        let mut dash = StreamingMetricsDashboard::new(30);
+        for i in 0..20 {
+            dash.begin_frame(i as f64 * 0.016, 60.0);
+            dash.update_memory(100.0 + i as f32 * 2.0); // linearly increasing memory
+        }
+        let trend = dash.memory_trend();
+        assert!(trend > 0.0, "Memory trend should be positive (increasing): {}", trend);
+    }
+
+    #[test]
+    fn test_metrics_dashboard_critical() {
+        let mut dash = StreamingMetricsDashboard::new(10);
+        dash.memory_budget_mb = 100.0;
+        dash.update_memory(95.0);
+        assert!(dash.is_memory_critical());
+        dash.update_memory(80.0);
+        assert!(!dash.is_memory_critical());
+    }
+
+    #[test]
+    fn test_integrated_world_update() {
+        let mut world = IntegratedStreamingWorld::new();
+        world.update(Vec3::new(100.0, 10.0, 100.0), Vec3::NEG_Z, 0.016);
+        assert!(world.frame_count == 1);
+        assert!(world.current_time > 0.0);
+    }
+
+    #[test]
+    fn test_integrated_world_fog() {
+        let mut world = IntegratedStreamingWorld::new();
+        let bounds = Aabb::new(Vec3::new(-500.0, -200.0, -500.0), Vec3::new(500.0, 200.0, 500.0));
+        world.add_fog_zone(bounds);
+        let density = world.fog_density_at(Vec3::ZERO);
+        assert!(density >= 0.0 && density.is_finite());
+    }
+
+    #[test]
+    fn test_integrated_world_instance_placement() {
+        let mut world = IntegratedStreamingWorld::new();
+        let id = world.place_level_instance(42, Vec3::new(100.0, 0.0, 100.0));
+        let near = world.instances_near(Vec3::new(100.0, 0.0, 100.0), 50.0);
+        assert!(near.contains(&id));
+    }
+
+    #[test]
+    fn test_integrated_world_prediction() {
+        let mut world = IntegratedStreamingWorld::new();
+        world.camera_velocity = Vec3::new(10.0, 0.0, 0.0);
+        let future = world.predicted_camera_position(1.0);
+        // At t=1s: x should advance ~10 units
+        assert!((future.x - world.camera_pos.x - 10.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_terrain_patch_normal() {
+        let mut patch = TerrainPatch::new(1, 0, 0, 100.0, 5);
+        // Flat terrain: normal should point straight up
+        for h in &mut patch.height_data { *h = 0.0; }
+        let normal = patch.compute_normal_at(50.0, 50.0);
+        assert!((normal.y - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_terrain_patch_sloped_normal() {
+        let mut patch = TerrainPatch::new(1, 0, 0, 100.0, 5);
+        let res = patch.height_grid_res as usize;
+        // Create an X-slope
+        for z in 0..res {
+            for x in 0..res {
+                patch.height_data[z * res + x] = x as f32 * 1.0;
+            }
+        }
+        let normal = patch.compute_normal_at(50.0, 50.0);
+        // Should have negative X component (slope going up in +X)
+        assert!(normal.x < 0.0);
+        assert!(normal.is_finite());
+    }
+
+    #[test]
+    fn test_scene_graph_find_by_name() {
+        let mut sg = SceneGraph::new();
+        let _a = sg.create_node("alpha");
+        let _b = sg.create_node("beta");
+        let found = sg.find_by_name("beta");
+        assert!(found.is_some());
+        let not_found = sg.find_by_name("gamma");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_deadline_scheduler_batch() {
+        let mut sched = DeadlineScheduler::new(100.0 * 1024.0 * 1024.0);
+        for i in 0..10 {
+            sched.submit(i, 1.0, 2.0, 1024 * 1024, 10.0, 0.0);
+        }
+        let batch = sched.next_batch(0.0, 5);
+        assert!(!batch.is_empty());
+        assert!(batch.len() <= 5);
+    }
+
+    #[test]
+    fn test_spatial_hash_aabb_query() {
+        let mut sh = SpatialHash3D::new(10.0);
+        sh.insert(1, Vec3::new(5.0, 0.0, 5.0));
+        sh.insert(2, Vec3::new(50.0, 0.0, 50.0));
+        let aabb = Aabb::new(Vec3::new(0.0, -5.0, 0.0), Vec3::new(10.0, 5.0, 10.0));
+        let result = sh.query_aabb(&aabb);
+        assert!(result.contains(&1));
+    }
+
+    #[test]
+    fn test_level_instancer_count_by_level() {
+        let mut instancer = LevelInstancer::new(100.0);
+        instancer.place_instance(1, Mat4::IDENTITY);
+        instancer.place_instance(1, Mat4::from_translation(Vec3::X));
+        instancer.place_instance(2, Mat4::from_translation(Vec3::Y));
+        let counts = instancer.count_by_level();
+        assert_eq!(counts[&1], 2);
+        assert_eq!(counts[&2], 1);
+    }
+
+    #[test]
+    fn test_fog_zone_disabled() {
+        let bounds = Aabb::new(Vec3::splat(-100.0), Vec3::splat(100.0));
+        let mut zone = FogZone::new(1, bounds);
+        zone.enabled = false;
+        let d = zone.density_at(Vec3::ZERO, 0.0);
+        assert_eq!(d, 0.0);
+    }
+
+    #[test]
+    fn test_terrain_patch_stitch_skirt_nonempty() {
+        let patch = TerrainPatch::new(1, 0, 0, 100.0, 3);
+        let skirt = patch.stitch_skirt_vertices();
+        assert!(!skirt.is_empty());
+    }
+
+    #[test]
+    fn test_tile_map_add_remove_level() {
+        let mut map = StreamingTileMap::new(100.0);
+        map.add_level_to_tile(0, 0, 99);
+        assert!(map.tiles.get(&(0, 0)).map(|t| t.level_ids.contains(&99)).unwrap_or(false));
+        map.remove_level_from_all(99);
+        assert!(map.tiles.get(&(0, 0)).map(|t| t.level_ids.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn test_deadline_scheduler_utilization() {
+        let sched = DeadlineScheduler::new(1024.0);
+        assert!((sched.utilization() - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_spatial_hash_average_occupancy() {
+        let mut sh = SpatialHash3D::new(10.0);
+        sh.insert(1, Vec3::ZERO);
+        sh.insert(2, Vec3::new(1.0, 0.0, 0.0));
+        let occ = sh.average_occupancy();
+        assert!(occ >= 1.0 && occ.is_finite());
+    }
+
+    #[test]
+    fn test_integrated_world_terrain_height() {
+        let mut world = IntegratedStreamingWorld::new();
+        world.update(Vec3::ZERO, Vec3::NEG_Z, 0.016);
+        let h = world.terrain_height_at(50.0, 50.0);
+        assert!(h.is_finite());
+    }
+
+    #[test]
+    fn test_metrics_dashboard_report() {
+        let mut dash = StreamingMetricsDashboard::new(10);
+        dash.record_load(10.0, 1024 * 1024);
+        dash.record_unload(512 * 1024);
+        let report = dash.report_summary();
+        assert!(report.contains_key("avg_load_ms"));
+        assert!((report["avg_load_ms"] - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_scene_graph_collect_subtree() {
+        let mut sg = SceneGraph::new();
+        let a = sg.create_node("a");
+        let b = sg.create_node("b");
+        let c = sg.create_node("c");
+        sg.attach_child(a, b);
+        sg.attach_child(a, c);
+        let sub = sg.collect_subtree(a);
+        assert_eq!(sub.len(), 3);
+        assert!(sub.contains(&a) && sub.contains(&b) && sub.contains(&c));
+    }
+
+    #[test]
+    fn test_level_instance_tags() {
+        let mut inst = LevelInstance::new(1, 1, Mat4::IDENTITY);
+        inst.add_tag("outdoor");
+        inst.add_tag("night");
+        assert!(inst.has_tag("outdoor"));
+        assert!(!inst.has_tag("indoor"));
+    }
+
+    #[test]
+    fn test_level_instance_scale() {
+        let t = Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0));
+        let inst = LevelInstance::new(1, 1, t);
+        let scale = inst.scale();
+        assert!((scale.x - 2.0).abs() < 0.01);
+        assert!((scale.y - 3.0).abs() < 0.01);
+        assert!((scale.z - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_terrain_patch_vertex_count_at_lod() {
+        let mut patch = TerrainPatch::new(1, 0, 0, 256.0, 4);
+        // LOD 0: full res
+        patch.update_lod(Vec3::new(128.0, 0.0, 128.0));
+        let verts_lod0 = patch.vertex_count;
+        // Move far away to trigger high LOD
+        patch.update_lod(Vec3::new(10000.0, 0.0, 10000.0));
+        let verts_lod_high = patch.vertex_count;
+        assert!(verts_lod0 >= verts_lod_high, "Lower LOD should have fewer vertices");
+    }
+
+    #[test]
+    fn test_integrated_world_schedule_load() {
+        let mut world = IntegratedStreamingWorld::new();
+        let req_id = world.schedule_level_load(7, 1.0, 4 * 1024 * 1024);
+        assert!(req_id > 0);
+        assert!(!world.deadline_scheduler.requests.is_empty());
+    }
+
+    #[test]
+    fn test_fog_zone_height_falloff() {
+        let bounds = Aabb::new(Vec3::new(-200.0, -100.0, -200.0), Vec3::new(200.0, 1000.0, 200.0));
+        let mut zone = FogZone::new(1, bounds);
+        zone.height_falloff = 0.1;
+        zone.turbulence = 0.0;
+        let d_low  = zone.density_at(Vec3::new(0.0, 0.0, 0.0), 0.0);
+        let d_high = zone.density_at(Vec3::new(0.0, 100.0, 0.0), 0.0);
+        assert!(d_low >= d_high, "Density should decrease with height");
+    }
+
+    #[test]
+    fn test_spatial_hash_remove() {
+        let mut sh = SpatialHash3D::new(10.0);
+        sh.insert(10, Vec3::ZERO);
+        sh.remove(10);
+        assert_eq!(sh.object_count(), 0);
+        assert!(sh.query_radius(Vec3::ZERO, 5.0).is_empty());
     }
 }
