@@ -166,6 +166,70 @@ fn main() {
 | worldgen | 3,272 | Tectonics, climate, rivers, caves, history |
 | + 45 more modules | ... | ... |
 
+## Kit System
+
+The apotheosis rendering pipeline is composed of eight kits. Each kit is a self-contained rendering subsystem that runs once per base particle and can be toggled independently.
+
+| Kit | Description |
+|-----|-------------|
+| **BoneKit** | 26-bone skeleton defining Leon's body as axis-aligned capsule descriptors with per-bone particle weight and aspect ratio |
+| **ModelKit** | Per-bone anatomical cross-section profile via piecewise-cosine knot tables; joint continuity enforced at every bone junction |
+| **MaterialKit** | Classifies each surface point into one of six material tags (Skin, Hair, Jacket, Boot, Metal, Eye) and computes Schlick Fresnel edge brightening |
+| **LightingKit** | Warm directional key + three coloured fills + squared rim + hemisphere ambient; ACES filmic tonemap and S-curve contrast |
+| **ClothingKit** | Identifies fabric-carrying bones; adds radial garment push via clothing_offset(), seam darkening at material boundaries, and contact shadow at skin/fabric transitions |
+| **HairKit** | 500-strand curtain-cut renderer across five scalp zones; gravity-curved spline chains with wind sway and Kajiya-Kay anisotropic specular |
+| **PhysicsKit** | Per-particle inertial lag cache; loose materials (hair, jacket hem) trail behind on character movement using per-material smoothing weights |
+| **RenderKit** | Depth-of-field jitter, n_copies particle scatter to fill sub-pixel gaps, and per-copy alpha/emission scaling to preserve total luminance |
+
+## SDF Architecture
+
+The engine uses signed distance fields (SDF) as its geometry representation instead of mesh geometry. Every body surface — torso, arms, legs, face — is defined by an analytic implicit function whose value at any point in space gives the exact Euclidean distance to the nearest surface.
+
+**Primitives:**
+- `sdf_torso` — superellipsoid body with piecewise-linear ax/az cross-section profiles along Y (broad shoulders, cinched waist, hip flare)
+- `sdf_arm_r` / `sdf_forearm_r` — tapered elliptic capsules for each arm segment
+- `sdf_leg_r` — smooth union of thigh + shin/boot capsules
+- `sdf_face` — face topology with eye sockets, nose bridge, lip geometry, iris/sclera layers
+
+**Smooth minimum blending at joints:** All primitives are combined via Inigo Quilez's polynomial `smin(a, b, k)` function, which rounds the hard `min()` discontinuity into an organic blend zone. Shoulders merge into the torso, knees merge thigh into shin — all without visible seams or capsule gaps.
+
+**Analytical normals from SDF gradient:** Surface normals are computed as the gradient of the SDF field at each surface point using finite differences of `sdf_body`. This gives numerically exact normals with zero polygon faceting or normal-map baking.
+
+**Mathematically provable ambient occlusion:** AO is computed by marching a short ray along the outward surface normal and measuring how much the SDF value at each step falls below the step distance. When geometry is nearby, the SDF value is small — the body occludes its own escape horizon. The result matches the exact geometry (armpits, waist creases, inner elbows) with no pre-baked textures or screen-space approximations.
+
+**Subsurface scattering from SDF thickness:** An inward `-n` thickness probe marches through the body until the SDF becomes positive (surface exit). The probe depth gives tissue thickness; Beer-Lambert attenuation then produces physically accurate SSS — thin regions (ears, lip edges) transmit warm light; thick regions (chest, thigh) are opaque.
+
+**Importance sampling (near-100% acceptance):** Rather than rejecting uniform box samples that miss the surface (typically 92%+ rejection), each candidate particle is placed directly on the expected ellipse/capsule surface and perturbed ±SHELL in the outward radial direction. The SDF then verifies shell placement — acceptance rate is ~100% with zero wasted evaluations.
+
+## Post-Processing Pipeline
+
+23 post-processing techniques are applied across three stages: CPU particle shading, GPU compute shader, and the billboard fragment shader.
+
+| # | Technique | Description |
+|---|-----------|-------------|
+| 2 | SDF analytical reflection trace | Ray-marches the reflected view vector against `sdf_body` — no BVH, no mesh required |
+| 3 | Atmospheric depth scattering | Back-of-body particles (pz < 0) scatter toward cool deep blue for volumetric depth |
+| 4 | TAA sub-pixel jitter | Halton(2,n) × Halton(3,n) per-frame offset covers the full pixel footprint for smooth edges |
+| 5 | Spectral bloom dispersion | Per-channel radial disk offsets cause the engine's Gaussian blur to produce prismatic rainbow fringes |
+| 6 | Chromatic depth separation | Particles farther from the near plane get per-channel disk radius shifts simulating lens dispersion |
+| 7 | SSR via SDF surface normal | Analytical SDF gradient normals importance-sample an implicit dungeon environment map |
+| 8 | Volumetric light shafts / god rays | Beer-Lambert transmittance along the key-light ray reveals lit corridors between arm and torso |
+| 9 | Cross-material GI color bleed | Jacket spills warm orange onto adjacent skin; pants bleed cool green into jacket hem |
+| 10 | Luminance-based film grain | Shadow regions receive heavier grain amplitude matching real photographic film stock |
+| 11 | Vignette + edge desaturation | Screen-space darkening and desaturation anchored to monitor frame via gl_FragCoord |
+| 12 | ACES filmic tonemapping | Narkowicz 2015 approximation; richer shadows, cleaner highlights than Reinhard |
+| 13 | Eye adaptation | Per-frame auto-exposure scalar applied to final composite color |
+| 14 | Edge sharpen | Ring boost at d ≈ 0.65 steepens the transition between adjacent particles |
+| 15 | Heat haze | High-emission particles distort their disk edge with a sine ripple — impossible in triangle rendering |
+| 16 | Kajiya-Kay anisotropic specular | SDF tangent derived analytically; horizontal weft for fabric, along-strand for hair |
+| 17 | SDF micro-displacement pore shadow | Two SDF differential samples along key-light direction produce concave pore shadows on skin |
+| 18 | DoF bokeh ring | Per-particle annular ring grows as depth diverges from focal plane, mimicking fast-lens bokeh |
+| 19 | Iridescent thin-film | 180 nm thin-film interference shifts leather from warm olive to faint teal at glancing angles |
+| 20 | SDF-curvature Fresnel rim | Hessian Laplacian amplifies rim light on convex geometry (knuckles, cheekbones, collar edge) |
+| 21 | Thickness-modulated SSS | Beer-Lambert skin transmission gated on SDF thickness probe depth |
+| 22 | SDF-analytical ambient occlusion | IQ 5-step geometric-decay AO march along surface normal; exact to SDF precision |
+| 23 | Eye spectral refraction | Per-wavelength IOR dispersion through the cornea SDF sphere; real chromatic aberration of the eye |
+
 ## License
 
 MIT
