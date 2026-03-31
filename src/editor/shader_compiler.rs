@@ -4693,3 +4693,2346 @@ pub fn full_shader_system_description() -> String {
     format!("ShaderCompiler: {} modules — full pipeline from GLSL source to compiled GPU program", shader_module_count())
 }
 
+
+// ── Shader Uniform Tracking ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct UniformTracker {
+    pub float_uniforms: HashMap<String, f32>,
+    pub vec2_uniforms: HashMap<String, [f32; 2]>,
+    pub vec3_uniforms: HashMap<String, [f32; 3]>,
+    pub vec4_uniforms: HashMap<String, [f32; 4]>,
+    pub int_uniforms: HashMap<String, i32>,
+    pub bool_uniforms: HashMap<String, bool>,
+    pub mat4_uniforms: HashMap<String, [[f32; 4]; 4]>,
+    pub dirty_flags: HashSet<String>,
+    pub upload_count: u64,
+}
+
+impl UniformTracker {
+    pub fn new() -> Self { Self { float_uniforms: HashMap::new(), vec2_uniforms: HashMap::new(), vec3_uniforms: HashMap::new(), vec4_uniforms: HashMap::new(), int_uniforms: HashMap::new(), bool_uniforms: HashMap::new(), mat4_uniforms: HashMap::new(), dirty_flags: HashSet::new(), upload_count: 0 } }
+    pub fn set_float(&mut self, name: impl Into<String>, v: f32) { let n = name.into(); if self.float_uniforms.get(&n) != Some(&v) { self.float_uniforms.insert(n.clone(), v); self.dirty_flags.insert(n); } }
+    pub fn set_vec3(&mut self, name: impl Into<String>, v: [f32; 3]) { let n = name.into(); self.vec3_uniforms.insert(n.clone(), v); self.dirty_flags.insert(n); }
+    pub fn set_vec4(&mut self, name: impl Into<String>, v: [f32; 4]) { let n = name.into(); self.vec4_uniforms.insert(n.clone(), v); self.dirty_flags.insert(n); }
+    pub fn set_int(&mut self, name: impl Into<String>, v: i32) { let n = name.into(); self.int_uniforms.insert(n.clone(), v); self.dirty_flags.insert(n); }
+    pub fn set_bool(&mut self, name: impl Into<String>, v: bool) { let n = name.into(); self.bool_uniforms.insert(n.clone(), v); self.dirty_flags.insert(n); }
+    pub fn mark_uploaded(&mut self) { self.dirty_flags.clear(); self.upload_count += 1; }
+    pub fn dirty_count(&self) -> usize { self.dirty_flags.len() }
+    pub fn has_dirty(&self) -> bool { !self.dirty_flags.is_empty() }
+    pub fn get_float(&self, name: &str) -> Option<f32> { self.float_uniforms.get(name).copied() }
+    pub fn get_vec4(&self, name: &str) -> Option<[f32; 4]> { self.vec4_uniforms.get(name).copied() }
+    pub fn total_uniform_count(&self) -> usize { self.float_uniforms.len() + self.vec2_uniforms.len() + self.vec3_uniforms.len() + self.vec4_uniforms.len() + self.int_uniforms.len() + self.bool_uniforms.len() + self.mat4_uniforms.len() }
+}
+
+impl Default for UniformTracker {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Error Reporting ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderErrorReport {
+    pub program_id: u32,
+    pub program_name: String,
+    pub stage: String,
+    pub errors: Vec<ShaderDiagnostic>,
+    pub warnings: Vec<ShaderDiagnostic>,
+    pub source_snippet: Vec<(u32, String)>,
+    pub timestamp: u64,
+    pub is_fatal: bool,
+}
+
+impl ShaderErrorReport {
+    pub fn new(program_id: u32, name: impl Into<String>, stage: impl Into<String>) -> Self {
+        Self { program_id, program_name: name.into(), stage: stage.into(), errors: Vec::new(), warnings: Vec::new(), source_snippet: Vec::new(), timestamp: 0, is_fatal: false }
+    }
+    pub fn add_error(&mut self, err: ShaderDiagnostic) { if err.is_error() { self.is_fatal = true; } self.errors.push(err); }
+    pub fn add_warning(&mut self, w: ShaderDiagnostic) { self.warnings.push(w); }
+    pub fn add_source_line(&mut self, line_no: u32, line: impl Into<String>) { self.source_snippet.push((line_no, line.into())); }
+    pub fn has_errors(&self) -> bool { !self.errors.is_empty() }
+    pub fn format_report(&self) -> String {
+        let mut s = format!("[{}] {}:{}\n", if self.is_fatal { "FATAL" } else { "WARN" }, self.program_name, self.stage);
+        for e in &self.errors { s += &format!("  {}\n", e.format()); }
+        for w in &self.warnings { s += &format!("  {}\n", w.format()); }
+        s
+    }
+}
+
+// ── Built-in Shader Snippets ──────────────────────────────────────────────────
+
+pub fn glsl_preamble(version: &str, is_es: bool) -> String {
+    if is_es { format!("#version {} es\nprecision highp float;\nprecision highp int;\n", version) }
+    else { format!("#version {}\n", version) }
+}
+
+pub fn glsl_common_utils() -> &'static str {
+    r#"
+const float PI = 3.14159265358979323846;
+const float TWO_PI = 6.28318530717958647692;
+const float HALF_PI = 1.57079632679489661923;
+const float INV_PI = 0.31830988618379067154;
+const float E = 2.71828182845904523536;
+const float GOLDEN_RATIO = 1.61803398874989484820;
+const float EPSILON = 1e-6;
+const float INF = 1.0/0.0;
+
+float saturate(float v) { return clamp(v, 0.0, 1.0); }
+vec2 saturate(vec2 v) { return clamp(v, vec2(0.0), vec2(1.0)); }
+vec3 saturate(vec3 v) { return clamp(v, vec3(0.0), vec3(1.0)); }
+vec4 saturate(vec4 v) { return clamp(v, vec4(0.0), vec4(1.0)); }
+
+float remap(float v, float fromMin, float fromMax, float toMin, float toMax) {
+    return toMin + (v - fromMin) / (fromMax - fromMin) * (toMax - toMin);
+}
+float luminance(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 rgb_to_hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+vec3 hash33(vec3 p) {
+    p = fract(p * vec3(443.8975, 397.2973, 491.1871));
+    p += dot(p.zxy, p.yxz + 19.19);
+    return fract(vec3(p.x * p.y, p.z * p.x, p.y * p.z));
+}
+"#
+}
+
+pub fn glsl_pbr_brdf() -> &'static str {
+    r#"
+// PBR BRDF functions (GGX/Schlick/Smith)
+vec3 F_Schlick(vec3 f0, float f90, float u) {
+    return f0 + (f90 - f0) * pow(1.0 - u, 5.0);
+}
+float V_SmithGGXCorrelated(float NdotV, float NdotL, float roughness) {
+    float a2 = roughness * roughness;
+    float GGXV = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
+    float GGXL = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
+    return 0.5 / max(GGXV + GGXL, 1e-5);
+}
+float D_GGX(float NdotH, float roughness) {
+    float a2 = roughness * roughness;
+    float f = (NdotH * a2 - NdotH) * NdotH + 1.0;
+    return a2 / (PI * f * f);
+}
+vec3 eval_pbr(vec3 N, vec3 V, vec3 L, vec3 albedo, float roughness, float metalness) {
+    vec3 H = normalize(V + L);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float LdotH = max(dot(L, H), 0.0);
+    vec3 f0 = mix(vec3(0.04), albedo, metalness);
+    float D = D_GGX(NdotH, roughness);
+    float V_vis = V_SmithGGXCorrelated(NdotV, NdotL, roughness);
+    vec3 F = F_Schlick(f0, 1.0, LdotH);
+    vec3 Fr = D * V_vis * F;
+    vec3 Fd = (1.0 - F) * (1.0 - metalness) * albedo / PI;
+    return (Fd + Fr) * NdotL;
+}
+"#
+}
+
+pub fn glsl_shadow_functions() -> &'static str {
+    r#"
+float shadow_hard(sampler2DShadow shadowMap, vec4 shadowCoord) {
+    vec3 projCoords = shadowCoord.xyz / shadowCoord.w;
+    return texture(shadowMap, projCoords);
+}
+float shadow_soft_pcf(sampler2DShadow shadowMap, vec4 shadowCoord, int samples) {
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    vec3 projCoords = shadowCoord.xyz / shadowCoord.w;
+    float shadow = 0.0;
+    float total = 0.0;
+    for(int x = -samples; x <= samples; x++) {
+        for(int y = -samples; y <= samples; y++) {
+            vec3 offset = vec3(vec2(x, y) * texelSize, 0.0);
+            shadow += texture(shadowMap, projCoords + offset);
+            total += 1.0;
+        }
+    }
+    return shadow / total;
+}
+vec2 poisson_disk[16] = vec2[](
+    vec2(-0.94201624, -0.39906216), vec2(0.94558609, -0.76890725),
+    vec2(-0.094184101, -0.92938870), vec2(0.34495938, 0.29387760),
+    vec2(-0.91588581, 0.45771432), vec2(-0.81544232, -0.87912464),
+    vec2(-0.38277543, 0.27676845), vec2(0.97484398, 0.75648379),
+    vec2(0.44323325, -0.97511554), vec2(0.53742981, -0.47373420),
+    vec2(-0.26496911, -0.41893023), vec2(0.79197514, 0.19090188),
+    vec2(-0.24188840, 0.99706507), vec2(-0.81409955, 0.91437590),
+    vec2(0.19984126, 0.78641367), vec2(0.14383161, -0.14100790)
+);
+float shadow_poisson(sampler2DShadow shadowMap, vec4 shadowCoord, float radius) {
+    vec3 projCoords = shadowCoord.xyz / shadowCoord.w;
+    float shadow = 0.0;
+    for(int i = 0; i < 16; i++) {
+        vec2 offset = poisson_disk[i] * radius;
+        shadow += texture(shadowMap, projCoords + vec3(offset, 0.0));
+    }
+    return shadow / 16.0;
+}
+"#
+}
+
+pub fn glsl_atmosphere() -> &'static str {
+    r#"
+// Simple atmospheric scattering approximation
+vec3 atmosphere(vec3 ray_dir, vec3 sun_dir, vec3 sun_color) {
+    float sun_dot = max(dot(ray_dir, sun_dir), 0.0);
+    vec3 sky_color = vec3(0.1, 0.3, 0.7);
+    vec3 horizon_color = vec3(0.7, 0.5, 0.3);
+    float horizon_blend = pow(1.0 - abs(ray_dir.y), 4.0);
+    vec3 sky = mix(sky_color, horizon_color, horizon_blend);
+    float sun_disc = smoothstep(0.998, 1.0, sun_dot);
+    float halo = pow(sun_dot, 8.0) * 0.3;
+    return sky + sun_color * (sun_disc + halo);
+}
+vec3 fog(vec3 color, float depth, vec3 fog_color, float fog_start, float fog_end) {
+    float factor = clamp((depth - fog_start) / (fog_end - fog_start), 0.0, 1.0);
+    return mix(color, fog_color, factor);
+}
+vec3 exponential_fog(vec3 color, float depth, vec3 fog_color, float density) {
+    float factor = 1.0 - exp(-density * depth);
+    return mix(color, fog_color, factor);
+}
+"#
+}
+
+// ── Shader Constant Buffer Layouts ────────────────────────────────────────────
+
+pub fn per_frame_cbuffer_glsl() -> &'static str {
+    r#"
+layout(std140, binding = 0) uniform PerFrame {
+    mat4 view;
+    mat4 proj;
+    mat4 view_proj;
+    mat4 inv_view;
+    mat4 inv_proj;
+    vec4 camera_pos;
+    vec4 camera_dir;
+    vec4 viewport_size;
+    float time;
+    float delta_time;
+    float near_plane;
+    float far_plane;
+    vec4 sun_direction;
+    vec4 sun_color;
+    vec4 ambient_color;
+    vec2 jitter_offset;
+    uint frame_index;
+    float exposure;
+} u_frame;
+"#
+}
+
+pub fn per_object_cbuffer_glsl() -> &'static str {
+    r#"
+layout(std140, binding = 1) uniform PerObject {
+    mat4 model;
+    mat4 model_view;
+    mat4 mvp;
+    mat4 normal_matrix;
+    vec4 object_color;
+    vec4 object_id;
+    float lod_bias;
+    uint material_flags;
+    float opacity;
+    float pad;
+} u_object;
+"#
+}
+
+pub fn per_material_cbuffer_glsl() -> &'static str {
+    r#"
+layout(std140, binding = 2) uniform PerMaterial {
+    vec4 albedo_color;
+    vec4 emissive_color;
+    float roughness;
+    float metalness;
+    float normal_scale;
+    float occlusion_strength;
+    float emissive_intensity;
+    float opacity;
+    float alpha_cutoff;
+    uint flags;
+    vec4 uv_transform;
+} u_material;
+"#
+}
+
+// ── Shader statistics & info ──────────────────────────────────────────────────
+
+pub const SHADER_BUILTIN_SNIPPETS: usize = 11;
+pub const SHADER_GLSL_BUILTIN_FUNCTIONS: usize = 28;
+pub const SHADER_CBUFFER_BINDINGS: u32 = 3;
+pub const SHADER_ATMOSPHERE_SAMPLES: u32 = 8;
+pub const SHADER_SHADOW_PCF_SAMPLES: u32 = 9;
+pub const SHADER_SHADOW_POISSON_SAMPLES: u32 = 16;
+pub const GLSL_PRECISION_HIGHP: &str = "highp";
+pub const GLSL_PRECISION_MEDIUMP: &str = "mediump";
+pub const GLSL_PRECISION_LOWP: &str = "lowp";
+
+pub fn all_glsl_builtin_types() -> &'static [&'static str] {
+    &[ "void", "bool", "int", "uint", "float", "double",
+       "bvec2", "bvec3", "bvec4", "ivec2", "ivec3", "ivec4",
+       "uvec2", "uvec3", "uvec4", "vec2", "vec3", "vec4",
+       "dvec2", "dvec3", "dvec4",
+       "mat2", "mat3", "mat4", "mat2x3", "mat2x4", "mat3x2",
+       "mat3x4", "mat4x2", "mat4x3",
+       "sampler2D", "sampler3D", "samplerCube", "sampler2DArray",
+       "sampler2DShadow", "samplerCubeShadow",
+       "isampler2D", "usampler2D", "image2D", "imageCube" ]
+}
+
+pub fn all_glsl_keywords() -> &'static [&'static str] {
+    &[ "if", "else", "for", "while", "do", "switch", "case", "default",
+       "break", "continue", "return", "discard",
+       "void", "struct", "precision", "highp", "mediump", "lowp",
+       "in", "out", "inout", "uniform", "const", "layout",
+       "attribute", "varying", "flat", "smooth", "centroid",
+       "noperspective", "invariant", "coherent", "volatile",
+       "restrict", "readonly", "writeonly" ]
+}
+
+
+// ── Render Feature Flags ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderFeatureFlags {
+    pub pbr: bool,
+    pub shadows: bool,
+    pub ssao: bool,
+    pub ssr: bool,
+    pub bloom: bool,
+    pub fxaa: bool,
+    pub taa: bool,
+    pub dof: bool,
+    pub motion_blur: bool,
+    pub volumetric_fog: bool,
+    pub lens_flare: bool,
+    pub chromatic_aberration: bool,
+    pub vignette: bool,
+    pub color_grading: bool,
+    pub debug_mode: bool,
+}
+
+impl RenderFeatureFlags {
+    pub fn all_off() -> Self { Self { pbr: false, shadows: false, ssao: false, ssr: false, bloom: false, fxaa: false, taa: false, dof: false, motion_blur: false, volumetric_fog: false, lens_flare: false, chromatic_aberration: false, vignette: false, color_grading: false, debug_mode: false } }
+    pub fn default_high_quality() -> Self { Self { pbr: true, shadows: true, ssao: true, ssr: false, bloom: true, fxaa: true, taa: true, dof: false, motion_blur: false, volumetric_fog: false, lens_flare: false, chromatic_aberration: false, vignette: true, color_grading: true, debug_mode: false } }
+    pub fn default_medium_quality() -> Self { Self { pbr: true, shadows: true, ssao: false, ssr: false, bloom: true, fxaa: true, taa: false, ..Self::all_off() } }
+    pub fn default_low_quality() -> Self { Self { fxaa: true, ..Self::all_off() } }
+    pub fn active_count(&self) -> usize {
+        [self.pbr, self.shadows, self.ssao, self.ssr, self.bloom, self.fxaa, self.taa, self.dof, self.motion_blur, self.volumetric_fog, self.lens_flare, self.chromatic_aberration, self.vignette, self.color_grading].iter().filter(|&&b| b).count()
+    }
+    pub fn generate_defines(&self) -> Vec<(String, String)> {
+        let mut defines = Vec::new();
+        if self.pbr { defines.push(("USE_PBR".into(), "1".into())); }
+        if self.shadows { defines.push(("USE_SHADOWS".into(), "1".into())); }
+        if self.ssao { defines.push(("USE_SSAO".into(), "1".into())); }
+        if self.bloom { defines.push(("USE_BLOOM".into(), "1".into())); }
+        if self.fxaa { defines.push(("USE_FXAA".into(), "1".into())); }
+        if self.taa { defines.push(("USE_TAA".into(), "1".into())); }
+        defines
+    }
+}
+
+impl Default for RenderFeatureFlags {
+    fn default() -> Self { Self::default_high_quality() }
+}
+
+// ── Shader compilation context ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCompilationContext {
+    pub source_path: String,
+    pub stage: ShaderStage,
+    pub target: CodeGenTarget,
+    pub defines: HashMap<String, String>,
+    pub include_paths: Vec<String>,
+    pub optimization: OptimizationLevel,
+    pub version: String,
+    pub entry_point: String,
+    pub features: RenderFeatureFlags,
+}
+
+impl ShaderCompilationContext {
+    pub fn new(path: impl Into<String>, stage: ShaderStage, target: CodeGenTarget) -> Self {
+        Self { source_path: path.into(), stage, target, defines: HashMap::new(), include_paths: Vec::new(), optimization: OptimizationLevel::Medium, version: "450".into(), entry_point: "main".into(), features: RenderFeatureFlags::default() }
+    }
+    pub fn add_define(&mut self, k: impl Into<String>, v: impl Into<String>) { self.defines.insert(k.into(), v.into()); }
+    pub fn apply_features(&mut self) {
+        for (k, v) in self.features.generate_defines() { self.defines.insert(k, v); }
+    }
+    pub fn is_vertex(&self) -> bool { self.stage == ShaderStage::Vertex }
+    pub fn is_fragment(&self) -> bool { self.stage == ShaderStage::Fragment }
+    pub fn is_compute(&self) -> bool { self.stage == ShaderStage::Compute }
+}
+
+// ── Shader bundle ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderBundle {
+    pub id: u32,
+    pub name: String,
+    pub programs: Vec<ShaderProgram>,
+    pub materials: Vec<Material>,
+    pub templates: Vec<ShaderTemplate>,
+    pub version: u32,
+    pub description: String,
+    pub author: String,
+    pub created_at: u64,
+}
+
+impl ShaderBundle {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), programs: Vec::new(), materials: Vec::new(), templates: Vec::new(), version: 1, description: String::new(), author: String::new(), created_at: 0 }
+    }
+    pub fn add_program(&mut self, p: ShaderProgram) { self.programs.push(p); }
+    pub fn add_material(&mut self, m: Material) { self.materials.push(m); }
+    pub fn add_template(&mut self, t: ShaderTemplate) { self.templates.push(t); }
+    pub fn program_count(&self) -> usize { self.programs.len() }
+    pub fn material_count(&self) -> usize { self.materials.len() }
+    pub fn find_program(&self, name: &str) -> Option<&ShaderProgram> { self.programs.iter().find(|p| p.name == name) }
+    pub fn is_empty(&self) -> bool { self.programs.is_empty() && self.materials.is_empty() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderBundleRegistry {
+    pub bundles: HashMap<u32, ShaderBundle>,
+    pub next_id: u32,
+}
+
+impl ShaderBundleRegistry {
+    pub fn new() -> Self { Self { bundles: HashMap::new(), next_id: 1 } }
+    pub fn register(&mut self, mut b: ShaderBundle) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        b.id = id;
+        self.bundles.insert(id, b);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&ShaderBundle> { self.bundles.get(&id) }
+    pub fn find_by_name(&self, name: &str) -> Option<&ShaderBundle> { self.bundles.values().find(|b| b.name == name) }
+    pub fn total_programs(&self) -> usize { self.bundles.values().map(|b| b.program_count()).sum() }
+    pub fn count(&self) -> usize { self.bundles.len() }
+}
+
+impl Default for ShaderBundleRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Workspace ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderWorkspace {
+    pub registry: ShaderProgramRegistry,
+    pub cache: ShaderCache,
+    pub library: ShaderLibrary,
+    pub material_lib: MaterialLibrary,
+    pub texture_reg: TextureRegistry,
+    pub buffer_reg: BufferRegistry,
+    pub pipeline: RenderPipeline,
+    pub post_process: PostProcessStack,
+    pub template_lib: ShaderTemplateLibrary,
+    pub linter: ShaderLinter,
+    pub formatter: ShaderFormatter,
+    pub debugger: ShaderDebugger,
+    pub profiler: ShaderProfiler,
+    pub hot_reload: HotReloadManager,
+    pub editor_state: ShaderEditorState,
+    pub autocomplete: AutoCompleteProvider,
+    pub linker: ShaderLinker,
+    pub bundle_reg: ShaderBundleRegistry,
+    pub feature_flags: RenderFeatureFlags,
+    pub memory_budget: GpuMemoryBudget,
+    pub render_stats: RenderStatistics,
+}
+
+impl ShaderWorkspace {
+    pub fn new() -> Self {
+        Self {
+            registry: ShaderProgramRegistry::new(),
+            cache: ShaderCache::new(SHADER_CACHE_SIZE),
+            library: ShaderLibrary::build_standard(),
+            material_lib: MaterialLibrary::new(),
+            texture_reg: TextureRegistry::new(),
+            buffer_reg: BufferRegistry::new(),
+            pipeline: RenderPipeline::new(),
+            post_process: PostProcessStack::new(),
+            template_lib: ShaderTemplateLibrary::new(),
+            linter: ShaderLinter::new(),
+            formatter: ShaderFormatter::new(),
+            debugger: ShaderDebugger::build_defaults(),
+            profiler: ShaderProfiler::new(),
+            hot_reload: HotReloadManager::new(),
+            editor_state: ShaderEditorState::new(),
+            autocomplete: AutoCompleteProvider::new(),
+            linker: ShaderLinker::new(),
+            bundle_reg: ShaderBundleRegistry::new(),
+            feature_flags: RenderFeatureFlags::default(),
+            memory_budget: GpuMemoryBudget::new(GPU_MEMORY_BUDGET_DEFAULT_MB * 1024 * 1024),
+            render_stats: RenderStatistics::new(),
+        }
+    }
+    pub fn program_count(&self) -> usize { self.registry.count() }
+    pub fn material_count(&self) -> usize { self.material_lib.count() }
+    pub fn texture_count(&self) -> usize { self.texture_reg.count() }
+    pub fn buffer_count(&self) -> usize { self.buffer_reg.count() }
+    pub fn begin_frame(&mut self) { self.render_stats.begin_frame(); self.profiler.begin_frame(); }
+    pub fn has_program(&self, name: &str) -> bool { self.registry.find_by_name(name).is_some() }
+    pub fn tick(&mut self, dt: f32) { let _ = self.hot_reload.tick(dt); }
+}
+
+impl Default for ShaderWorkspace {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const SHADER_BUNDLE_MAX: usize = 64;
+pub const SHADER_WORKSPACE_MAX_PROGRAMS: usize = SHADER_MAX_PROGRAMS;
+pub const RENDER_FEATURE_COUNT: usize = 15;
+pub const SHADER_VERSION_DEFAULT: &str = "450";
+pub const SHADER_ES_VERSION_DEFAULT: &str = "300 es";
+pub const SHADER_ENTRY_POINT_DEFAULT: &str = "main";
+pub const GLSL_BUILTIN_TYPE_COUNT: usize = 40;
+pub const GLSL_KEYWORD_COUNT: usize = 31;
+pub const GLSL_MAX_FRAGMENT_OUTPUTS: u32 = 8;
+pub const GLSL_MAX_VERTEX_ATTRIBS: u32 = 32;
+
+pub fn build_standard_shader_workspace() -> ShaderWorkspace { ShaderWorkspace::new() }
+pub fn shader_workspace_summary(ws: &ShaderWorkspace) -> String {
+    format!("ShaderWorkspace: {} programs, {} materials, {} textures, {} buffers, {} render passes", ws.program_count(), ws.material_count(), ws.texture_count(), ws.buffer_count(), ws.pipeline.pass_count())
+}
+pub fn shader_system_version() -> &'static str { "1.0.0" }
+pub fn is_shader_system_ready() -> bool { true }
+
+
+// ── Render Graph ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderGraphNode {
+    pub id: u32,
+    pub name: String,
+    pub node_type: RenderGraphNodeType,
+    pub inputs: Vec<RenderGraphResource>,
+    pub outputs: Vec<RenderGraphResource>,
+    pub shader_id: Option<u32>,
+    pub enabled: bool,
+    pub order: u32,
+    pub async_compute: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderGraphNodeType { Pass, Blit, Compute, Present, Upload, Barrier, Custom(String) }
+
+#[derive(Clone, Debug)]
+pub struct RenderGraphResource {
+    pub name: String,
+    pub resource_type: RenderGraphResourceType,
+    pub format: AttachmentFormat,
+    pub width: u32,
+    pub height: u32,
+    pub mips: u32,
+    pub transient: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderGraphResourceType { Texture, Buffer, RenderTarget, DepthStencil }
+
+impl RenderGraphNode {
+    pub fn new(id: u32, name: impl Into<String>, node_type: RenderGraphNodeType) -> Self {
+        Self { id, name: name.into(), node_type, inputs: Vec::new(), outputs: Vec::new(), shader_id: None, enabled: true, order: 0, async_compute: false }
+    }
+    pub fn add_input(&mut self, res: RenderGraphResource) { self.inputs.push(res); }
+    pub fn add_output(&mut self, res: RenderGraphResource) { self.outputs.push(res); }
+    pub fn is_pass(&self) -> bool { self.node_type == RenderGraphNodeType::Pass }
+    pub fn is_compute(&self) -> bool { self.node_type == RenderGraphNodeType::Compute }
+    pub fn input_count(&self) -> usize { self.inputs.len() }
+    pub fn output_count(&self) -> usize { self.outputs.len() }
+    pub fn with_shader(mut self, id: u32) -> Self { self.shader_id = Some(id); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderGraph {
+    pub nodes: Vec<RenderGraphNode>,
+    pub edges: Vec<(u32, u32)>,
+    pub name: String,
+    pub next_id: u32,
+}
+
+impl RenderGraph {
+    pub fn new(name: impl Into<String>) -> Self { Self { nodes: Vec::new(), edges: Vec::new(), name: name.into(), next_id: 1 } }
+    pub fn add_node(&mut self, node_type: RenderGraphNodeType, name: impl Into<String>) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.push(RenderGraphNode::new(id, name, node_type));
+        id
+    }
+    pub fn connect(&mut self, from: u32, to: u32) { self.edges.push((from, to)); }
+    pub fn sorted_nodes(&self) -> Vec<&RenderGraphNode> {
+        let mut sorted: Vec<_> = self.nodes.iter().filter(|n| n.enabled).collect();
+        sorted.sort_by_key(|n| n.order);
+        sorted
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn find_node(&self, id: u32) -> Option<&RenderGraphNode> { self.nodes.iter().find(|n| n.id == id) }
+    pub fn remove_node(&mut self, id: u32) { self.nodes.retain(|n| n.id != id); self.edges.retain(|(a, b)| *a != id && *b != id); }
+}
+
+impl Default for RenderGraph {
+    fn default() -> Self { Self::new("default") }
+}
+
+// ── Shader Compiler Main ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCompilerMain {
+    pub workspace: ShaderWorkspace,
+    pub render_graph: RenderGraph,
+    pub compile_stats: CompileStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompileStats {
+    pub total_compiled: u32,
+    pub total_failed: u32,
+    pub total_cached: u32,
+    pub total_reloaded: u32,
+    pub avg_compile_ms: f32,
+    pub peak_compile_ms: f32,
+}
+
+impl CompileStats {
+    pub fn new() -> Self { Self::default() }
+    pub fn record_compile(&mut self, ms: f32, success: bool, from_cache: bool) {
+        if from_cache { self.total_cached += 1; return; }
+        if success { self.total_compiled += 1; } else { self.total_failed += 1; }
+        self.peak_compile_ms = self.peak_compile_ms.max(ms);
+        let total = self.total_compiled + self.total_failed;
+        self.avg_compile_ms = (self.avg_compile_ms * (total - 1) as f32 + ms) / total as f32;
+    }
+    pub fn success_rate(&self) -> f32 {
+        let total = self.total_compiled + self.total_failed;
+        if total == 0 { 1.0 } else { self.total_compiled as f32 / total as f32 }
+    }
+    pub fn total_attempts(&self) -> u32 { self.total_compiled + self.total_failed + self.total_cached }
+}
+
+impl ShaderCompilerMain {
+    pub fn new() -> Self { Self { workspace: ShaderWorkspace::new(), render_graph: RenderGraph::new("main"), compile_stats: CompileStats::new() } }
+    pub fn add_program(&mut self, prog: ShaderProgram) -> u32 { self.workspace.registry.add(prog) }
+    pub fn get_program(&self, id: u32) -> Option<&ShaderProgram> { self.workspace.registry.get(id) }
+    pub fn add_material(&mut self, mat: Material) -> u32 { self.workspace.material_lib.add(mat) }
+    pub fn add_texture(&mut self, tex: TextureDescriptor) -> u32 { self.workspace.texture_reg.register(tex) }
+    pub fn begin_frame(&mut self) { self.workspace.begin_frame(); }
+    pub fn tick(&mut self, dt: f32) { self.workspace.tick(dt); }
+    pub fn program_count(&self) -> usize { self.workspace.program_count() }
+    pub fn compilation_summary(&self) -> String {
+        format!("Compiled: {}, Failed: {}, Cached: {}, Success: {:.1}%", self.compile_stats.total_compiled, self.compile_stats.total_failed, self.compile_stats.total_cached, self.compile_stats.success_rate() * 100.0)
+    }
+}
+
+impl Default for ShaderCompilerMain {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Color Grading ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ColorGradingSettings {
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub brightness: f32,
+    pub hue_shift: f32,
+    pub lift: [f32; 3],
+    pub gamma: [f32; 3],
+    pub gain: [f32; 3],
+    pub white_balance_temp: f32,
+    pub white_balance_tint: f32,
+    pub shadows_color: [f32; 3],
+    pub midtones_color: [f32; 3],
+    pub highlights_color: [f32; 3],
+    pub tonemapping: ToneMappingMode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToneMappingMode { None, Reinhard, Aces, Filmic, Uncharted2, Custom }
+
+impl Default for ColorGradingSettings {
+    fn default() -> Self {
+        Self { exposure: 0.0, contrast: 1.0, saturation: 1.0, brightness: 0.0, hue_shift: 0.0, lift: [0.0; 3], gamma: [1.0; 3], gain: [1.0; 3], white_balance_temp: 6500.0, white_balance_tint: 0.0, shadows_color: [0.0; 3], midtones_color: [0.0; 3], highlights_color: [0.0; 3], tonemapping: ToneMappingMode::Aces }
+    }
+}
+
+impl ColorGradingSettings {
+    pub fn new() -> Self { Self::default() }
+    pub fn neutral() -> Self { Self::default() }
+    pub fn warm() -> Self { Self { white_balance_temp: 7500.0, saturation: 1.1, ..Self::default() } }
+    pub fn cool() -> Self { Self { white_balance_temp: 5500.0, saturation: 0.9, ..Self::default() } }
+    pub fn cinematic() -> Self { Self { contrast: 1.15, saturation: 0.9, tonemapping: ToneMappingMode::Filmic, ..Self::default() } }
+    pub fn generate_glsl(&self) -> String {
+        format!("// ColorGrading: exposure={:.2}, contrast={:.2}, saturation={:.2}, tonemapping={:?}", self.exposure, self.contrast, self.saturation, self.tonemapping)
+    }
+    pub fn is_neutral(&self) -> bool { self.exposure == 0.0 && self.contrast == 1.0 && self.saturation == 1.0 }
+}
+
+// ── Screen Space Ambient Occlusion Config ─────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SsaoConfig {
+    pub kernel_size: u32,
+    pub radius: f32,
+    pub bias: f32,
+    pub power: f32,
+    pub blur_passes: u32,
+    pub enabled: bool,
+    pub quality: SsaoQuality,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SsaoQuality { Low, Medium, High, Ultra }
+
+impl SsaoConfig {
+    pub fn new() -> Self { Self { kernel_size: 32, radius: 0.5, bias: 0.025, power: 2.0, blur_passes: 2, enabled: true, quality: SsaoQuality::Medium } }
+    pub fn low() -> Self { Self { kernel_size: 8, radius: 0.3, blur_passes: 1, quality: SsaoQuality::Low, ..Self::new() } }
+    pub fn high() -> Self { Self { kernel_size: 64, radius: 0.8, blur_passes: 3, quality: SsaoQuality::High, ..Self::new() } }
+    pub fn ultra() -> Self { Self { kernel_size: 128, radius: 1.0, blur_passes: 4, quality: SsaoQuality::Ultra, ..Self::new() } }
+}
+
+impl Default for SsaoConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Depth of Field ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct DepthOfFieldConfig {
+    pub enabled: bool,
+    pub focus_distance: f32,
+    pub focus_range: f32,
+    pub far_blur_range: f32,
+    pub near_blur_range: f32,
+    pub bokeh_radius: f32,
+    pub bokeh_blade_count: u32,
+    pub bokeh_rotation: f32,
+    pub max_coc_radius: f32,
+}
+
+impl DepthOfFieldConfig {
+    pub fn new() -> Self { Self { enabled: false, focus_distance: 10.0, focus_range: 5.0, far_blur_range: 20.0, near_blur_range: 2.0, bokeh_radius: 8.0, bokeh_blade_count: 6, bokeh_rotation: 0.0, max_coc_radius: 20.0 } }
+    pub fn portrait() -> Self { Self { enabled: true, focus_distance: 2.0, focus_range: 0.5, bokeh_radius: 12.0, ..Self::new() } }
+    pub fn cinematic() -> Self { Self { enabled: true, focus_distance: 5.0, focus_range: 2.0, bokeh_radius: 10.0, bokeh_blade_count: 8, ..Self::new() } }
+}
+
+impl Default for DepthOfFieldConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Bloom Config ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct BloomConfig {
+    pub enabled: bool,
+    pub threshold: f32,
+    pub intensity: f32,
+    pub scatter: f32,
+    pub clamp: f32,
+    pub downsample_passes: u32,
+    pub mode: BloomMode,
+    pub tint: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BloomMode { Classic, Kawase, Dual, Convolution }
+
+impl BloomConfig {
+    pub fn new() -> Self { Self { enabled: true, threshold: 0.9, intensity: 0.5, scatter: 0.7, clamp: 65472.0, downsample_passes: 5, mode: BloomMode::Dual, tint: [1.0; 3] } }
+    pub fn subtle() -> Self { Self { intensity: 0.2, ..Self::new() } }
+    pub fn intense() -> Self { Self { intensity: 1.5, threshold: 0.7, ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+}
+
+impl Default for BloomConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Final Shader System Constants ─────────────────────────────────────────────
+
+pub const RENDER_GRAPH_MAX_NODES: usize = 64;
+pub const RENDER_GRAPH_MAX_EDGES: usize = 256;
+pub const COLOR_GRADING_LUT_SIZE: u32 = 32;
+pub const SSAO_KERNEL_SIZE_MAX: u32 = 256;
+pub const DOF_MAX_COC_RADIUS: f32 = 32.0;
+pub const BLOOM_MAX_DOWNSAMPLE_PASSES: u32 = 8;
+pub const SHADER_COMPILER_MAX_WORKSPACES: usize = 8;
+pub const GPU_BUDGET_WARNING_PERCENT: f32 = 80.0;
+pub const GPU_BUDGET_CRITICAL_PERCENT: f32 = 95.0;
+pub const SHADER_PERMUTATION_HASH_SEED: u64 = 14695981039346656037;
+
+pub fn tonemap_name(mode: &ToneMappingMode) -> &'static str {
+    match mode { ToneMappingMode::None => "None", ToneMappingMode::Reinhard => "Reinhard", ToneMappingMode::Aces => "ACES", ToneMappingMode::Filmic => "Filmic", ToneMappingMode::Uncharted2 => "Uncharted 2", ToneMappingMode::Custom => "Custom" }
+}
+pub fn bloom_mode_name(mode: &BloomMode) -> &'static str {
+    match mode { BloomMode::Classic => "Classic", BloomMode::Kawase => "Kawase", BloomMode::Dual => "Dual Kawase", BloomMode::Convolution => "Convolution" }
+}
+pub fn ssao_quality_name(q: &SsaoQuality) -> &'static str {
+    match q { SsaoQuality::Low => "Low", SsaoQuality::Medium => "Medium", SsaoQuality::High => "High", SsaoQuality::Ultra => "Ultra" }
+}
+pub fn shader_compiler_build_date() -> &'static str { "2026-03-29" }
+pub fn shader_compiler_complete_info() -> String {
+    format!("ShaderCompilerEditor v{} — {} modules, render graph, materials, post-process, color grading", shader_system_version(), shader_module_count())
+}
+
+
+// ── Screen Space Reflections ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SsrConfig {
+    pub enabled: bool,
+    pub max_steps: u32,
+    pub max_distance: f32,
+    pub thickness: f32,
+    pub stride: u32,
+    pub jitter: f32,
+    pub fade_start: f32,
+    pub fade_end: f32,
+    pub reflection_blend: f32,
+    pub quality: SsrQuality,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SsrQuality { Low, Medium, High }
+
+impl SsrConfig {
+    pub fn new() -> Self { Self { enabled: false, max_steps: 32, max_distance: 100.0, thickness: 0.5, stride: 2, jitter: 0.5, fade_start: 0.7, fade_end: 1.0, reflection_blend: 0.5, quality: SsrQuality::Medium } }
+    pub fn high() -> Self { Self { enabled: true, max_steps: 64, stride: 1, quality: SsrQuality::High, ..Self::new() } }
+    pub fn low() -> Self { Self { enabled: true, max_steps: 16, stride: 4, quality: SsrQuality::Low, ..Self::new() } }
+}
+
+impl Default for SsrConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Temporal Anti-Aliasing ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TaaConfig {
+    pub enabled: bool,
+    pub blend_factor: f32,
+    pub history_blend: f32,
+    pub sharpness: f32,
+    pub jitter_scale: f32,
+    pub motion_rejection: f32,
+    pub clip_aabb: bool,
+    pub variance_clip_gamma: f32,
+    pub sample_count: u32,
+}
+
+impl TaaConfig {
+    pub fn new() -> Self { Self { enabled: true, blend_factor: 0.1, history_blend: 0.9, sharpness: 0.5, jitter_scale: 1.0, motion_rejection: 0.3, clip_aabb: true, variance_clip_gamma: 1.0, sample_count: 8 } }
+    pub fn aggressive() -> Self { Self { blend_factor: 0.05, motion_rejection: 0.5, ..Self::new() } }
+    pub fn gentle() -> Self { Self { blend_factor: 0.2, motion_rejection: 0.1, ..Self::new() } }
+}
+
+impl Default for TaaConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Volumetric Fog ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VolumetricFogConfig {
+    pub enabled: bool,
+    pub density: f32,
+    pub scattering: f32,
+    pub absorption: f32,
+    pub anisotropy: f32,
+    pub height_falloff: f32,
+    pub base_height: f32,
+    pub fog_color: [f32; 3],
+    pub ambient_fog_color: [f32; 3],
+    pub light_intensity: f32,
+    pub num_slices: u32,
+    pub temporal_reprojection: bool,
+}
+
+impl VolumetricFogConfig {
+    pub fn new() -> Self { Self { enabled: false, density: 0.1, scattering: 0.5, absorption: 0.1, anisotropy: 0.5, height_falloff: 0.1, base_height: 0.0, fog_color: [1.0, 0.95, 0.9], ambient_fog_color: [0.5, 0.6, 0.8], light_intensity: 1.0, num_slices: 128, temporal_reprojection: true } }
+    pub fn light_fog() -> Self { Self { enabled: true, density: 0.02, ..Self::new() } }
+    pub fn heavy_fog() -> Self { Self { enabled: true, density: 0.3, ..Self::new() } }
+    pub fn night_fog() -> Self { Self { enabled: true, density: 0.15, fog_color: [0.3, 0.35, 0.5], ambient_fog_color: [0.1, 0.1, 0.2], ..Self::new() } }
+}
+
+impl Default for VolumetricFogConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Lens Flare ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LensFlareConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub threshold: f32,
+    pub ghosts: u32,
+    pub ghost_dispersal: f32,
+    pub halo_width: f32,
+    pub chromatic_distortion: f32,
+    pub starburst_intensity: f32,
+    pub starburst_count: u32,
+}
+
+impl LensFlareConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.5, threshold: 0.8, ghosts: 4, ghost_dispersal: 0.4, halo_width: 0.4, chromatic_distortion: 5.0, starburst_intensity: 0.5, starburst_count: 8 } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.2, ..Self::new() } }
+    pub fn dramatic() -> Self { Self { enabled: true, intensity: 1.5, ghosts: 8, ..Self::new() } }
+}
+
+impl Default for LensFlareConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Full Post Process Configuration ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FullPostProcessConfig {
+    pub bloom: BloomConfig,
+    pub color_grading: ColorGradingSettings,
+    pub ssao: SsaoConfig,
+    pub ssr: SsrConfig,
+    pub taa: TaaConfig,
+    pub dof: DepthOfFieldConfig,
+    pub volumetric_fog: VolumetricFogConfig,
+    pub lens_flare: LensFlareConfig,
+    pub enabled: bool,
+}
+
+impl FullPostProcessConfig {
+    pub fn new() -> Self {
+        Self { bloom: BloomConfig::new(), color_grading: ColorGradingSettings::new(), ssao: SsaoConfig::new(), ssr: SsrConfig::new(), taa: TaaConfig::new(), dof: DepthOfFieldConfig::new(), volumetric_fog: VolumetricFogConfig::new(), lens_flare: LensFlareConfig::new(), enabled: true }
+    }
+    pub fn high_quality() -> Self {
+        Self { bloom: BloomConfig::new(), ssao: SsaoConfig::high(), taa: TaaConfig::new(), ..Self::new() }
+    }
+    pub fn low_quality() -> Self {
+        Self { bloom: BloomConfig::disabled(), ssao: SsaoConfig::low(), taa: TaaConfig::new(), ..Self::new() }
+    }
+    pub fn active_effect_count(&self) -> usize {
+        [self.bloom.enabled, self.ssao.enabled, self.ssr.enabled, self.taa.enabled, self.dof.enabled, self.volumetric_fog.enabled, self.lens_flare.enabled].iter().filter(|&&b| b).count()
+    }
+}
+
+impl Default for FullPostProcessConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Rendering Quality Preset ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderQualityPreset {
+    pub name: String,
+    pub features: RenderFeatureFlags,
+    pub post_process: FullPostProcessConfig,
+    pub shadow_map_resolution: u32,
+    pub shadow_cascades: u32,
+    pub max_lights: u32,
+    pub reflection_quality: u32,
+    pub target_fps: u32,
+    pub render_scale: f32,
+}
+
+impl RenderQualityPreset {
+    pub fn low() -> Self {
+        Self { name: "Low".into(), features: RenderFeatureFlags::default_low_quality(), post_process: FullPostProcessConfig::low_quality(), shadow_map_resolution: 1024, shadow_cascades: 2, max_lights: 16, reflection_quality: 0, target_fps: 60, render_scale: 0.75 }
+    }
+    pub fn medium() -> Self {
+        Self { name: "Medium".into(), features: RenderFeatureFlags::default_medium_quality(), post_process: FullPostProcessConfig::new(), shadow_map_resolution: 2048, shadow_cascades: 3, max_lights: 64, reflection_quality: 1, target_fps: 60, render_scale: 1.0 }
+    }
+    pub fn high() -> Self {
+        Self { name: "High".into(), features: RenderFeatureFlags::default_high_quality(), post_process: FullPostProcessConfig::high_quality(), shadow_map_resolution: 4096, shadow_cascades: 4, max_lights: 256, reflection_quality: 2, target_fps: 60, render_scale: 1.0 }
+    }
+    pub fn ultra() -> Self {
+        let mut h = Self::high(); h.name = "Ultra".into(); h.shadow_map_resolution = 8192; h.render_scale = 1.25; h.max_lights = 1024; h
+    }
+    pub fn is_mobile_friendly(&self) -> bool { self.shadow_map_resolution <= 1024 && !self.features.ssao && !self.features.ssr }
+}
+
+// ── All rendering presets ─────────────────────────────────────────────────────
+
+pub fn build_quality_presets() -> Vec<RenderQualityPreset> {
+    vec![RenderQualityPreset::low(), RenderQualityPreset::medium(), RenderQualityPreset::high(), RenderQualityPreset::ultra()]
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const SSR_MAX_STEPS: u32 = 128;
+pub const TAA_HISTORY_FRAMES: u32 = 8;
+pub const VOLUMETRIC_FOG_MAX_SLICES: u32 = 256;
+pub const LENS_FLARE_MAX_GHOSTS: u32 = 16;
+pub const POST_PROCESS_FULL_EFFECT_COUNT: usize = 8;
+pub const RENDER_QUALITY_PRESET_COUNT: usize = 4;
+pub const SHADOW_MAP_MAX_RESOLUTION: u32 = 16384;
+pub const SHADOW_CASCADE_MAX: u32 = 8;
+pub const RENDER_MAX_LIGHTS: u32 = 4096;
+pub const RENDER_SCALE_MIN: f32 = 0.25;
+pub const RENDER_SCALE_MAX: f32 = 2.0;
+
+pub fn render_quality_preset_names() -> &'static [&'static str] { &["Low", "Medium", "High", "Ultra"] }
+pub fn supported_render_apis() -> &'static [&'static str] { &["OpenGL 4.5", "Vulkan 1.3", "Metal 2", "WebGPU", "D3D12"] }
+pub fn shader_compiler_total_feature_count() -> usize { shader_module_count() + RENDER_FEATURE_COUNT + POST_PROCESS_FULL_EFFECT_COUNT + RENDER_QUALITY_PRESET_COUNT }
+pub fn shader_compiler_final_info() -> String {
+    format!("ShaderCompilerEditor: {} total features, {} render API targets, {} quality presets", shader_compiler_total_feature_count(), supported_render_apis().len(), RENDER_QUALITY_PRESET_COUNT)
+}
+
+
+// ── Instanced Rendering ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct InstanceData {
+    pub model_matrix: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    pub custom0: [f32; 4],
+    pub custom1: [f32; 4],
+}
+
+impl InstanceData {
+    pub fn new() -> Self { Self { model_matrix: [[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]], color: [1.0; 4], custom0: [0.0; 4], custom1: [0.0; 4] } }
+    pub fn with_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self { self.color = [r, g, b, a]; self }
+}
+
+impl Default for InstanceData {
+    fn default() -> Self { Self::new() }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceBatch {
+    pub id: u32,
+    pub mesh_id: u32,
+    pub material_id: u32,
+    pub instances: Vec<InstanceData>,
+    pub max_instances: u32,
+    pub visible_count: u32,
+    pub cull_enabled: bool,
+}
+
+impl InstanceBatch {
+    pub fn new(id: u32, mesh_id: u32, material_id: u32, max: u32) -> Self {
+        Self { id, mesh_id, material_id, instances: Vec::new(), max_instances: max, visible_count: 0, cull_enabled: true }
+    }
+    pub fn add(&mut self, data: InstanceData) -> bool {
+        if self.instances.len() >= self.max_instances as usize { return false; }
+        self.instances.push(data); self.visible_count += 1; true
+    }
+    pub fn clear(&mut self) { self.instances.clear(); self.visible_count = 0; }
+    pub fn count(&self) -> usize { self.instances.len() }
+    pub fn is_full(&self) -> bool { self.instances.len() >= self.max_instances as usize }
+    pub fn utilization(&self) -> f32 { if self.max_instances == 0 { 0.0 } else { self.instances.len() as f32 / self.max_instances as f32 } }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceBatchManager {
+    pub batches: HashMap<u32, InstanceBatch>,
+    pub next_id: u32,
+    pub total_instances: u32,
+}
+
+impl InstanceBatchManager {
+    pub fn new() -> Self { Self { batches: HashMap::new(), next_id: 1, total_instances: 0 } }
+    pub fn create_batch(&mut self, mesh_id: u32, material_id: u32, max: u32) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.batches.insert(id, InstanceBatch::new(id, mesh_id, material_id, max));
+        id
+    }
+    pub fn add_instance(&mut self, batch_id: u32, data: InstanceData) -> bool {
+        if let Some(b) = self.batches.get_mut(&batch_id) { if b.add(data) { self.total_instances += 1; return true; } }
+        false
+    }
+    pub fn clear_batch(&mut self, batch_id: u32) {
+        if let Some(b) = self.batches.get_mut(&batch_id) { self.total_instances -= b.count() as u32; b.clear(); }
+    }
+    pub fn clear_all(&mut self) { for b in self.batches.values_mut() { b.clear(); } self.total_instances = 0; }
+    pub fn batch_count(&self) -> usize { self.batches.len() }
+    pub fn total_draw_calls(&self) -> usize { self.batches.values().filter(|b| b.count() > 0).count() }
+}
+
+impl Default for InstanceBatchManager {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Occlusion Culling ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct OcclusionQuery {
+    pub id: u32,
+    pub object_id: u32,
+    pub visible: bool,
+    pub pixel_count: u32,
+    pub pending: bool,
+    pub frame_issued: u64,
+}
+
+impl OcclusionQuery {
+    pub fn new(id: u32, object_id: u32) -> Self { Self { id, object_id, visible: true, pixel_count: 0, pending: false, frame_issued: 0 } }
+    pub fn issue(&mut self, frame: u64) { self.pending = true; self.frame_issued = frame; }
+    pub fn resolve(&mut self, pixels: u32) { self.pixel_count = pixels; self.visible = pixels > 0; self.pending = false; }
+    pub fn is_occluded(&self) -> bool { !self.visible }
+    pub fn is_stale(&self, current_frame: u64) -> bool { current_frame - self.frame_issued > 2 }
+}
+
+#[derive(Clone, Debug)]
+pub struct OcclusionCullSystem {
+    pub queries: HashMap<u32, OcclusionQuery>,
+    pub next_id: u32,
+    pub enabled: bool,
+    pub latency_frames: u32,
+    pub culled_this_frame: u32,
+    pub visible_this_frame: u32,
+    pub frame: u64,
+}
+
+impl OcclusionCullSystem {
+    pub fn new() -> Self { Self { queries: HashMap::new(), next_id: 1, enabled: true, latency_frames: 1, culled_this_frame: 0, visible_this_frame: 0, frame: 0 } }
+    pub fn register(&mut self, object_id: u32) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.queries.insert(id, OcclusionQuery::new(id, object_id));
+        id
+    }
+    pub fn begin_frame(&mut self) { self.frame += 1; self.culled_this_frame = 0; self.visible_this_frame = 0; }
+    pub fn is_visible(&self, query_id: u32) -> bool { self.queries.get(&query_id).map(|q| q.visible).unwrap_or(true) }
+    pub fn resolve(&mut self, query_id: u32, pixels: u32) {
+        if let Some(q) = self.queries.get_mut(&query_id) {
+            q.resolve(pixels);
+            if q.visible { self.visible_this_frame += 1; } else { self.culled_this_frame += 1; }
+        }
+    }
+    pub fn cull_rate(&self) -> f32 {
+        let total = self.culled_this_frame + self.visible_this_frame;
+        if total == 0 { 0.0 } else { self.culled_this_frame as f32 / total as f32 }
+    }
+    pub fn query_count(&self) -> usize { self.queries.len() }
+}
+
+impl Default for OcclusionCullSystem {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Render State Tracker ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct RenderStateTracker {
+    pub current_shader: Option<u32>,
+    pub current_material: Option<u32>,
+    pub current_vao: Option<u32>,
+    pub current_fbo: Option<u32>,
+    pub blend_enabled: bool,
+    pub depth_test_enabled: bool,
+    pub cull_enabled: bool,
+    pub scissor_enabled: bool,
+    pub state_changes: u32,
+    pub shader_switches: u32,
+    pub material_switches: u32,
+    pub texture_uploads: u32,
+    pub frame: u64,
+}
+
+impl RenderStateTracker {
+    pub fn new() -> Self { Self { depth_test_enabled: true, cull_enabled: true, ..Default::default() } }
+    pub fn begin_frame(&mut self) { self.state_changes = 0; self.shader_switches = 0; self.material_switches = 0; self.texture_uploads = 0; self.frame += 1; }
+    pub fn bind_shader(&mut self, id: u32) -> bool {
+        if self.current_shader == Some(id) { return false; }
+        self.current_shader = Some(id); self.shader_switches += 1; self.state_changes += 1; true
+    }
+    pub fn bind_material(&mut self, id: u32) -> bool {
+        if self.current_material == Some(id) { return false; }
+        self.current_material = Some(id); self.material_switches += 1; self.state_changes += 1; true
+    }
+    pub fn redundancy_rate(&self) -> f32 { 0.0 }
+    pub fn reset_bindings(&mut self) { self.current_shader = None; self.current_material = None; self.current_vao = None; self.current_fbo = None; }
+}
+
+// ── Shadow Map Atlas ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShadowMapAtlasEntry {
+    pub light_id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+    pub valid: bool,
+    pub last_updated_frame: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShadowMapAtlas {
+    pub atlas_size: u32,
+    pub entries: Vec<ShadowMapAtlasEntry>,
+    pub next_x: u32,
+    pub next_y: u32,
+    pub current_row_height: u32,
+}
+
+impl ShadowMapAtlas {
+    pub fn new(atlas_size: u32) -> Self { Self { atlas_size, entries: Vec::new(), next_x: 0, next_y: 0, current_row_height: 0 } }
+    pub fn allocate(&mut self, light_id: u32, size: u32) -> Option<(u32, u32)> {
+        if self.next_x + size > self.atlas_size { self.next_x = 0; self.next_y += self.current_row_height; self.current_row_height = 0; }
+        if self.next_y + size > self.atlas_size { return None; }
+        let x = self.next_x; let y = self.next_y;
+        self.current_row_height = self.current_row_height.max(size);
+        self.next_x += size;
+        self.entries.push(ShadowMapAtlasEntry { light_id, x, y, size, valid: true, last_updated_frame: 0 });
+        Some((x, y))
+    }
+    pub fn find(&self, light_id: u32) -> Option<&ShadowMapAtlasEntry> { self.entries.iter().find(|e| e.light_id == light_id) }
+    pub fn entry_count(&self) -> usize { self.entries.len() }
+    pub fn reset(&mut self) { self.entries.clear(); self.next_x = 0; self.next_y = 0; self.current_row_height = 0; }
+    pub fn utilization(&self) -> f32 { if self.atlas_size == 0 { 0.0 } else { self.next_y as f32 / self.atlas_size as f32 } }
+}
+
+// ── More final constants ──────────────────────────────────────────────────────
+
+pub const INSTANCE_BATCH_DEFAULT_MAX: u32 = 1024;
+pub const OCCLUSION_QUERY_MAX: usize = 4096;
+pub const SHADOW_ATLAS_DEFAULT_SIZE: u32 = 4096;
+pub const RENDER_STATE_TRACKER_FRAME_BUDGET: u32 = 1000;
+pub const INSTANCE_DATA_SIZE_BYTES: usize = 128;
+
+pub fn glsl_mat4_from_rows(rows: [[f32; 4]; 4]) -> String {
+    format!("mat4({:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4})",
+        rows[0][0], rows[0][1], rows[0][2], rows[0][3],
+        rows[1][0], rows[1][1], rows[1][2], rows[1][3],
+        rows[2][0], rows[2][1], rows[2][2], rows[2][3],
+        rows[3][0], rows[3][1], rows[3][2], rows[3][3])
+}
+pub fn glsl_vec4(r: f32, g: f32, b: f32, a: f32) -> String { format!("vec4({:.4}, {:.4}, {:.4}, {:.4})", r, g, b, a) }
+pub fn glsl_vec3(x: f32, y: f32, z: f32) -> String { format!("vec3({:.4}, {:.4}, {:.4})", x, y, z) }
+pub fn glsl_vec2(x: f32, y: f32) -> String { format!("vec2({:.4}, {:.4})", x, y) }
+pub fn glsl_float(v: f32) -> String { format!("{:.6}", v) }
+pub fn glsl_int(v: i32) -> String { format!("{}", v) }
+pub fn glsl_bool(v: bool) -> &'static str { if v { "true" } else { "false" } }
+pub fn glsl_define(name: &str, value: &str) -> String { format!("#define {} {}", name, value) }
+pub fn glsl_ifdef_block(name: &str, code: &str) -> String { format!("#ifdef {}\n{}\n#endif // {}", name, code, name) }
+pub fn glsl_version_string(ver: u32, es: bool) -> String { if es { format!("#version {} es", ver) } else { format!("#version {}", ver) } }
+pub fn glsl_precision_header() -> &'static str { "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n" }
+
+pub fn shader_compiler_all_constants() -> HashMap<&'static str, u64> {
+    let mut m = HashMap::new();
+    m.insert("SHADER_MAX_UNIFORMS", SHADER_MAX_UNIFORMS as u64);
+    m.insert("SHADER_MAX_ATTRIBUTES", SHADER_MAX_ATTRIBUTES as u64);
+    m.insert("SHADER_MAX_PROGRAMS", SHADER_MAX_PROGRAMS as u64);
+    m.insert("TEXTURE_MAX_SIZE", TEXTURE_MAX_SIZE as u64);
+    m.insert("BUFFER_ALIGNMENT", BUFFER_ALIGNMENT as u64);
+    m.insert("SHADOW_ATLAS_DEFAULT_SIZE", SHADOW_ATLAS_DEFAULT_SIZE as u64);
+    m.insert("INSTANCE_BATCH_DEFAULT_MAX", INSTANCE_BATCH_DEFAULT_MAX as u64);
+    m.insert("OCCLUSION_QUERY_MAX", OCCLUSION_QUERY_MAX as u64);
+    m.insert("BLOOM_MAX_DOWNSAMPLE_PASSES", BLOOM_MAX_DOWNSAMPLE_PASSES as u64);
+    m.insert("SSAO_KERNEL_SIZE_MAX", SSAO_KERNEL_SIZE_MAX as u64);
+    m
+}
+
+
+// ── Motion Blur ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct MotionBlurConfig {
+    pub enabled: bool,
+    pub shutter_angle: f32,
+    pub sample_count: u32,
+    pub tile_size: u32,
+    pub max_blur_pixels: f32,
+    pub motion_scale: f32,
+    pub camera_motion_blur: bool,
+    pub object_motion_blur: bool,
+}
+
+impl MotionBlurConfig {
+    pub fn new() -> Self { Self { enabled: false, shutter_angle: 180.0, sample_count: 8, tile_size: 10, max_blur_pixels: 40.0, motion_scale: 1.0, camera_motion_blur: true, object_motion_blur: true } }
+    pub fn cinematic() -> Self { Self { enabled: true, shutter_angle: 270.0, sample_count: 16, ..Self::new() } }
+    pub fn subtle() -> Self { Self { enabled: true, shutter_angle: 90.0, sample_count: 4, max_blur_pixels: 20.0, ..Self::new() } }
+}
+
+impl Default for MotionBlurConfig { fn default() -> Self { Self::new() } }
+
+// ── Vignette ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VignetteConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub smoothness: f32,
+    pub roundness: f32,
+    pub color: [f32; 3],
+    pub center: [f32; 2],
+    pub mask_texture_id: Option<u32>,
+}
+
+impl VignetteConfig {
+    pub fn new() -> Self { Self { enabled: true, intensity: 0.45, smoothness: 0.2, roundness: 1.0, color: [0.0; 3], center: [0.5, 0.5], mask_texture_id: None } }
+    pub fn subtle() -> Self { Self { intensity: 0.2, ..Self::new() } }
+    pub fn dramatic() -> Self { Self { intensity: 0.8, smoothness: 0.4, ..Self::new() } }
+    pub fn colored(r: f32, g: f32, b: f32) -> Self { Self { color: [r, g, b], ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+}
+
+impl Default for VignetteConfig { fn default() -> Self { Self::new() } }
+
+// ── Chromatic Aberration ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ChromaticAberrationConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub radial: bool,
+    pub offset_r: [f32; 2],
+    pub offset_g: [f32; 2],
+    pub offset_b: [f32; 2],
+    pub sample_count: u32,
+}
+
+impl ChromaticAberrationConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.5, radial: true, offset_r: [-0.01, 0.0], offset_g: [0.0, 0.0], offset_b: [0.01, 0.0], sample_count: 3 } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.2, ..Self::new() } }
+    pub fn strong() -> Self { Self { enabled: true, intensity: 1.5, sample_count: 5, ..Self::new() } }
+}
+
+impl Default for ChromaticAberrationConfig { fn default() -> Self { Self::new() } }
+
+// ── Film Grain ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FilmGrainConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub size: f32,
+    pub luminance_contribution: f32,
+    pub color: bool,
+    pub animated: bool,
+}
+
+impl FilmGrainConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.1, size: 1.5, luminance_contribution: 0.8, color: false, animated: true } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.05, ..Self::new() } }
+    pub fn heavy() -> Self { Self { enabled: true, intensity: 0.4, ..Self::new() } }
+}
+
+impl Default for FilmGrainConfig { fn default() -> Self { Self::new() } }
+
+// ── Anti-Aliasing Config ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct AntiAliasingConfig {
+    pub mode: AntiAliasingMode,
+    pub msaa_samples: u32,
+    pub fxaa: bool,
+    pub taa: Option<TaaConfig>,
+    pub smaa_quality: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AntiAliasingMode { None, Msaa, Fxaa, Taa, Smaa, Dlss }
+
+impl AntiAliasingConfig {
+    pub fn none() -> Self { Self { mode: AntiAliasingMode::None, msaa_samples: 1, fxaa: false, taa: None, smaa_quality: 0 } }
+    pub fn fxaa() -> Self { Self { mode: AntiAliasingMode::Fxaa, fxaa: true, ..Self::none() } }
+    pub fn taa() -> Self { Self { mode: AntiAliasingMode::Taa, taa: Some(TaaConfig::new()), ..Self::none() } }
+    pub fn msaa(samples: u32) -> Self { Self { mode: AntiAliasingMode::Msaa, msaa_samples: samples, ..Self::none() } }
+    pub fn smaa(quality: u32) -> Self { Self { mode: AntiAliasingMode::Smaa, smaa_quality: quality, ..Self::none() } }
+    pub fn is_temporal(&self) -> bool { self.mode == AntiAliasingMode::Taa || self.mode == AntiAliasingMode::Dlss }
+    pub fn requires_velocity_buffer(&self) -> bool { self.is_temporal() }
+}
+
+impl Default for AntiAliasingConfig { fn default() -> Self { Self::fxaa() } }
+
+// ── Extended post process config ──────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ExtendedPostProcessConfig {
+    pub motion_blur: MotionBlurConfig,
+    pub vignette: VignetteConfig,
+    pub chromatic_aberration: ChromaticAberrationConfig,
+    pub film_grain: FilmGrainConfig,
+    pub anti_aliasing: AntiAliasingConfig,
+}
+
+impl ExtendedPostProcessConfig {
+    pub fn new() -> Self { Self::default() }
+    pub fn cinematic() -> Self {
+        Self { motion_blur: MotionBlurConfig::cinematic(), vignette: VignetteConfig::dramatic(), chromatic_aberration: ChromaticAberrationConfig::subtle(), film_grain: FilmGrainConfig::subtle(), anti_aliasing: AntiAliasingConfig::taa() }
+    }
+    pub fn game() -> Self {
+        Self { motion_blur: MotionBlurConfig::subtle(), vignette: VignetteConfig::subtle(), anti_aliasing: AntiAliasingConfig::fxaa(), ..Self::new() }
+    }
+    pub fn count_active(&self) -> usize {
+        [self.motion_blur.enabled, self.vignette.enabled, self.chromatic_aberration.enabled, self.film_grain.enabled].iter().filter(|&&b| b).count()
+    }
+}
+
+// ── GPU Program Lifecycle ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GpuProgramState { Uncompiled, Compiling, Compiled, Failed, Stale }
+
+#[derive(Clone, Debug)]
+pub struct GpuProgramLifecycle {
+    pub program_id: u32,
+    pub state: GpuProgramState,
+    pub compile_attempts: u32,
+    pub last_success: Option<u64>,
+    pub last_failure: Option<u64>,
+    pub auto_retry: bool,
+    pub max_retries: u32,
+}
+
+impl GpuProgramLifecycle {
+    pub fn new(program_id: u32) -> Self { Self { program_id, state: GpuProgramState::Uncompiled, compile_attempts: 0, last_success: None, last_failure: None, auto_retry: true, max_retries: 3 } }
+    pub fn begin_compile(&mut self) { self.state = GpuProgramState::Compiling; self.compile_attempts += 1; }
+    pub fn mark_success(&mut self, ts: u64) { self.state = GpuProgramState::Compiled; self.last_success = Some(ts); }
+    pub fn mark_failure(&mut self, ts: u64) { self.state = GpuProgramState::Failed; self.last_failure = Some(ts); }
+    pub fn mark_stale(&mut self) { self.state = GpuProgramState::Stale; }
+    pub fn can_retry(&self) -> bool { self.auto_retry && self.compile_attempts < self.max_retries }
+    pub fn is_compiled(&self) -> bool { self.state == GpuProgramState::Compiled }
+    pub fn is_failed(&self) -> bool { self.state == GpuProgramState::Failed }
+}
+
+// ── Final system constants ────────────────────────────────────────────────────
+
+pub const MOTION_BLUR_MAX_SAMPLES: u32 = 32;
+pub const FILM_GRAIN_MAX_SIZE: f32 = 10.0;
+pub const VIGNETTE_MAX_INTENSITY: f32 = 1.0;
+pub const CHROMATIC_MAX_OFFSET: f32 = 0.1;
+pub const AA_MSAA_MAX_SAMPLES: u32 = 8;
+pub const SHADER_GPU_PROGRAM_MAX_RETRIES: u32 = 3;
+pub const RENDER_EXTENDED_PP_EFFECT_COUNT: usize = 5;
+
+pub fn anti_aliasing_name(mode: &AntiAliasingMode) -> &'static str {
+    match mode { AntiAliasingMode::None => "None", AntiAliasingMode::Msaa => "MSAA", AntiAliasingMode::Fxaa => "FXAA", AntiAliasingMode::Taa => "TAA", AntiAliasingMode::Smaa => "SMAA", AntiAliasingMode::Dlss => "DLSS" }
+}
+pub fn gpu_program_state_name(s: &GpuProgramState) -> &'static str {
+    match s { GpuProgramState::Uncompiled => "Uncompiled", GpuProgramState::Compiling => "Compiling", GpuProgramState::Compiled => "Compiled", GpuProgramState::Failed => "Failed", GpuProgramState::Stale => "Stale" }
+}
+pub fn shader_editor_complete_version() -> String { format!("ShaderCompilerEditor — complete build, v{}", shader_system_version()) }
+
+
+// ── Shader Input Assembler ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct InputAssemblerConfig {
+    pub topology: PrimitiveTopology,
+    pub restart_enabled: bool,
+    pub restart_index: u32,
+    pub vertex_layout: VertexLayout,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimitiveTopology { PointList, LineList, LineStrip, TriangleList, TriangleStrip, TriangleFan, PatchList(u32) }
+
+impl PrimitiveTopology {
+    pub fn name(&self) -> &'static str {
+        match self { PrimitiveTopology::PointList => "PointList", PrimitiveTopology::LineList => "LineList", PrimitiveTopology::LineStrip => "LineStrip", PrimitiveTopology::TriangleList => "TriangleList", PrimitiveTopology::TriangleStrip => "TriangleStrip", PrimitiveTopology::TriangleFan => "TriangleFan", PrimitiveTopology::PatchList(_) => "PatchList" }
+    }
+    pub fn is_strip(&self) -> bool { matches!(self, PrimitiveTopology::LineStrip | PrimitiveTopology::TriangleStrip) }
+    pub fn is_triangle(&self) -> bool { matches!(self, PrimitiveTopology::TriangleList | PrimitiveTopology::TriangleStrip | PrimitiveTopology::TriangleFan) }
+}
+
+impl InputAssemblerConfig {
+    pub fn triangles(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::TriangleList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+    pub fn lines(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::LineList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+    pub fn points(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::PointList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+}
+
+// ── Stencil Config ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct StencilConfig {
+    pub enabled: bool,
+    pub ref_value: u32,
+    pub read_mask: u32,
+    pub write_mask: u32,
+    pub fail_op: StencilOp,
+    pub depth_fail_op: StencilOp,
+    pub pass_op: StencilOp,
+    pub compare_func: CompareFunc,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StencilOp { Keep, Zero, Replace, IncrClamp, DecrClamp, Invert, IncrWrap, DecrWrap }
+
+impl StencilConfig {
+    pub fn disabled() -> Self { Self { enabled: false, ref_value: 0, read_mask: 0xFF, write_mask: 0xFF, fail_op: StencilOp::Keep, depth_fail_op: StencilOp::Keep, pass_op: StencilOp::Keep, compare_func: CompareFunc::Always } }
+    pub fn write_mask(mask: u32) -> Self { Self { enabled: true, write_mask: mask, pass_op: StencilOp::Replace, ref_value: mask, ..Self::disabled() } }
+    pub fn test_mask(mask: u32) -> Self { Self { enabled: true, read_mask: mask, ref_value: mask, ..Self::disabled() } }
+}
+
+impl Default for StencilConfig { fn default() -> Self { Self::disabled() } }
+
+// ── Viewport Config ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ViewportConfig {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub min_depth: f32,
+    pub max_depth: f32,
+}
+
+impl ViewportConfig {
+    pub fn new(width: f32, height: f32) -> Self { Self { x: 0.0, y: 0.0, width, height, min_depth: 0.0, max_depth: 1.0 } }
+    pub fn aspect_ratio(&self) -> f32 { if self.height == 0.0 { 1.0 } else { self.width / self.height } }
+    pub fn scale(mut self, s: f32) -> Self { self.width *= s; self.height *= s; self }
+    pub fn ndc_to_pixel(&self, ndc_x: f32, ndc_y: f32) -> (f32, f32) {
+        ((ndc_x * 0.5 + 0.5) * self.width + self.x, (ndc_y * -0.5 + 0.5) * self.height + self.y)
+    }
+    pub fn pixel_to_ndc(&self, px: f32, py: f32) -> (f32, f32) {
+        ((px - self.x) / self.width * 2.0 - 1.0, -((py - self.y) / self.height * 2.0 - 1.0))
+    }
+}
+
+impl Default for ViewportConfig { fn default() -> Self { Self::new(1920.0, 1080.0) } }
+
+// ── Rasterizer State ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RasterizerState {
+    pub cull_mode: CullMode,
+    pub front_face: FrontFace,
+    pub polygon_mode: PolygonMode,
+    pub depth_bias: f32,
+    pub depth_bias_slope_scale: f32,
+    pub depth_bias_clamp: f32,
+    pub depth_clamp: bool,
+    pub rasterizer_discard: bool,
+    pub multisample: bool,
+    pub line_width: f32,
+    pub conservative: bool,
+}
+
+impl Default for RasterizerState {
+    fn default() -> Self { Self { cull_mode: CullMode::Back, front_face: FrontFace::CounterClockwise, polygon_mode: PolygonMode::Fill, depth_bias: 0.0, depth_bias_slope_scale: 0.0, depth_bias_clamp: 0.0, depth_clamp: false, rasterizer_discard: false, multisample: false, line_width: 1.0, conservative: false } }
+}
+
+impl RasterizerState {
+    pub fn wireframe() -> Self { Self { polygon_mode: PolygonMode::Line, cull_mode: CullMode::None, ..Default::default() } }
+    pub fn shadow_map() -> Self { Self { depth_bias: 1.0, depth_bias_slope_scale: 1.5, ..Default::default() } }
+    pub fn two_sided() -> Self { Self { cull_mode: CullMode::None, ..Default::default() } }
+    pub fn is_wireframe(&self) -> bool { self.polygon_mode == PolygonMode::Line }
+    pub fn has_depth_bias(&self) -> bool { self.depth_bias.abs() > 1e-6 || self.depth_bias_slope_scale.abs() > 1e-6 }
+}
+
+// ── Complete Graphics Pipeline Descriptor ─────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GraphicsPipelineDescriptor {
+    pub name: String,
+    pub vertex_shader_id: u32,
+    pub fragment_shader_id: u32,
+    pub geometry_shader_id: Option<u32>,
+    pub input_assembly: InputAssemblerConfig,
+    pub rasterizer: RasterizerState,
+    pub depth_stencil: (bool, bool, CompareFunc, StencilConfig),
+    pub blend_state: PipelineState,
+    pub viewport: ViewportConfig,
+    pub render_pass_id: u32,
+    pub subpass: u32,
+    pub layout: PipelineLayout,
+}
+
+impl GraphicsPipelineDescriptor {
+    pub fn new(name: impl Into<String>, vert_id: u32, frag_id: u32) -> Self {
+        Self { name: name.into(), vertex_shader_id: vert_id, fragment_shader_id: frag_id, geometry_shader_id: None, input_assembly: InputAssemblerConfig::triangles(VertexLayout::standard_mesh()), rasterizer: RasterizerState::default(), depth_stencil: (true, true, CompareFunc::Less, StencilConfig::disabled()), blend_state: PipelineState::opaque(), viewport: ViewportConfig::default(), render_pass_id: 0, subpass: 0, layout: PipelineLayout::new() }
+    }
+    pub fn transparent(name: impl Into<String>, vert_id: u32, frag_id: u32) -> Self {
+        let mut d = Self::new(name, vert_id, frag_id); d.blend_state = PipelineState::transparent(); d.depth_stencil.1 = false; d
+    }
+    pub fn has_geometry_shader(&self) -> bool { self.geometry_shader_id.is_some() }
+    pub fn depth_test_enabled(&self) -> bool { self.depth_stencil.0 }
+    pub fn depth_write_enabled(&self) -> bool { self.depth_stencil.1 }
+}
+
+// ── Final shader constants ────────────────────────────────────────────────────
+
+pub const STENCIL_MAX_REF_VALUE: u32 = 255;
+pub const VIEWPORT_MAX_RENDER_SCALE: f32 = 2.0;
+pub const RASTERIZER_MAX_LINE_WIDTH: f32 = 16.0;
+pub const GRAPHICS_PIPELINE_MAX: usize = 512;
+pub const INPUT_ASSEMBLER_MAX_VERTEX_STREAMS: usize = 8;
+
+pub fn stencil_op_name(op: &StencilOp) -> &'static str {
+    match op { StencilOp::Keep => "Keep", StencilOp::Zero => "Zero", StencilOp::Replace => "Replace", StencilOp::IncrClamp => "IncrClamp", StencilOp::DecrClamp => "DecrClamp", StencilOp::Invert => "Invert", StencilOp::IncrWrap => "IncrWrap", StencilOp::DecrWrap => "DecrWrap" }
+}
+pub fn primitive_topology_vertex_count(topo: &PrimitiveTopology, primitive_count: u32) -> u32 {
+    match topo { PrimitiveTopology::PointList => primitive_count, PrimitiveTopology::LineList => primitive_count * 2, PrimitiveTopology::LineStrip => primitive_count + 1, PrimitiveTopology::TriangleList => primitive_count * 3, PrimitiveTopology::TriangleStrip | PrimitiveTopology::TriangleFan => primitive_count + 2, PrimitiveTopology::PatchList(n) => primitive_count * n }
+}
+
+pub fn shader_compiler_feature_summary() -> String {
+    let features = shader_compiler_module_list();
+    format!("ShaderCompilerEditor v{}: {} modules — {}", shader_system_version(), features.len(), features.join(", "))
+}
+
+
+// ── Render Target Management ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderTargetSet {
+    pub id: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub color_targets: Vec<u32>,
+    pub depth_target: Option<u32>,
+    pub msaa_samples: u32,
+    pub active: bool,
+}
+
+impl RenderTargetSet {
+    pub fn new(id: u32, name: impl Into<String>, w: u32, h: u32) -> Self {
+        Self { id, name: name.into(), width: w, height: h, color_targets: Vec::new(), depth_target: None, msaa_samples: 1, active: false }
+    }
+    pub fn add_color(&mut self, tex_id: u32) { self.color_targets.push(tex_id); }
+    pub fn set_depth(&mut self, tex_id: u32) { self.depth_target = Some(tex_id); }
+    pub fn enable(&mut self) { self.active = true; }
+    pub fn disable(&mut self) { self.active = false; }
+    pub fn color_count(&self) -> usize { self.color_targets.len() }
+    pub fn has_depth(&self) -> bool { self.depth_target.is_some() }
+    pub fn total_attachments(&self) -> usize { self.color_targets.len() + if self.has_depth() { 1 } else { 0 } }
+    pub fn aspect_ratio(&self) -> f32 { if self.height == 0 { 1.0 } else { self.width as f32 / self.height as f32 } }
+    pub fn is_multisampled(&self) -> bool { self.msaa_samples > 1 }
+    pub fn total_bytes(&self, bpp: u32) -> u64 { self.width as u64 * self.height as u64 * bpp as u64 * (self.color_targets.len() + 1) as u64 }
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderTargetManager {
+    pub sets: HashMap<u32, RenderTargetSet>,
+    pub active_set: Option<u32>,
+    pub next_id: u32,
+    pub backbuffer_id: u32,
+}
+
+impl RenderTargetManager {
+    pub fn new() -> Self { Self { sets: HashMap::new(), active_set: None, next_id: 1, backbuffer_id: 0 } }
+    pub fn create(&mut self, name: impl Into<String>, w: u32, h: u32) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.sets.insert(id, RenderTargetSet::new(id, name, w, h));
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&RenderTargetSet> { self.sets.get(&id) }
+    pub fn bind(&mut self, id: u32) { if let Some(s) = self.sets.get_mut(&id) { s.enable(); } self.active_set = Some(id); }
+    pub fn unbind(&mut self) { if let Some(id) = self.active_set { if let Some(s) = self.sets.get_mut(&id) { s.disable(); } } self.active_set = None; }
+    pub fn resize_all(&mut self, w: u32, h: u32) { for s in self.sets.values_mut() { s.width = w; s.height = h; } }
+    pub fn count(&self) -> usize { self.sets.len() }
+    pub fn active(&self) -> Option<&RenderTargetSet> { self.active_set.and_then(|id| self.sets.get(&id)) }
+}
+
+impl Default for RenderTargetManager { fn default() -> Self { Self::new() } }
+
+// ── Frame Graph Executor ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FrameGraphExecutor {
+    pub render_graph: RenderGraph,
+    pub rt_manager: RenderTargetManager,
+    pub frame: u64,
+    pub paused: bool,
+}
+
+impl FrameGraphExecutor {
+    pub fn new() -> Self { Self { render_graph: RenderGraph::new("frame"), rt_manager: RenderTargetManager::new(), frame: 0, paused: false } }
+    pub fn begin_frame(&mut self) { if !self.paused { self.frame += 1; } }
+    pub fn pause(&mut self) { self.paused = true; }
+    pub fn resume(&mut self) { self.paused = false; }
+    pub fn node_count(&self) -> usize { self.render_graph.node_count() }
+    pub fn is_running(&self) -> bool { !self.paused }
+    pub fn frame_number(&self) -> u64 { self.frame }
+}
+
+impl Default for FrameGraphExecutor { fn default() -> Self { Self::new() } }
+
+// ── Shader Compiler Statistics ────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ShaderCompilerStats {
+    pub total_programs: usize,
+    pub total_materials: usize,
+    pub total_textures: usize,
+    pub total_buffers: usize,
+    pub total_passes: usize,
+    pub total_post_effects: usize,
+    pub cache_entries: usize,
+    pub cache_hit_rate: f32,
+    pub total_compile_ms: f32,
+    pub failed_compiles: u32,
+    pub hot_reloads: u32,
+}
+
+impl ShaderCompilerStats {
+    pub fn from_workspace(ws: &ShaderWorkspace) -> Self {
+        Self {
+            total_programs: ws.program_count(),
+            total_materials: ws.material_count(),
+            total_textures: ws.texture_count(),
+            total_buffers: ws.buffer_count(),
+            total_passes: ws.pipeline.pass_count(),
+            total_post_effects: ws.post_process.effect_count(),
+            cache_entries: ws.cache.size(),
+            cache_hit_rate: ws.cache.hit_rate(),
+            ..Default::default()
+        }
+    }
+    pub fn summary(&self) -> String {
+        format!("Programs:{} Materials:{} Textures:{} Buffers:{} Cache:{:.0}%", self.total_programs, self.total_materials, self.total_textures, self.total_buffers, self.cache_hit_rate * 100.0)
+    }
+}
+
+// ── Final module constants ────────────────────────────────────────────────────
+
+pub const RENDER_TARGET_MAX: usize = 64;
+pub const FRAME_GRAPH_MAX_NODES: usize = 128;
+pub const RT_MAX_COLOR_ATTACHMENTS: usize = 8;
+pub const RT_DEFAULT_MSAA: u32 = 1;
+pub const SHADER_COMPILER_SESSION_MAX: usize = 4;
+
+pub fn all_post_process_effect_names() -> &'static [&'static str] {
+    &["Bloom", "Tone Mapping", "SSAO", "SSR", "TAA", "Depth of Field", "Volumetric Fog", "Lens Flare", "Motion Blur", "Vignette", "Chromatic Aberration", "Film Grain", "FXAA", "Color Grading", "SMAA"]
+}
+
+pub fn shader_compiler_comprehensive_info() -> String {
+    format!(concat!(
+        "ShaderCompilerEditor v{} Summary:\n",
+        "  Modules: {}\n",
+        "  Render API targets: {}\n",
+        "  Quality presets: {}\n",
+        "  Post-process effects: {}\n",
+        "  Builtin GLSL snippets: {}\n",
+        "  Builtin GLSL functions: {}\n"
+    ),
+    shader_system_version(),
+    shader_module_count(),
+    supported_render_apis().len(),
+    RENDER_QUALITY_PRESET_COUNT,
+    all_post_process_effect_names().len(),
+    SHADER_BUILTIN_SNIPPETS,
+    SHADER_GLSL_BUILTIN_FUNCTIONS)
+}
+
+
+// ── Shader Manager ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderManager {
+    pub compiler: ShaderCompilerMain,
+    pub post_config: FullPostProcessConfig,
+    pub extended_post: ExtendedPostProcessConfig,
+    pub anti_aliasing: AntiAliasingConfig,
+    pub quality_preset: String,
+    pub quality_presets: Vec<RenderQualityPreset>,
+    pub frame_executor: FrameGraphExecutor,
+    pub rt_manager: RenderTargetManager,
+    pub uniform_tracker: UniformTracker,
+    pub occlusion_cull: OcclusionCullSystem,
+    pub instance_batches: InstanceBatchManager,
+    pub render_state: RenderStateTracker,
+    pub error_reports: Vec<ShaderErrorReport>,
+    pub compile_stats: CompileStats,
+}
+
+impl ShaderManager {
+    pub fn new() -> Self {
+        Self {
+            compiler: ShaderCompilerMain::new(),
+            post_config: FullPostProcessConfig::new(),
+            extended_post: ExtendedPostProcessConfig::new(),
+            anti_aliasing: AntiAliasingConfig::default(),
+            quality_preset: "High".into(),
+            quality_presets: build_quality_presets(),
+            frame_executor: FrameGraphExecutor::new(),
+            rt_manager: RenderTargetManager::new(),
+            uniform_tracker: UniformTracker::new(),
+            occlusion_cull: OcclusionCullSystem::new(),
+            instance_batches: InstanceBatchManager::new(),
+            render_state: RenderStateTracker::new(),
+            error_reports: Vec::new(),
+            compile_stats: CompileStats::new(),
+        }
+    }
+    pub fn add_program(&mut self, prog: ShaderProgram) -> u32 { self.compiler.add_program(prog) }
+    pub fn add_material(&mut self, mat: Material) -> u32 { self.compiler.add_material(mat) }
+    pub fn begin_frame(&mut self) { self.compiler.begin_frame(); self.frame_executor.begin_frame(); self.render_state.begin_frame(); self.occlusion_cull.begin_frame(); self.instance_batches.clear_all(); }
+    pub fn set_quality(&mut self, preset_name: &str) { if self.quality_presets.iter().any(|p| p.name == preset_name) { self.quality_preset = preset_name.to_string(); } }
+    pub fn record_error(&mut self, report: ShaderErrorReport) { self.error_reports.push(report); }
+    pub fn clear_errors(&mut self) { self.error_reports.clear(); }
+    pub fn has_errors(&self) -> bool { !self.error_reports.is_empty() }
+    pub fn error_count(&self) -> usize { self.error_reports.len() }
+    pub fn program_count(&self) -> usize { self.compiler.program_count() }
+    pub fn compilation_summary(&self) -> String { self.compiler.compilation_summary() }
+    pub fn stats(&self) -> ShaderCompilerStats { ShaderCompilerStats::from_workspace(&self.compiler.workspace) }
+}
+
+impl Default for ShaderManager { fn default() -> Self { Self::new() } }
+
+// ── GLSL Intrinsics Documentation ─────────────────────────────────────────────
+
+pub struct GlslIntrinsicDoc {
+    pub name: &'static str,
+    pub signature: &'static str,
+    pub description: &'static str,
+    pub category: &'static str,
+}
+
+pub const GLSL_DOCS: &[GlslIntrinsicDoc] = &[
+    GlslIntrinsicDoc { name: "radians", signature: "genType radians(genType degrees)", description: "Convert degrees to radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "degrees", signature: "genType degrees(genType radians)", description: "Convert radians to degrees", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "sin", signature: "genType sin(genType angle)", description: "Sine of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "cos", signature: "genType cos(genType angle)", description: "Cosine of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "tan", signature: "genType tan(genType angle)", description: "Tangent of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "asin", signature: "genType asin(genType x)", description: "Arc sine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "acos", signature: "genType acos(genType x)", description: "Arc cosine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "atan", signature: "genType atan(genType y_over_x)", description: "Arc tangent", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "sinh", signature: "genType sinh(genType x)", description: "Hyperbolic sine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "cosh", signature: "genType cosh(genType x)", description: "Hyperbolic cosine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "pow", signature: "genType pow(genType x, genType y)", description: "x raised to y power", category: "exponential" },
+    GlslIntrinsicDoc { name: "exp", signature: "genType exp(genType x)", description: "e raised to x", category: "exponential" },
+    GlslIntrinsicDoc { name: "log", signature: "genType log(genType x)", description: "Natural logarithm", category: "exponential" },
+    GlslIntrinsicDoc { name: "exp2", signature: "genType exp2(genType x)", description: "2 raised to x", category: "exponential" },
+    GlslIntrinsicDoc { name: "log2", signature: "genType log2(genType x)", description: "Base-2 logarithm", category: "exponential" },
+    GlslIntrinsicDoc { name: "sqrt", signature: "genType sqrt(genType x)", description: "Square root", category: "exponential" },
+    GlslIntrinsicDoc { name: "inversesqrt", signature: "genType inversesqrt(genType x)", description: "Inverse square root", category: "exponential" },
+    GlslIntrinsicDoc { name: "abs", signature: "genType abs(genType x)", description: "Absolute value", category: "common" },
+    GlslIntrinsicDoc { name: "sign", signature: "genType sign(genType x)", description: "Sign of x", category: "common" },
+    GlslIntrinsicDoc { name: "floor", signature: "genType floor(genType x)", description: "Floor function", category: "common" },
+    GlslIntrinsicDoc { name: "ceil", signature: "genType ceil(genType x)", description: "Ceiling function", category: "common" },
+    GlslIntrinsicDoc { name: "round", signature: "genType round(genType x)", description: "Round to nearest", category: "common" },
+    GlslIntrinsicDoc { name: "fract", signature: "genType fract(genType x)", description: "Fractional part", category: "common" },
+    GlslIntrinsicDoc { name: "mod", signature: "genType mod(genType x, genType y)", description: "Modulo operation", category: "common" },
+    GlslIntrinsicDoc { name: "min", signature: "genType min(genType x, genType y)", description: "Minimum of two values", category: "common" },
+    GlslIntrinsicDoc { name: "max", signature: "genType max(genType x, genType y)", description: "Maximum of two values", category: "common" },
+    GlslIntrinsicDoc { name: "clamp", signature: "genType clamp(genType x, genType minVal, genType maxVal)", description: "Clamp x between min and max", category: "common" },
+    GlslIntrinsicDoc { name: "mix", signature: "genType mix(genType x, genType y, genType a)", description: "Linear interpolation", category: "common" },
+    GlslIntrinsicDoc { name: "step", signature: "genType step(genType edge, genType x)", description: "Step function", category: "common" },
+    GlslIntrinsicDoc { name: "smoothstep", signature: "genType smoothstep(genType edge0, genType edge1, genType x)", description: "Smooth step function", category: "common" },
+];
+
+pub fn find_glsl_doc(name: &str) -> Option<&'static GlslIntrinsicDoc> { GLSL_DOCS.iter().find(|d| d.name == name) }
+pub fn glsl_doc_count() -> usize { GLSL_DOCS.len() }
+pub fn glsl_docs_in_category(cat: &str) -> Vec<&'static GlslIntrinsicDoc> { GLSL_DOCS.iter().filter(|d| d.category == cat).collect() }
+
+pub const SHADER_MANAGER_VERSION: &str = "ShaderManager v1.0";
+pub const SHADER_GLSL_INTRINSIC_DOC_COUNT: usize = 30;
+pub const SHADER_MAX_ERROR_REPORTS: usize = 256;
+pub const FRAME_GRAPH_EXECUTOR_MAX_NODES: usize = 128;
+
+pub fn shader_manager_info() -> String {
+    format!("{} — {} programs max, {} intrinsics documented, {} quality presets", SHADER_MANAGER_VERSION, SHADER_MAX_PROGRAMS, SHADER_GLSL_INTRINSIC_DOC_COUNT, RENDER_QUALITY_PRESET_COUNT)
+}
+
+
+// ── Geometry Shader Support ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GeometryShaderConfig {
+    pub input_primitive: GeometryPrimitive,
+    pub output_primitive: GeometryPrimitive,
+    pub max_vertices_out: u32,
+    pub invocations: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GeometryPrimitive { Points, Lines, LinesAdjacency, Triangles, TrianglesAdjacency, LineStrip, TriangleStrip }
+
+impl GeometryShaderConfig {
+    pub fn passthrough_triangles() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 3, invocations: 1 } }
+    pub fn silhouette_detection() -> Self { Self { input_primitive: GeometryPrimitive::TrianglesAdjacency, output_primitive: GeometryPrimitive::LineStrip, max_vertices_out: 4, invocations: 1 } }
+    pub fn shadow_volumes() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 18, invocations: 1 } }
+    pub fn point_sprites() -> Self { Self { input_primitive: GeometryPrimitive::Points, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 4, invocations: 1 } }
+    pub fn cubemap_rendering() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 18, invocations: 6 } }
+}
+
+impl Default for GeometryShaderConfig { fn default() -> Self { Self::passthrough_triangles() } }
+
+// ── Tessellation Shader Support ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TessellationConfig {
+    pub enabled: bool,
+    pub patch_size: u32,
+    pub outer_level: [f32; 4],
+    pub inner_level: [f32; 2],
+    pub spacing: TessSpacing,
+    pub winding: TessWinding,
+    pub primitive: TessPrimitive,
+    pub point_mode: bool,
+    pub adaptive: bool,
+    pub max_tess_level: f32,
+    pub screen_space_factor: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessSpacing { Equal, FractionalEven, FractionalOdd }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessWinding { Ccw, Cw }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessPrimitive { Triangles, Quads, Isolines }
+
+impl TessellationConfig {
+    pub fn new() -> Self { Self { enabled: false, patch_size: 3, outer_level: [4.0; 4], inner_level: [4.0; 2], spacing: TessSpacing::Equal, winding: TessWinding::Ccw, primitive: TessPrimitive::Triangles, point_mode: false, adaptive: false, max_tess_level: 64.0, screen_space_factor: 1.0 } }
+    pub fn displacement_mapping() -> Self { Self { enabled: true, adaptive: true, ..Self::new() } }
+    pub fn lod_triangles(level: f32) -> Self { Self { enabled: true, outer_level: [level; 4], inner_level: [level; 2], ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+    pub fn effective_patch_vertices(&self) -> u32 {
+        match self.primitive { TessPrimitive::Triangles => 3, TessPrimitive::Quads => 4, TessPrimitive::Isolines => 2 }
+    }
+}
+
+impl Default for TessellationConfig { fn default() -> Self { Self::new() } }
+
+// ── Wireframe Overlay ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct WireframeConfig {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    pub line_width: f32,
+    pub overlay_on_solid: bool,
+    pub show_normals: bool,
+    pub normal_length: f32,
+    pub normal_color: [f32; 4],
+    pub show_tangents: bool,
+    pub highlight_selected: bool,
+    pub selection_color: [f32; 4],
+}
+
+impl WireframeConfig {
+    pub fn new() -> Self { Self { enabled: false, color: [0.0, 1.0, 0.0, 1.0], line_width: 1.0, overlay_on_solid: true, show_normals: false, normal_length: 0.1, normal_color: [0.0, 0.0, 1.0, 1.0], show_tangents: false, highlight_selected: true, selection_color: [1.0, 0.5, 0.0, 1.0] } }
+    pub fn enable(&mut self) { self.enabled = true; }
+    pub fn disable(&mut self) { self.enabled = false; }
+    pub fn show_normals(mut self) -> Self { self.show_normals = true; self }
+}
+
+impl Default for WireframeConfig { fn default() -> Self { Self::new() } }
+
+// ── Shader Error Recovery ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderFallback {
+    pub trigger_on_error: bool,
+    pub fallback_program_id: u32,
+    pub fallback_name: String,
+    pub auto_compile_fallback: bool,
+    pub notify_on_fallback: bool,
+}
+
+impl ShaderFallback {
+    pub fn new(fallback_id: u32) -> Self { Self { trigger_on_error: true, fallback_program_id: fallback_id, fallback_name: "error_fallback".into(), auto_compile_fallback: true, notify_on_fallback: true } }
+    pub fn with_name(mut self, name: impl Into<String>) -> Self { self.fallback_name = name.into(); self }
+    pub fn silent(mut self) -> Self { self.notify_on_fallback = false; self }
+}
+
+impl Default for ShaderFallback { fn default() -> Self { Self::new(0) } }
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const TESSELLATION_MAX_PATCH_SIZE: u32 = 32;
+pub const TESSELLATION_MAX_LEVEL: f32 = 64.0;
+pub const GEOMETRY_SHADER_MAX_VERTICES_OUT: u32 = 256;
+pub const GEOMETRY_SHADER_MAX_INVOCATIONS: u32 = 32;
+pub const WIREFRAME_LINE_WIDTH_MAX: f32 = 8.0;
+pub const SHADER_FALLBACK_MAX_DEPTH: u32 = 3;
+
+pub fn geometry_primitive_name(p: &GeometryPrimitive) -> &'static str {
+    match p { GeometryPrimitive::Points => "points", GeometryPrimitive::Lines => "lines", GeometryPrimitive::LinesAdjacency => "lines_adjacency", GeometryPrimitive::Triangles => "triangles", GeometryPrimitive::TrianglesAdjacency => "triangles_adjacency", GeometryPrimitive::LineStrip => "line_strip", GeometryPrimitive::TriangleStrip => "triangle_strip" }
+}
+
+pub fn tess_spacing_name(s: &TessSpacing) -> &'static str {
+    match s { TessSpacing::Equal => "equal_spacing", TessSpacing::FractionalEven => "fractional_even_spacing", TessSpacing::FractionalOdd => "fractional_odd_spacing" }
+}
+
+pub fn glsl_layout_tess_ctrl(patch_size: u32) -> String { format!("layout(vertices = {}) out;", patch_size) }
+pub fn glsl_layout_tess_eval(primitive: &TessPrimitive, spacing: &TessSpacing, winding: &TessWinding) -> String {
+    format!("layout({}, {}, {}) in;", match primitive { TessPrimitive::Triangles => "triangles", TessPrimitive::Quads => "quads", TessPrimitive::Isolines => "isolines" }, tess_spacing_name(spacing), match winding { TessWinding::Ccw => "ccw", TessWinding::Cw => "cw" })
+}
+pub fn glsl_layout_geometry(input: &GeometryPrimitive, output: &GeometryPrimitive, max_verts: u32) -> String {
+    format!("layout({}) in;\nlayout({}, max_vertices = {}) out;", geometry_primitive_name(input), geometry_primitive_name(output), max_verts)
+}
+
+pub fn shader_complete_feature_list() -> Vec<String> {
+    let mut features = shader_compiler_module_list().iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    features.extend(all_post_process_effect_names().iter().map(|s| s.to_string()));
+    features.extend(all_glsl_keywords().iter().map(|s| s.to_string()));
+    features
+}
+pub fn shader_feature_count() -> usize { shader_complete_feature_list().len() }
+
+
+// ── Shader Compilation Summary ────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ShaderSystemState {
+    pub initialized: bool,
+    pub programs_loaded: u32,
+    pub materials_loaded: u32,
+    pub textures_loaded: u32,
+    pub compile_errors: u32,
+    pub compile_warnings: u32,
+    pub last_error: Option<String>,
+    pub uptime_frames: u64,
+    pub total_draw_calls: u64,
+    pub total_triangles: u64,
+}
+
+impl ShaderSystemState {
+    pub fn new() -> Self { Self { initialized: false, ..Default::default() } }
+    pub fn initialize(&mut self) { self.initialized = true; }
+    pub fn record_draw(&mut self, triangles: u64) { self.total_draw_calls += 1; self.total_triangles += triangles; }
+    pub fn record_compile_error(&mut self, msg: impl Into<String>) { self.compile_errors += 1; self.last_error = Some(msg.into()); }
+    pub fn record_compile_warning(&mut self) { self.compile_warnings += 1; }
+    pub fn tick_frame(&mut self) { self.uptime_frames += 1; }
+    pub fn is_healthy(&self) -> bool { self.initialized && self.compile_errors == 0 }
+    pub fn avg_tris_per_call(&self) -> f64 { if self.total_draw_calls == 0 { 0.0 } else { self.total_triangles as f64 / self.total_draw_calls as f64 } }
+    pub fn summary(&self) -> String {
+        format!("ShaderSystem: init={}, programs={}, materials={}, textures={}, errors={}, warnings={}", self.initialized, self.programs_loaded, self.materials_loaded, self.textures_loaded, self.compile_errors, self.compile_warnings)
+    }
+}
+
+// ── Built-in PBR Vertex Shader ────────────────────────────────────────────────
+
+pub fn builtin_pbr_vertex_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 a_position;
+layout(location=1) in vec3 a_normal;
+layout(location=2) in vec2 a_uv;
+layout(location=3) in vec4 a_tangent;
+layout(std140, binding=0) uniform PerFrame { mat4 view; mat4 proj; mat4 view_proj; vec4 camera_pos; float time; float delta_time; float near_plane; float far_plane; };
+layout(std140, binding=1) uniform PerObject { mat4 model; mat4 mvp; mat4 normal_matrix; };
+layout(location=0) out vec3 v_world_pos;
+layout(location=1) out vec3 v_normal;
+layout(location=2) out vec2 v_uv;
+layout(location=3) out vec3 v_tangent;
+layout(location=4) out vec3 v_bitangent;
+void main() {
+    vec4 world_pos = model * vec4(a_position, 1.0);
+    v_world_pos = world_pos.xyz;
+    v_normal = normalize((normal_matrix * vec4(a_normal, 0.0)).xyz);
+    v_tangent = normalize((normal_matrix * vec4(a_tangent.xyz, 0.0)).xyz);
+    v_bitangent = cross(v_normal, v_tangent) * a_tangent.w;
+    v_uv = a_uv;
+    gl_Position = view_proj * world_pos;
+}"#
+}
+
+pub fn builtin_pbr_fragment_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 v_world_pos;
+layout(location=1) in vec3 v_normal;
+layout(location=2) in vec2 v_uv;
+layout(location=3) in vec3 v_tangent;
+layout(location=4) in vec3 v_bitangent;
+layout(std140, binding=2) uniform PerMaterial { vec4 albedo_color; vec4 emissive_color; float roughness; float metalness; float normal_scale; float occlusion_strength; float emissive_intensity; float opacity; };
+layout(binding=0) uniform sampler2D u_albedo;
+layout(binding=1) uniform sampler2D u_normal_map;
+layout(binding=2) uniform sampler2D u_orm;
+layout(location=0) out vec4 out_color;
+const float PI = 3.14159265;
+void main() {
+    vec3 albedo = texture(u_albedo, v_uv).rgb * albedo_color.rgb;
+    vec3 orm = texture(u_orm, v_uv).rgb;
+    float ao = orm.r; float roughness_v = orm.g * roughness; float metalness_v = orm.b * metalness;
+    vec3 N = normalize(v_normal);
+    vec3 emit = emissive_color.rgb * emissive_intensity;
+    out_color = vec4(albedo + emit, opacity);
+}"#
+}
+
+pub fn builtin_unlit_vertex_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 a_position;
+layout(location=2) in vec2 a_uv;
+layout(std140, binding=1) uniform PerObject { mat4 mvp; mat4 model; mat4 normal_matrix; };
+layout(location=0) out vec2 v_uv;
+void main() { v_uv = a_uv; gl_Position = mvp * vec4(a_position, 1.0); }"#
+}
+
+pub fn builtin_unlit_fragment_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec2 v_uv;
+layout(binding=0) uniform sampler2D u_texture;
+layout(std140, binding=2) uniform PerMaterial { vec4 albedo_color; vec4 emissive_color; float roughness; float metalness; float normal_scale; float occlusion_strength; float emissive_intensity; float opacity; };
+layout(location=0) out vec4 out_color;
+void main() { out_color = texture(u_texture, v_uv) * albedo_color; }"#
+}
+
+pub const SHADER_SYSTEM_STATE_VERSION: u32 = 1;
+pub const BUILTIN_PBR_SHADER_STAGES: usize = 2;
+pub const BUILTIN_UNLIT_SHADER_STAGES: usize = 2;
+pub const BUILTIN_SHADER_COUNT: usize = 4;
+
+pub fn builtin_shader_names() -> &'static [&'static str] { &["pbr_vertex", "pbr_fragment", "unlit_vertex", "unlit_fragment"] }
+pub fn get_builtin_shader(name: &str) -> Option<&'static str> {
+    match name {
+        "pbr_vertex" => Some(builtin_pbr_vertex_shader()),
+        "pbr_fragment" => Some(builtin_pbr_fragment_shader()),
+        "unlit_vertex" => Some(builtin_unlit_vertex_shader()),
+        "unlit_fragment" => Some(builtin_unlit_fragment_shader()),
+        _ => None,
+    }
+}
+pub fn shader_editor_complete_build_info() -> String {
+    format!("ShaderCompilerEditor Complete Build — {} builtin shaders, {} intrinsic docs, {} module total", BUILTIN_SHADER_COUNT, SHADER_GLSL_INTRINSIC_DOC_COUNT, shader_module_count())
+}
+
+
+// ── Shader Utility Functions ──────────────────────────────────────────────────
+
+pub fn blend_factor_to_str(f: &BlendFactor) -> &'static str {
+    match f {
+        BlendFactor::Zero => "Zero",
+        BlendFactor::One => "One",
+        BlendFactor::SrcAlpha => "SrcAlpha",
+        BlendFactor::OneMinusSrcAlpha => "OneMinusSrcAlpha",
+        BlendFactor::DstAlpha => "DstAlpha",
+        BlendFactor::OneMinusDstAlpha => "OneMinusDstAlpha",
+        BlendFactor::SrcColor => "SrcColor",
+        BlendFactor::OneMinusSrcColor => "OneMinusSrcColor",
+        BlendFactor::ConstantAlpha => "ConstantAlpha",
+    }
+}
+
+pub fn compare_func_to_str(f: &CompareFunc) -> &'static str {
+    match f {
+        CompareFunc::Never => "Never",
+        CompareFunc::Less => "Less",
+        CompareFunc::Equal => "Equal",
+        CompareFunc::LessEqual => "LessEqual",
+        CompareFunc::Greater => "Greater",
+        CompareFunc::NotEqual => "NotEqual",
+        CompareFunc::GreaterEqual => "GreaterEqual",
+        CompareFunc::Always => "Always",
+    }
+}
+
+pub fn cull_mode_to_str(m: &CullMode) -> &'static str {
+    match m {
+        CullMode::None => "None",
+        CullMode::Front => "Front",
+        CullMode::Back => "Back",
+        CullMode::FrontAndBack => "FrontAndBack",
+    }
+}
+
+pub fn polygon_mode_to_str(m: &PolygonMode) -> &'static str {
+    match m { PolygonMode::Fill => "Fill", PolygonMode::Line => "Line", PolygonMode::Point => "Point" }
+}
+
+pub fn attachment_format_is_depth(f: &AttachmentFormat) -> bool {
+    matches!(f, AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F | AttachmentFormat::Depth24Stencil8)
+}
+
+pub fn attachment_format_channel_count(f: &AttachmentFormat) -> u32 {
+    match f {
+        AttachmentFormat::Rgba8 | AttachmentFormat::Rgba16F | AttachmentFormat::Rgba32F => 4,
+        AttachmentFormat::Rg8 | AttachmentFormat::Rg16F => 2,
+        AttachmentFormat::R8 | AttachmentFormat::R16F | AttachmentFormat::R32F => 1,
+        AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F => 1,
+        AttachmentFormat::Depth24Stencil8 => 2,
+    }
+}
+
+pub fn buffer_usage_to_str(u: &BufferUsage) -> &'static str {
+    match u {
+        BufferUsage::Vertex => "Vertex",
+        BufferUsage::Index => "Index",
+        BufferUsage::Uniform => "Uniform",
+        BufferUsage::Storage => "Storage",
+        BufferUsage::Indirect => "Indirect",
+        BufferUsage::Staging => "Staging",
+    }
+}
+
+pub fn sampler_type_to_str(t: &SamplerType) -> &'static str {
+    match t {
+        SamplerType::Linear => "Linear",
+        SamplerType::Nearest => "Nearest",
+        SamplerType::LinearMipmap => "LinearMipmap",
+        SamplerType::Trilinear => "Trilinear",
+        SamplerType::Anisotropic => "Anisotropic",
+    }
+}
+
+pub fn render_pass_type_to_str(t: &RenderPassType) -> &'static str {
+    match t {
+        RenderPassType::Opaque => "Opaque",
+        RenderPassType::Transparent => "Transparent",
+        RenderPassType::Shadow => "Shadow",
+        RenderPassType::PostProcess => "PostProcess",
+        RenderPassType::Ui => "UI",
+        RenderPassType::Compute => "Compute",
+        RenderPassType::Custom => "Custom",
+    }
+}
+
+pub fn post_effect_type_to_str(t: &PostEffectType) -> &'static str {
+    match t {
+        PostEffectType::Bloom => "Bloom",
+        PostEffectType::Tonemap => "Tonemap",
+        PostEffectType::Vignette => "Vignette",
+        PostEffectType::ChromaticAberration => "ChromaticAberration",
+        PostEffectType::DepthOfField => "DepthOfField",
+        PostEffectType::MotionBlur => "MotionBlur",
+        PostEffectType::Ssao => "SSAO",
+        PostEffectType::Fxaa => "FXAA",
+        PostEffectType::Custom => "Custom",
+    }
+}
+
+pub fn tone_mapping_mode_to_str(m: &ToneMappingMode) -> &'static str {
+    match m {
+        ToneMappingMode::None => "None",
+        ToneMappingMode::Reinhard => "Reinhard",
+        ToneMappingMode::Aces => "ACES",
+        ToneMappingMode::Filmic => "Filmic",
+        ToneMappingMode::Uncharted2 => "Uncharted2",
+        ToneMappingMode::Custom => "Custom",
+    }
+}
+
+pub fn lighting_model_type_to_str(t: &LightingModelType) -> &'static str {
+    match t {
+        LightingModelType::Pbr => "PBR",
+        LightingModelType::Phong => "Phong",
+        LightingModelType::BlinnPhong => "BlinnPhong",
+        LightingModelType::Lambert => "Lambert",
+        LightingModelType::Toon => "Toon",
+        LightingModelType::Unlit => "Unlit",
+        LightingModelType::Custom(_) => "Custom",
+    }
+}
+
+pub fn descriptor_type_to_str(t: &DescriptorType) -> &'static str {
+    match t {
+        DescriptorType::UniformBuffer => "UniformBuffer",
+        DescriptorType::StorageBuffer => "StorageBuffer",
+        DescriptorType::Sampler => "Sampler",
+        DescriptorType::SampledImage => "SampledImage",
+        DescriptorType::StorageImage => "StorageImage",
+        DescriptorType::CombinedImageSampler => "CombinedImageSampler",
+        DescriptorType::InputAttachment => "InputAttachment",
+    }
+}
+
+pub fn render_graph_node_type_to_str(t: &RenderGraphNodeType) -> &'static str {
+    match t {
+        RenderGraphNodeType::Pass => "Pass",
+        RenderGraphNodeType::Blit => "Blit",
+        RenderGraphNodeType::Compute => "Compute",
+        RenderGraphNodeType::Present => "Present",
+        RenderGraphNodeType::Upload => "Upload",
+        RenderGraphNodeType::Barrier => "Barrier",
+        RenderGraphNodeType::Custom(_) => "Custom",
+    }
+}
+
+pub fn bloom_mode_to_str(m: &BloomMode) -> &'static str {
+    match m {
+        BloomMode::Classic => "Classic",
+        BloomMode::Kawase => "Kawase",
+        BloomMode::Dual => "Dual",
+        BloomMode::Convolution => "Convolution",
+    }
+}
+
+pub fn ssao_quality_to_str(q: &SsaoQuality) -> &'static str {
+    match q {
+        SsaoQuality::Low => "Low",
+        SsaoQuality::Medium => "Medium",
+        SsaoQuality::High => "High",
+        SsaoQuality::Ultra => "Ultra",
+    }
+}
+
+pub fn anti_aliasing_mode_to_str(m: &AntiAliasingMode) -> &'static str {
+    match m {
+        AntiAliasingMode::None => "None",
+        AntiAliasingMode::Msaa => "MSAA",
+        AntiAliasingMode::Fxaa => "FXAA",
+        AntiAliasingMode::Taa => "TAA",
+        AntiAliasingMode::Smaa => "SMAA",
+        AntiAliasingMode::Dlss => "DLSS",
+    }
+}
+
+pub fn optimization_level_to_str(o: &OptimizationLevel) -> &'static str {
+    match o {
+        OptimizationLevel::None => "None",
+        OptimizationLevel::Low => "Low",
+        OptimizationLevel::Medium => "Medium",
+        OptimizationLevel::High => "High",
+        OptimizationLevel::Aggressive => "Aggressive",
+    }
+}
+
+pub fn code_gen_target_to_str(t: &CodeGenTarget) -> &'static str {
+    match t {
+        CodeGenTarget::Glsl450 => "GLSL 4.50",
+        CodeGenTarget::Glsl300Es => "GLSL 3.00 ES",
+        CodeGenTarget::Wgsl => "WGSL",
+        CodeGenTarget::Hlsl50 => "HLSL 5.0",
+        CodeGenTarget::Msl20 => "Metal SL 2.0",
+    }
+}
+
+pub fn shader_export_format_to_str(f: &ShaderExportFormat) -> &'static str {
+    match f {
+        ShaderExportFormat::Glsl => "GLSL",
+        ShaderExportFormat::SpirV => "SPIR-V",
+        ShaderExportFormat::Wgsl => "WGSL",
+        ShaderExportFormat::Json => "JSON",
+        ShaderExportFormat::Binary => "Binary",
+    }
+}
+
+pub fn stencil_op_to_str(op: &StencilOp) -> &'static str {
+    match op {
+        StencilOp::Keep => "Keep", StencilOp::Zero => "Zero", StencilOp::Replace => "Replace",
+        StencilOp::IncrClamp => "IncrClamp", StencilOp::DecrClamp => "DecrClamp",
+        StencilOp::Invert => "Invert", StencilOp::IncrWrap => "IncrWrap", StencilOp::DecrWrap => "DecrWrap",
+    }
+}
+
+pub fn tess_primitive_to_str(p: &TessPrimitive) -> &'static str {
+    match p { TessPrimitive::Triangles => "triangles", TessPrimitive::Quads => "quads", TessPrimitive::Isolines => "isolines" }
+}
+
+pub fn tess_winding_to_str(w: &TessWinding) -> &'static str {
+    match w { TessWinding::Ccw => "ccw", TessWinding::Cw => "cw" }
+}
+
+// ── Shader System Credits & Versioning ───────────────────────────────────────
+
+pub const SHADER_COMPILER_FULL_VERSION: &str = "ShaderCompilerEditor v2.0.0-proof-engine";
+pub const SHADER_COMPILER_BUILD_DATE: &str = "2026-03-29";
+pub const SHADER_COMPILER_AUTHOR: &str = "proof-engine rendering team";
+pub const SHADER_MAX_MATERIALS_PER_PASS: usize = 256;
+pub const SHADER_MAX_LIGHTS: usize = 512;
+pub const SHADER_MAX_SHADOW_CASCADES: usize = 4;
+pub const SHADER_MAX_REFLECTION_PROBES: usize = 64;
+pub const SHADER_COMPUTE_MAX_WORKGROUP_SIZE: u32 = 1024;
+pub const SHADER_MAX_PUSH_CONSTANT_BYTES: u32 = 128;
+pub const SHADER_MAX_DESCRIPTOR_SETS: u32 = 4;
+pub const SHADER_MAX_BINDINGS_PER_SET: u32 = 16;
+
+pub fn shader_compiler_credits() -> &'static str {
+    "ShaderCompilerEditor — Built for proof-engine. Supports GLSL, HLSL, WGSL, SPIR-V, and Metal SL."
+}
+
+pub fn shader_pipeline_summary(manager: &ShaderManager) -> String {
+    format!(
+        "Programs: {} | Errors: {} | Quality: {} | Frames: {}",
+        manager.program_count(),
+        manager.error_count(),
+        manager.quality_preset,
+        manager.frame_executor.frame_number(),
+    )
+}
+
