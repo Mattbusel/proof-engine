@@ -8,6 +8,16 @@
 #[allow(unused)] mod preferences;
 #[allow(unused)] mod viewport;
 #[allow(unused)] mod layout;
+#[allow(unused)] mod behavior_tree;
+#[allow(unused)] mod dialogue_graph;
+#[allow(unused)] mod particle_editor;
+#[allow(unused)] mod material_system;
+#[allow(unused)] mod spline_editor;
+#[allow(unused)] mod quest_system;
+#[allow(unused)] mod audio_mixer;
+#[allow(unused)] mod physics_editor;
+#[allow(unused)] mod inventory_system;
+#[allow(unused)] mod world_gen;
 mod editor_panels;
 
 use proof_engine::prelude::*;
@@ -135,6 +145,16 @@ fn main() {
                 editor_panels::level_streaming_panel(ctx, &mut state);
                 editor_panels::audio_mixer_panel(ctx, &mut state);
                 editor_panels::modeling_panel(ctx, &mut state, engine);
+                editor_panels::behavior_tree_panel(ctx, &mut state);
+                editor_panels::dialogue_graph_panel(ctx, &mut state);
+                editor_panels::particle_editor_panel(ctx, &mut state, dt);
+                editor_panels::material_system_panel(ctx, &mut state);
+                editor_panels::spline_editor_panel(ctx, &mut state, dt);
+                editor_panels::quest_system_panel(ctx, &mut state);
+                editor_panels::audio_mixer_full_panel(ctx, &mut state, dt);
+                editor_panels::physics_editor_panel(ctx, &mut state, dt);
+                editor_panels::inventory_system_panel(ctx, &mut state);
+                editor_panels::world_gen_panel(ctx, &mut state, dt);
             });
             let ewp = egui_ctx.is_pointer_over_area();
             let pr = egui_ctx.tessellate(fo.shapes, egui_ctx.pixels_per_point());

@@ -84,6 +84,28 @@ pub struct EditorState {
     pub audio_master_volume: f32,
     pub audio_music_volume: f32,
     pub audio_sfx_volume: f32,
+    // New full-featured panel toggles
+    pub show_behavior_tree: bool,
+    pub show_dialogue_graph: bool,
+    pub show_particle_editor: bool,
+    pub show_material_system: bool,
+    pub show_spline_editor: bool,
+    pub show_quest_system: bool,
+    pub show_audio_mixer_full: bool,
+    pub show_physics_editor: bool,
+    pub show_inventory_system: bool,
+    pub show_world_gen: bool,
+    // Sub-editor states
+    pub behavior_tree_editor: crate::behavior_tree::BehaviorTreeEditor,
+    pub dialogue_editor: crate::dialogue_graph::DialogueEditor,
+    pub particle_editor: crate::particle_editor::ParticleEditor,
+    pub material_editor: crate::material_system::MaterialEditor,
+    pub spline_editor: crate::spline_editor::SplineEditor,
+    pub quest_editor: crate::quest_system::QuestEditor,
+    pub audio_mixer_editor: crate::audio_mixer::AudioMixerEditor,
+    pub physics_editor: crate::physics_editor::PhysicsEditor,
+    pub inventory_editor: crate::inventory_system::InventoryEditor,
+    pub world_gen_editor: crate::world_gen::WorldGenEditor,
 }
 
 #[derive(Clone)]
@@ -145,6 +167,26 @@ impl EditorState {
             dialogue_search: String::new(), quest_search: String::new(),
             inventory_search: String::new(), ability_search: String::new(),
             audio_master_volume: 80.0, audio_music_volume: 60.0, audio_sfx_volume: 75.0,
+            show_behavior_tree: false,
+            show_dialogue_graph: false,
+            show_particle_editor: false,
+            show_material_system: false,
+            show_spline_editor: false,
+            show_quest_system: false,
+            show_audio_mixer_full: false,
+            show_physics_editor: false,
+            show_inventory_system: false,
+            show_world_gen: false,
+            behavior_tree_editor: crate::behavior_tree::BehaviorTreeEditor::new(),
+            dialogue_editor: crate::dialogue_graph::DialogueEditor::new(),
+            particle_editor: crate::particle_editor::ParticleEditor::new(),
+            material_editor: crate::material_system::MaterialEditor::new(),
+            spline_editor: crate::spline_editor::SplineEditor::new(),
+            quest_editor: crate::quest_system::QuestEditor::new(),
+            audio_mixer_editor: crate::audio_mixer::AudioMixerEditor::new(),
+            physics_editor: crate::physics_editor::PhysicsEditor::new(),
+            inventory_editor: crate::inventory_system::InventoryEditor::new(),
+            world_gen_editor: crate::world_gen::WorldGenEditor::new(),
         }
     }
 
@@ -281,6 +323,17 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut EditorState, engine: &mut Proof
                 if ui.button("[AU] Audio Mixer").clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
                 ui.separator();
                 if ui.button("[3D] 3D Modeler").clicked() { state.show_modeling = !state.show_modeling; ui.close_menu(); }
+                ui.separator();
+                if ui.button("[BT] Behavior Tree Editor").clicked() { state.show_behavior_tree = !state.show_behavior_tree; ui.close_menu(); }
+                if ui.button("[DG] Dialogue Graph").clicked() { state.show_dialogue_graph = !state.show_dialogue_graph; ui.close_menu(); }
+                if ui.button("[PE] Particle Editor").clicked() { state.show_particle_editor = !state.show_particle_editor; ui.close_menu(); }
+                if ui.button("[MT] Material System").clicked() { state.show_material_system = !state.show_material_system; ui.close_menu(); }
+                if ui.button("[SE] Spline Editor (Full)").clicked() { state.show_spline_editor = !state.show_spline_editor; ui.close_menu(); }
+                if ui.button("[QS] Quest System").clicked() { state.show_quest_system = !state.show_quest_system; ui.close_menu(); }
+                if ui.button("[AM] Audio Mixer (Full)").clicked() { state.show_audio_mixer_full = !state.show_audio_mixer_full; ui.close_menu(); }
+                if ui.button("[PH] Physics Editor").clicked() { state.show_physics_editor = !state.show_physics_editor; ui.close_menu(); }
+                if ui.button("[IV] Inventory System").clicked() { state.show_inventory_system = !state.show_inventory_system; ui.close_menu(); }
+                if ui.button("[WG] World Generator").clicked() { state.show_world_gen = !state.show_world_gen; ui.close_menu(); }
             });
         });
     });
@@ -2045,4 +2098,44 @@ pub fn modeling_panel(ctx: &egui::Context, state: &mut EditorState, engine: &mut
             });
         });
     state.show_modeling = open;
+}
+
+pub fn behavior_tree_panel(ctx: &egui::Context, state: &mut EditorState) {
+    crate::behavior_tree::show_panel(ctx, &mut state.behavior_tree_editor, &mut state.show_behavior_tree);
+}
+
+pub fn dialogue_graph_panel(ctx: &egui::Context, state: &mut EditorState) {
+    crate::dialogue_graph::show_panel(ctx, &mut state.dialogue_editor, &mut state.show_dialogue_graph);
+}
+
+pub fn particle_editor_panel(ctx: &egui::Context, state: &mut EditorState, dt: f32) {
+    crate::particle_editor::ParticleEditor::show_panel(ctx, &mut state.particle_editor, dt, &mut state.show_particle_editor);
+}
+
+pub fn material_system_panel(ctx: &egui::Context, state: &mut EditorState) {
+    crate::material_system::MaterialEditor::show_panel(ctx, &mut state.material_editor, &mut state.show_material_system);
+}
+
+pub fn spline_editor_panel(ctx: &egui::Context, state: &mut EditorState, dt: f32) {
+    crate::spline_editor::SplineEditor::show_panel(ctx, &mut state.spline_editor, dt, &mut state.show_spline_editor);
+}
+
+pub fn quest_system_panel(ctx: &egui::Context, state: &mut EditorState) {
+    crate::quest_system::QuestEditor::show_panel(ctx, &mut state.quest_editor, &mut state.show_quest_system);
+}
+
+pub fn audio_mixer_full_panel(ctx: &egui::Context, state: &mut EditorState, dt: f32) {
+    crate::audio_mixer::AudioMixerEditor::show_panel(ctx, &mut state.audio_mixer_editor, dt, &mut state.show_audio_mixer_full);
+}
+
+pub fn physics_editor_panel(ctx: &egui::Context, state: &mut EditorState, dt: f32) {
+    crate::physics_editor::PhysicsEditor::show_panel(ctx, &mut state.physics_editor, dt, &mut state.show_physics_editor);
+}
+
+pub fn inventory_system_panel(ctx: &egui::Context, state: &mut EditorState) {
+    crate::inventory_system::InventoryEditor::show_panel(ctx, &mut state.inventory_editor, &mut state.show_inventory_system);
+}
+
+pub fn world_gen_panel(ctx: &egui::Context, state: &mut EditorState, dt: f32) {
+    crate::world_gen::WorldGenEditor::show_panel(ctx, &mut state.world_gen_editor, dt, &mut state.show_world_gen);
 }
