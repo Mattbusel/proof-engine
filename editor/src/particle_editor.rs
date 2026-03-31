@@ -7842,8 +7842,7 @@ pub fn show_mesh_particle_ui(ui: &mut egui::Ui, mesh: &mut MeshParticle) {
             egui::ComboBox::from_id_source("mesh_alignment")
                 .selected_text(mesh.alignment.label())
                 .show_ui(ui, |ui| {
-                    for a in [BillboardAlignment::View, BillboardAlignment::World, BillboardAlignment::Local, BillboardAlignment::Velocity] {
-                        let lbl = a.label();
+                    for (a, lbl) in [(BillboardAlignment::View,"View"),(BillboardAlignment::World,"World"),(BillboardAlignment::Local,"Local"),(BillboardAlignment::Velocity,"Velocity")] {
                         ui.selectable_value(&mut mesh.alignment, a, lbl);
                     }
                 });

@@ -3852,7 +3852,7 @@ impl ShaderGraphEditor {
             // Category header
             let header_rect = Rect::from_min_size(np, Vec2::new(sw, 24.0 * self.zoom));
             let hcol = node.node_type.category().header_color();
-            painter.rect_filled(header_rect, egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 }, hcol);
+            painter.rect_filled(header_rect, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, hcol);
 
             // Title
             let font_size = (12.0 * self.zoom).max(8.0);

@@ -2777,31 +2777,38 @@ fn show_physics_tab(ui: &mut egui::Ui, node: &mut SceneNode) -> bool {
     ui.add_space(4.0);
 
     egui::Grid::new("phys_grid").num_columns(2).spacing(egui::Vec2::new(8.0, 4.0)).show(ui, |ui| {
+        let mut mass: f32 = node.properties.get("mass").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        let mut charge: f32 = node.properties.get("charge").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut temp: f32 = node.properties.get("temperature").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut entropy: f32 = node.properties.get("entropy").and_then(|v| v.parse().ok()).unwrap_or(0.0);
         ui.label("Mass:");
-        if ui.add(egui::Slider::new(&mut node.mass, 0.0..=100.0).suffix(" kg").max_decimals(2)).changed() { changed = true; }
+        if ui.add(egui::Slider::new(&mut mass, 0.0..=100.0).suffix(" kg").max_decimals(2)).changed() { node.properties.insert("mass".into(), mass.to_string()); changed = true; }
         ui.end_row();
         ui.label("Charge:");
-        if ui.add(egui::Slider::new(&mut node.charge, -5.0..=5.0).max_decimals(2)).changed() { changed = true; }
+        if ui.add(egui::Slider::new(&mut charge, -5.0..=5.0).max_decimals(2)).changed() { node.properties.insert("charge".into(), charge.to_string()); changed = true; }
         ui.end_row();
         ui.label("Temperature:");
-        if ui.add(egui::Slider::new(&mut node.temperature, -100.0..=100.0).suffix("°").max_decimals(1)).changed() { changed = true; }
+        if ui.add(egui::Slider::new(&mut temp, -100.0..=100.0).suffix("°").max_decimals(1)).changed() { node.properties.insert("temperature".into(), temp.to_string()); changed = true; }
         ui.end_row();
         ui.label("Entropy:");
-        if ui.add(egui::Slider::new(&mut node.entropy, 0.0..=1.0).max_decimals(3)).changed() { changed = true; }
+        if ui.add(egui::Slider::new(&mut entropy, 0.0..=1.0).max_decimals(3)).changed() { node.properties.insert("entropy".into(), entropy.to_string()); changed = true; }
         ui.end_row();
     });
 
     ui.add_space(6.0);
     ui.label(egui::RichText::new("Velocity").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
     egui::Grid::new("vel_grid").num_columns(2).spacing(egui::Vec2::new(4.0, 3.0)).show(ui, |ui| {
-        for (label, val) in [("Vx", &mut node.velocity.x), ("Vy", &mut node.velocity.y), ("Vz", &mut node.velocity.z)] {
+        let mut vx: f32 = node.properties.get("vel_x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut vy: f32 = node.properties.get("vel_y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut vz: f32 = node.properties.get("vel_z").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        for (label, val, key) in [("Vx", &mut vx, "vel_x"), ("Vy", &mut vy, "vel_y"), ("Vz", &mut vz, "vel_z")] {
             ui.label(label);
-            if ui.add(egui::DragValue::new(val).speed(0.01).max_decimals(3)).changed() { changed = true; }
+            if ui.add(egui::DragValue::new(val).speed(0.01).max_decimals(3)).changed() { node.properties.insert(key.into(), val.to_string()); changed = true; }
             ui.end_row();
         }
     });
     if ui.small_button("Zero Velocity").clicked() {
-        node.velocity = glam::Vec3::ZERO;
+        for key in ["vel_x","vel_y","vel_z"] { node.properties.insert(key.into(), "0".into()); }
         changed = true;
     }
 
@@ -2904,7 +2911,8 @@ fn show_advanced_tab(ui: &mut egui::Ui, node: &mut SceneNode) -> bool {
 
     ui.label(egui::RichText::new("Blend Mode").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
     let blend_modes = ["Normal", "Additive", "Multiply", "Screen", "Overlay"];
-    let mut bm_idx = node.blend_mode_idx.min(blend_modes.len() - 1);
+    let mut bm_idx: usize = node.properties.get("blend_mode_idx").and_then(|v| v.parse().ok()).unwrap_or(0);
+    bm_idx = bm_idx.min(blend_modes.len() - 1);
     egui::ComboBox::from_id_salt("blend_mode")
         .selected_text(blend_modes[bm_idx])
         .show_ui(ui, |ui| {
@@ -2912,12 +2920,13 @@ fn show_advanced_tab(ui: &mut egui::Ui, node: &mut SceneNode) -> bool {
                 if ui.selectable_label(bm_idx == i, name).clicked() { bm_idx = i; changed = true; }
             }
         });
-    node.blend_mode_idx = bm_idx;
+    node.properties.insert("blend_mode_idx".into(), bm_idx.to_string());
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("Render Layer").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
     let layers = ["Background", "Entity", "Overlay", "UI"];
-    let mut layer_idx = node.render_layer_idx.min(layers.len() - 1);
+    let mut layer_idx: usize = node.properties.get("render_layer_idx").and_then(|v| v.parse().ok()).unwrap_or(1);
+    layer_idx = layer_idx.min(layers.len() - 1);
     egui::ComboBox::from_id_salt("render_layer")
         .selected_text(layers[layer_idx])
         .show_ui(ui, |ui| {
@@ -2925,23 +2934,27 @@ fn show_advanced_tab(ui: &mut egui::Ui, node: &mut SceneNode) -> bool {
                 if ui.selectable_label(layer_idx == i, name).clicked() { layer_idx = i; changed = true; }
             }
         });
-    node.render_layer_idx = layer_idx;
+    node.properties.insert("render_layer_idx".into(), layer_idx.to_string());
 
     ui.add_space(4.0);
     ui.label(egui::RichText::new("Z-Order").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
-    if ui.add(egui::Slider::new(&mut node.z_order, -100.0..=100.0).max_decimals(1)).changed() { changed = true; }
+    let mut z_order: f32 = node.properties.get("z_order").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    if ui.add(egui::Slider::new(&mut z_order, -100.0..=100.0).max_decimals(1)).changed() { node.properties.insert("z_order".into(), z_order.to_string()); changed = true; }
 
     ui.add_space(6.0);
     ui.separator();
     ui.label(egui::RichText::new("Physics Override").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
     ui.add_space(2.0);
-    ui.checkbox(&mut node.is_static, "Is Static");
-    ui.checkbox(&mut node.is_trigger, "Is Trigger");
+    let mut is_static = node.properties.get("is_static").map(|v| v == "true").unwrap_or(false);
+    let mut is_trigger = node.properties.get("is_trigger").map(|v| v == "true").unwrap_or(false);
+    if ui.checkbox(&mut is_static, "Is Static").changed() { node.properties.insert("is_static".into(), is_static.to_string()); changed = true; }
+    if ui.checkbox(&mut is_trigger, "Is Trigger").changed() { node.properties.insert("is_trigger".into(), is_trigger.to_string()); changed = true; }
 
     ui.add_space(6.0);
     ui.label(egui::RichText::new("Collision Response").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
     let responses = ["Bounce", "Absorb", "PassThrough"];
-    let mut cr_idx = node.collision_response_idx.min(responses.len() - 1);
+    let mut cr_idx: usize = node.properties.get("collision_response_idx").and_then(|v| v.parse().ok()).unwrap_or(0);
+    cr_idx = cr_idx.min(responses.len() - 1);
     egui::ComboBox::from_id_salt("collision_resp")
         .selected_text(responses[cr_idx])
         .show_ui(ui, |ui| {
@@ -2949,15 +2962,17 @@ fn show_advanced_tab(ui: &mut egui::Ui, node: &mut SceneNode) -> bool {
                 if ui.selectable_label(cr_idx == i, name).clicked() { cr_idx = i; changed = true; }
             }
         });
-    node.collision_response_idx = cr_idx;
+    node.properties.insert("collision_response_idx".into(), cr_idx.to_string());
 
     ui.add_space(6.0);
     ui.separator();
     ui.label(egui::RichText::new("Lifetime").size(11.0).color(egui::Color32::from_rgb(160,170,190)));
-    ui.checkbox(&mut node.finite_lifetime, "Finite Lifetime");
-    if node.finite_lifetime {
-        if ui.add(egui::Slider::new(&mut node.lifetime_seconds, 0.1..=60.0).suffix("s").text("Duration")).changed() {
-            changed = true;
+    let mut finite_lifetime = node.properties.get("finite_lifetime").map(|v| v == "true").unwrap_or(false);
+    if ui.checkbox(&mut finite_lifetime, "Finite Lifetime").changed() { node.properties.insert("finite_lifetime".into(), finite_lifetime.to_string()); changed = true; }
+    if finite_lifetime {
+        let mut lifetime_secs: f32 = node.properties.get("lifetime_seconds").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+        if ui.add(egui::Slider::new(&mut lifetime_secs, 0.1..=60.0).suffix("s").text("Duration")).changed() {
+            node.properties.insert("lifetime_seconds".into(), lifetime_secs.to_string()); changed = true;
         }
     }
 
