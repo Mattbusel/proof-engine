@@ -4965,3 +4965,973 @@ pub fn show_lore_entry_viewer(ui: &mut egui::Ui, lore: &mut Vec<String>) {
             if ui.small_button("+ Add Lore").clicked() { lore.push("New lore entry.".to_string()); }
         });
 }
+
+// ============================================================
+// JOURNAL SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum JournalCategory {
+    Quest,
+    Lore,
+    Character,
+    Location,
+    Rumor,
+}
+
+impl JournalCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            JournalCategory::Quest     => "Quest",
+            JournalCategory::Lore      => "Lore",
+            JournalCategory::Character => "Character",
+            JournalCategory::Location  => "Location",
+            JournalCategory::Rumor     => "Rumor",
+        }
+    }
+
+    pub fn color(&self) -> Color32 {
+        match self {
+            JournalCategory::Quest     => Color32::from_rgb(255, 200, 80),
+            JournalCategory::Lore      => Color32::from_rgb(180, 140, 255),
+            JournalCategory::Character => Color32::from_rgb(100, 210, 255),
+            JournalCategory::Location  => Color32::from_rgb(100, 230, 140),
+            JournalCategory::Rumor     => Color32::from_rgb(230, 160, 80),
+        }
+    }
+
+    pub fn all() -> &'static [JournalCategory] {
+        &[JournalCategory::Quest, JournalCategory::Lore,
+          JournalCategory::Character, JournalCategory::Location, JournalCategory::Rumor]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub id: usize,
+    pub title: String,
+    pub body: String,
+    pub date_added: String,
+    pub category: JournalCategory,
+    pub pinned: bool,
+    pub read: bool,
+    pub images: Vec<String>,
+    pub source_quest_id: Option<QuestId>,
+}
+
+impl JournalEntry {
+    pub fn new(id: usize) -> Self {
+        JournalEntry {
+            id,
+            title: format!("Entry {}", id),
+            body: String::new(),
+            date_added: "Day 1".to_string(),
+            category: JournalCategory::Quest,
+            pinned: false,
+            read: false,
+            images: Vec::new(),
+            source_quest_id: None,
+        }
+    }
+
+    pub fn auto_from_quest(id: usize, quest: &Quest, day: &str) -> Self {
+        JournalEntry {
+            id,
+            title: format!("Quest: {}", quest.name),
+            body: quest.description.clone(),
+            date_added: day.to_string(),
+            category: JournalCategory::Quest,
+            pinned: quest.category == QuestCategory::Main,
+            read: false,
+            images: Vec::new(),
+            source_quest_id: Some(quest.id),
+        }
+    }
+}
+
+pub struct JournalEditor {
+    pub entries: Vec<JournalEntry>,
+    pub selected: Option<usize>,
+    pub category_filter: Option<JournalCategory>,
+    pub search: String,
+    pub next_id: usize,
+    pub show_unread_only: bool,
+    pub edit_mode: bool,
+    pub edit_title: String,
+    pub edit_body: String,
+}
+
+impl JournalEditor {
+    pub fn new() -> Self {
+        let mut j = JournalEditor {
+            entries: Vec::new(),
+            selected: None,
+            category_filter: None,
+            search: String::new(),
+            next_id: 0,
+            show_unread_only: false,
+            edit_mode: false,
+            edit_title: String::new(),
+            edit_body: String::new(),
+        };
+        j.populate_demo();
+        j
+    }
+
+    fn populate_demo(&mut self) {
+        let mut e1 = JournalEntry::new(self.next_id);
+        e1.title = "The Oracle's Warning".to_string();
+        e1.body = "The Oracle spoke in riddles, but her warning was clear: the Void stirs beneath the mountain.".to_string();
+        e1.date_added = "Day 1".to_string();
+        e1.category = JournalCategory::Quest;
+        e1.read = true;
+        self.entries.push(e1);
+        self.next_id += 1;
+
+        let mut e2 = JournalEntry::new(self.next_id);
+        e2.title = "Ashvale Forest: Ancient Ruins".to_string();
+        e2.body = "The ruins predate the kingdom by at least three centuries. Strange glyphs glow at night.".to_string();
+        e2.date_added = "Day 4".to_string();
+        e2.category = JournalCategory::Location;
+        self.entries.push(e2);
+        self.next_id += 1;
+
+        let mut e3 = JournalEntry::new(self.next_id);
+        e3.title = "Lore: The Void War".to_string();
+        e3.body = "The Void War ended four hundred years ago when the Sealing Compact was signed.".to_string();
+        e3.date_added = "Day 5".to_string();
+        e3.category = JournalCategory::Lore;
+        e3.pinned = true;
+        self.entries.push(e3);
+        self.next_id += 1;
+
+        let mut e4 = JournalEntry::new(self.next_id);
+        e4.title = "Aldric the Merchant".to_string();
+        e4.body = "Aldric's signet ring bears the mark of the old Merchants Compact.".to_string();
+        e4.date_added = "Day 6".to_string();
+        e4.category = JournalCategory::Character;
+        self.entries.push(e4);
+        self.next_id += 1;
+
+        let mut e5 = JournalEntry::new(self.next_id);
+        e5.title = "Rumour: The Night Market".to_string();
+        e5.body = "A night market appears on moonless nights east of the mill. Black-market relics.".to_string();
+        e5.date_added = "Day 7".to_string();
+        e5.category = JournalCategory::Rumor;
+        self.entries.push(e5);
+        self.next_id += 1;
+    }
+
+    pub fn add_from_quest(&mut self, quest: &Quest, day: &str) {
+        if self.entries.iter().any(|e| e.source_quest_id == Some(quest.id)) { return; }
+        let entry = JournalEntry::auto_from_quest(self.next_id, quest, day);
+        self.entries.push(entry);
+        self.next_id += 1;
+    }
+
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let q = self.search.to_lowercase();
+        self.entries.iter().enumerate()
+            .filter(|(_, e)| {
+                let cat_ok = self.category_filter.as_ref().map_or(true, |c| &e.category == c);
+                let unread_ok = !self.show_unread_only || !e.read;
+                let search_ok = q.is_empty() || e.title.to_lowercase().contains(&q) || e.body.to_lowercase().contains(&q);
+                cat_ok && unread_ok && search_ok
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn unread_count(&self) -> usize {
+        self.entries.iter().filter(|e| !e.read).count()
+    }
+}
+
+pub fn show_journal(ui: &mut egui::Ui, journal: &mut JournalEditor) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("Journal").size(16.0).color(Color32::from_rgb(220, 200, 140)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let unread = journal.unread_count();
+            if unread > 0 {
+                ui.label(RichText::new(format!("{} unread", unread)).small().color(Color32::from_rgb(255, 180, 50)));
+            }
+            ui.toggle_value(&mut journal.show_unread_only, "Unread Only");
+            if ui.button("+ Entry").clicked() {
+                let id = journal.next_id;
+                journal.entries.push(JournalEntry::new(id));
+                journal.next_id += 1;
+                journal.selected = Some(journal.entries.len() - 1);
+                journal.edit_mode = true;
+            }
+        });
+    });
+    ui.separator();
+
+    ui.horizontal(|ui| {
+        if ui.selectable_label(journal.category_filter.is_none(), "All").clicked() {
+            journal.category_filter = None;
+        }
+        for cat in JournalCategory::all() {
+            let active = journal.category_filter.as_ref() == Some(cat);
+            if ui.selectable_label(active, RichText::new(cat.label()).color(cat.color()).small()).clicked() {
+                journal.category_filter = if active { None } else { Some(cat.clone()) };
+            }
+        }
+        ui.add(egui::TextEdit::singleline(&mut journal.search).hint_text("Search...").desired_width(140.0));
+    });
+    ui.separator();
+
+    egui::SidePanel::left("journal_list_pane")
+        .default_width(240.0)
+        .resizable(true)
+        .show_inside(ui, |ui| {
+            let indices = journal.filtered_indices();
+            egui::ScrollArea::vertical().id_salt("journal_list").show(ui, |ui| {
+                let mut to_select = None;
+                let mut to_delete: Option<usize> = None;
+                let pinned: Vec<usize> = indices.iter().cloned().filter(|&i| journal.entries[i].pinned).collect();
+                let unpinned: Vec<usize> = indices.iter().cloned().filter(|&i| !journal.entries[i].pinned).collect();
+                if !pinned.is_empty() {
+                    ui.label(RichText::new("Pinned").small().color(Color32::GRAY));
+                    for &idx in &pinned {
+                        let e = &journal.entries[idx];
+                        let sel = journal.selected == Some(idx);
+                        let resp = ui.selectable_label(sel, RichText::new(format!("* {}", e.title)).color(Color32::WHITE).small());
+                        if resp.clicked() { to_select = Some(idx); }
+                        resp.context_menu(|ui| {
+                            if ui.button("Delete").clicked() { to_delete = Some(idx); ui.close_menu(); }
+                        });
+                    }
+                    ui.separator();
+                }
+                for &idx in &unpinned {
+                    let e = &journal.entries[idx];
+                    let sel = journal.selected == Some(idx);
+                    let title_col = if !e.read { Color32::WHITE } else { Color32::from_rgb(160, 165, 180) };
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, e.category.color());
+                        let resp = ui.selectable_label(sel, RichText::new(&e.title).color(title_col).small());
+                        if resp.clicked() { to_select = Some(idx); }
+                    });
+                }
+                if let Some(idx) = to_select {
+                    journal.selected = Some(idx);
+                    journal.entries[idx].read = true;
+                    journal.edit_mode = false;
+                }
+                if let Some(idx) = to_delete {
+                    journal.entries.remove(idx);
+                    if journal.selected == Some(idx) { journal.selected = None; }
+                }
+            });
+        });
+
+    egui::CentralPanel::default().show_inside(ui, |ui| {
+        if let Some(sel) = journal.selected {
+            if sel < journal.entries.len() {
+                show_journal_entry_detail(ui, journal, sel);
+            }
+        } else {
+            ui.centered_and_justified(|ui| { ui.label(RichText::new("Select an entry").color(Color32::GRAY)); });
+        }
+    });
+}
+
+fn show_journal_entry_detail(ui: &mut egui::Ui, journal: &mut JournalEditor, idx: usize) {
+    {
+        let entry = &mut journal.entries[idx];
+        ui.horizontal(|ui| {
+            if journal.edit_mode {
+                if ui.button("Save").clicked() {
+                    entry.title = journal.edit_title.clone();
+                    entry.body = journal.edit_body.clone();
+                    journal.edit_mode = false;
+                }
+                if ui.button("Cancel").clicked() { journal.edit_mode = false; }
+            } else if ui.button("Edit").clicked() {
+                journal.edit_title = entry.title.clone();
+                journal.edit_body = entry.body.clone();
+                journal.edit_mode = true;
+            }
+            let pin_label = if entry.pinned { "Unpin" } else { "Pin" };
+            if ui.small_button(pin_label).clicked() { entry.pinned = !entry.pinned; }
+            egui::ComboBox::from_id_salt(format!("jcat_{}", idx))
+                .selected_text(RichText::new(entry.category.label()).color(entry.category.color()).small())
+                .show_ui(ui, |ui| {
+                    for cat in JournalCategory::all() {
+                        if ui.selectable_label(&entry.category == cat,
+                            RichText::new(cat.label()).color(cat.color()).small()).clicked() {
+                            entry.category = cat.clone();
+                        }
+                    }
+                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(&entry.date_added).small().color(Color32::GRAY));
+            });
+        });
+        ui.separator();
+    }
+    if journal.edit_mode {
+        ui.horizontal(|ui| {
+            ui.label("Title:");
+            ui.add(egui::TextEdit::singleline(&mut journal.edit_title).desired_width(f32::INFINITY));
+        });
+        egui::ScrollArea::vertical().id_salt("journal_body_edit").show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(&mut journal.edit_body).desired_rows(16).desired_width(f32::INFINITY));
+        });
+    } else {
+        let entry = &journal.entries[idx];
+        ui.heading(RichText::new(&entry.title).color(Color32::WHITE));
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical().id_salt("journal_body_view").show(ui, |ui| {
+            ui.label(RichText::new(&entry.body).color(Color32::LIGHT_GRAY));
+        });
+    }
+}
+
+// ============================================================
+// CUTSCENE TRIGGER SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum QuestCondition {
+    QuestCompleted(QuestId),
+    QuestStarted(QuestId),
+    QuestFailed(QuestId),
+    ObjectiveCompleted { quest_id: QuestId, objective_id: usize },
+    FlagSet(String),
+    FlagCleared(String),
+    AnyQuest,
+    Custom(String),
+}
+
+impl QuestCondition {
+    pub fn label(&self) -> String {
+        match self {
+            QuestCondition::QuestCompleted(id) => format!("Quest {} completed", id),
+            QuestCondition::QuestStarted(id) => format!("Quest {} started", id),
+            QuestCondition::QuestFailed(id) => format!("Quest {} failed", id),
+            QuestCondition::ObjectiveCompleted { quest_id, objective_id } => format!("Q{} obj{} done", quest_id, objective_id),
+            QuestCondition::FlagSet(f) => format!("Flag '{}' set", f),
+            QuestCondition::FlagCleared(f) => format!("Flag '{}' cleared", f),
+            QuestCondition::AnyQuest => "Any quest event".to_string(),
+            QuestCondition::Custom(s) => format!("Custom: {}", s),
+        }
+    }
+
+    pub fn type_index(&self) -> usize {
+        match self {
+            QuestCondition::QuestCompleted(_) => 0,
+            QuestCondition::QuestStarted(_) => 1,
+            QuestCondition::QuestFailed(_) => 2,
+            QuestCondition::ObjectiveCompleted { .. } => 3,
+            QuestCondition::FlagSet(_) => 4,
+            QuestCondition::FlagCleared(_) => 5,
+            QuestCondition::AnyQuest => 6,
+            QuestCondition::Custom(_) => 7,
+        }
+    }
+
+    pub fn type_labels() -> &'static [&'static str] {
+        &["Quest Completed", "Quest Started", "Quest Failed", "Objective Done",
+          "Flag Set", "Flag Cleared", "Any Quest", "Custom"]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CutsceneTrigger {
+    pub id: usize,
+    pub quest_id: QuestId,
+    pub condition: QuestCondition,
+    pub cutscene_name: String,
+    pub skip_if_seen: bool,
+    pub delay: f32,
+    pub enabled: bool,
+    pub notes: String,
+}
+
+impl CutsceneTrigger {
+    pub fn new(id: usize) -> Self {
+        CutsceneTrigger {
+            id, quest_id: 0,
+            condition: QuestCondition::QuestCompleted(0),
+            cutscene_name: String::new(),
+            skip_if_seen: true, delay: 0.0, enabled: true, notes: String::new(),
+        }
+    }
+}
+
+pub struct CutsceneTriggerEditor {
+    pub triggers: Vec<CutsceneTrigger>,
+    pub selected: Option<usize>,
+    pub next_id: usize,
+    pub search: String,
+}
+
+impl CutsceneTriggerEditor {
+    pub fn new() -> Self {
+        let mut e = CutsceneTriggerEditor {
+            triggers: Vec::new(), selected: None, next_id: 0, search: String::new(),
+        };
+        let mut t1 = CutsceneTrigger::new(e.next_id);
+        t1.condition = QuestCondition::QuestCompleted(0);
+        t1.cutscene_name = "oracle_farewell".to_string();
+        t1.skip_if_seen = true; t1.delay = 0.5;
+        e.triggers.push(t1); e.next_id += 1;
+        let mut t2 = CutsceneTrigger::new(e.next_id);
+        t2.quest_id = 1;
+        t2.condition = QuestCondition::QuestStarted(1);
+        t2.cutscene_name = "forest_intro".to_string();
+        t2.skip_if_seen = true;
+        e.triggers.push(t2); e.next_id += 1;
+        e
+    }
+}
+
+pub fn show_cutscene_trigger_editor(ui: &mut egui::Ui, editor: &mut CutsceneTriggerEditor, quests: &[Quest]) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("Cutscene Triggers").size(16.0).color(Color32::from_rgb(200, 180, 255)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("+ Trigger").clicked() {
+                let id = editor.next_id;
+                editor.triggers.push(CutsceneTrigger::new(id));
+                editor.next_id += 1;
+                editor.selected = Some(editor.triggers.len() - 1);
+            }
+        });
+    });
+    ui.separator();
+    ui.add(egui::TextEdit::singleline(&mut editor.search).hint_text("Search triggers...").desired_width(200.0));
+    ui.separator();
+
+    egui::Grid::new("cutscene_trigger_grid").num_columns(5).striped(true).min_col_width(60.0).show(ui, |ui| {
+        ui.strong("En"); ui.strong("Quest"); ui.strong("Condition"); ui.strong("Cutscene"); ui.strong("Skip");
+        ui.end_row();
+        let search = editor.search.to_lowercase();
+        let mut to_delete = None;
+        let mut to_select = None;
+        for (i, trigger) in editor.triggers.iter().enumerate() {
+            if !search.is_empty() && !trigger.cutscene_name.to_lowercase().contains(&search) { continue; }
+            let sel = editor.selected == Some(i);
+            ui.label(RichText::new(if trigger.enabled { "+" } else { "-" })
+                .color(if trigger.enabled { Color32::GREEN } else { Color32::DARK_GRAY }));
+            let qname = quests.get(trigger.quest_id).map(|q| q.name.as_str()).unwrap_or("?");
+            ui.label(RichText::new(qname).small());
+            ui.label(RichText::new(trigger.condition.label()).small().color(Color32::from_rgb(180, 200, 255)));
+            let resp = ui.selectable_label(sel, RichText::new(&trigger.cutscene_name).small().color(Color32::from_rgb(255, 200, 100)));
+            if resp.clicked() { to_select = Some(i); }
+            resp.context_menu(|ui| {
+                if ui.button("Delete").clicked() { to_delete = Some(i); ui.close_menu(); }
+            });
+            ui.label(RichText::new(if trigger.skip_if_seen { "yes" } else { "no" }).small()
+                .color(if trigger.skip_if_seen { Color32::from_rgb(100, 200, 100) } else { Color32::GRAY }));
+            ui.end_row();
+        }
+        if let Some(i) = to_select { editor.selected = Some(i); }
+        if let Some(i) = to_delete {
+            editor.triggers.remove(i);
+            if editor.selected == Some(i) { editor.selected = None; }
+        }
+    });
+
+    if let Some(sel) = editor.selected {
+        if sel < editor.triggers.len() {
+            ui.separator();
+            let trigger = &mut editor.triggers[sel];
+            ui.horizontal(|ui| {
+                ui.label("Cutscene:");
+                ui.add(egui::TextEdit::singleline(&mut trigger.cutscene_name).desired_width(180.0));
+                ui.label("Delay:");
+                ui.add(egui::Slider::new(&mut trigger.delay, 0.0..=10.0).step_by(0.1));
+                ui.checkbox(&mut trigger.skip_if_seen, "Skip if Seen");
+                ui.checkbox(&mut trigger.enabled, "Enabled");
+            });
+        }
+    }
+}
+
+// ============================================================
+// REPUTATION SYSTEM
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReputationTier {
+    pub name: String,
+    pub threshold: i32,
+    pub color: [u8; 3],
+    pub benefits: Vec<String>,
+    pub restrictions: Vec<String>,
+}
+
+impl ReputationTier {
+    pub fn color32(&self) -> Color32 {
+        Color32::from_rgb(self.color[0], self.color[1], self.color[2])
+    }
+}
+
+pub fn default_reputation_tiers() -> Vec<ReputationTier> {
+    vec![
+        ReputationTier { name: "Exalted".to_string(), threshold: 1000, color: [255,220,50],
+            benefits: vec!["20% discount".to_string(), "Secret quests".to_string()], restrictions: vec![] },
+        ReputationTier { name: "Honored".to_string(), threshold: 500, color: [80,200,80],
+            benefits: vec!["10% discount".to_string()], restrictions: vec![] },
+        ReputationTier { name: "Friendly".to_string(), threshold: 100, color: [100,200,255],
+            benefits: vec!["5% discount".to_string()], restrictions: vec![] },
+        ReputationTier { name: "Neutral".to_string(), threshold: -100, color: [160,160,160],
+            benefits: vec![], restrictions: vec![] },
+        ReputationTier { name: "Unfriendly".to_string(), threshold: -500, color: [220,130,50],
+            benefits: vec![], restrictions: vec!["No quests".to_string()] },
+        ReputationTier { name: "Hostile".to_string(), threshold: i32::MIN, color: [220,50,50],
+            benefits: vec![], restrictions: vec!["Attacked on sight".to_string()] },
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactionReputation {
+    pub faction_id: usize,
+    pub faction_name: String,
+    pub current: i32,
+    pub history: Vec<(String, i32)>,
+    pub tiers: Vec<ReputationTier>,
+    pub faction_color: [u8; 3],
+}
+
+impl FactionReputation {
+    pub fn new(id: usize, name: &str) -> Self {
+        FactionReputation {
+            faction_id: id, faction_name: name.to_string(), current: 0,
+            history: Vec::new(), tiers: default_reputation_tiers(), faction_color: [150,150,200],
+        }
+    }
+
+    pub fn add_rep(&mut self, delta: i32, reason: &str) {
+        self.current += delta;
+        self.history.push((reason.to_string(), delta));
+        if self.history.len() > 50 { self.history.remove(0); }
+    }
+
+    pub fn current_tier(&self) -> &ReputationTier {
+        for tier in &self.tiers {
+            if self.current >= tier.threshold { return tier; }
+        }
+        self.tiers.last().unwrap()
+    }
+
+    pub fn tier_progress(&self) -> f32 {
+        let tier = self.current_tier();
+        let idx = self.tiers.iter().position(|t| t.name == tier.name).unwrap_or(0);
+        if idx == 0 { return 1.0; }
+        let next_thresh = self.tiers[idx - 1].threshold;
+        let cur_thresh = tier.threshold;
+        let range = (next_thresh - cur_thresh).max(1) as f32;
+        ((self.current - cur_thresh) as f32 / range).clamp(0.0, 1.0)
+    }
+}
+
+pub struct ReputationEditor {
+    pub factions: Vec<FactionReputation>,
+    pub selected: Option<usize>,
+    pub add_rep_amount: i32,
+    pub add_rep_reason: String,
+    pub show_history: bool,
+    pub new_faction_name: String,
+}
+
+impl ReputationEditor {
+    pub fn new() -> Self {
+        let mut e = ReputationEditor {
+            factions: Vec::new(), selected: None,
+            add_rep_amount: 10, add_rep_reason: String::new(),
+            show_history: false, new_faction_name: String::new(),
+        };
+        let mut mg = FactionReputation::new(0, "Merchants Guild");
+        mg.current = 125; mg.faction_color = [200,160,50];
+        mg.add_rep(100, "Lost Merchant completed");
+        e.factions.push(mg);
+        let mut fr = FactionReputation::new(1, "Forest Rangers");
+        fr.current = -50; fr.faction_color = [80,160,80];
+        fr.add_rep(-50, "Destroyed ranger camp");
+        e.factions.push(fr);
+        let mut cr = FactionReputation::new(2, "The Crown");
+        cr.current = 300; cr.faction_color = [180,150,255];
+        cr.add_rep(300, "Cleared Ashvale");
+        e.factions.push(cr);
+        e
+    }
+}
+
+pub fn show_reputation_editor(ui: &mut egui::Ui, editor: &mut ReputationEditor) {
+    ui.horizontal(|ui| {
+        ui.heading(RichText::new("Reputation").size(16.0).color(Color32::from_rgb(200,160,100)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(egui::TextEdit::singleline(&mut editor.new_faction_name).hint_text("New faction...").desired_width(130.0));
+            if ui.button("+ Faction").clicked() && !editor.new_faction_name.is_empty() {
+                let id = editor.factions.len();
+                let name = editor.new_faction_name.clone();
+                editor.factions.push(FactionReputation::new(id, &name));
+                editor.new_faction_name.clear();
+            }
+        });
+    });
+    ui.separator();
+
+    for (i, faction) in editor.factions.iter().enumerate() {
+        let sel = editor.selected == Some(i);
+        let tier = faction.current_tier();
+        let fc = Color32::from_rgb(faction.faction_color[0], faction.faction_color[1], faction.faction_color[2]);
+        ui.horizontal(|ui| {
+            let resp = ui.selectable_label(sel, RichText::new(&faction.faction_name).color(fc).strong().small());
+            if resp.clicked() { editor.selected = if sel { None } else { Some(i) }; }
+            let pct = ((faction.current as f32 + 1000.0) / 2000.0).clamp(0.0, 1.0);
+            let (bar_rect, _) = ui.allocate_exact_size(Vec2::new(180.0, 14.0), egui::Sense::hover());
+            ui.painter().rect_filled(bar_rect, 2.0, Color32::from_rgb(30,30,40));
+            let fill = Rect::from_min_size(bar_rect.min, Vec2::new(bar_rect.width() * pct, bar_rect.height()));
+            ui.painter().rect_filled(fill, 2.0, tier.color32());
+            // Tier markers
+            for t in &faction.tiers {
+                let tp = ((t.threshold as f32 + 1000.0) / 2000.0).clamp(0.0, 1.0);
+                let mx = bar_rect.min.x + bar_rect.width() * tp;
+                ui.painter().line_segment(
+                    [Pos2::new(mx, bar_rect.min.y), Pos2::new(mx, bar_rect.max.y)],
+                    Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 60)));
+            }
+            ui.label(RichText::new(format!("{} ({})", tier.name, faction.current)).small().color(tier.color32()));
+        });
+    }
+
+    if let Some(sel) = editor.selected {
+        if let Some(faction) = editor.factions.get_mut(sel) {
+            ui.separator();
+            let tier = faction.current_tier().clone();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&tier.name).color(tier.color32()).strong());
+                ui.label(RichText::new(format!("({:.0}% to next)", faction.tier_progress() * 100.0)).small().color(Color32::GRAY));
+            });
+            if !tier.benefits.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Benefits:").small().color(Color32::from_rgb(100,220,100)));
+                    for b in &tier.benefits { ui.label(RichText::new(b).small()); }
+                });
+            }
+            if !tier.restrictions.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Restrictions:").small().color(Color32::from_rgb(220,80,80)));
+                    for r in &tier.restrictions { ui.label(RichText::new(r).small()); }
+                });
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Add Rep:");
+                ui.add(egui::DragValue::new(&mut editor.add_rep_amount).range(-1000..=1000));
+                ui.add(egui::TextEdit::singleline(&mut editor.add_rep_reason).hint_text("Reason...").desired_width(180.0));
+                if ui.button("Apply").clicked() && !editor.add_rep_reason.is_empty() {
+                    let delta = editor.add_rep_amount;
+                    let reason = editor.add_rep_reason.clone();
+                    faction.add_rep(delta, &reason);
+                    editor.add_rep_reason.clear();
+                }
+            });
+            ui.toggle_value(&mut editor.show_history, "History");
+            if editor.show_history {
+                egui::ScrollArea::vertical().max_height(120.0).id_salt("rep_hist").show(ui, |ui| {
+                    for (reason, delta) in faction.history.iter().rev() {
+                        let dc = if *delta >= 0 { Color32::from_rgb(80,220,80) } else { Color32::from_rgb(220,80,80) };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{:+}", delta)).color(dc).strong().small());
+                            ui.label(RichText::new(reason).small().color(Color32::LIGHT_GRAY));
+                        });
+                    }
+                });
+            }
+        }
+    }
+}
+
+// ============================================================
+// QUEST DEBUG TOOLS
+// ============================================================
+
+pub struct QuestDebugPanel {
+    pub force_complete_target: Option<(usize, usize)>,
+    pub state_override_quest: usize,
+    pub state_override_state: usize,
+    pub flag_inject_name: String,
+    pub flag_inject_value: bool,
+    pub active_objectives_list: Vec<String>,
+    pub step_execute_results: Vec<String>,
+    pub auto_refresh: bool,
+    pub selected_quest_debug: usize,
+    pub condition_step_log: Vec<String>,
+}
+
+impl QuestDebugPanel {
+    pub fn new() -> Self {
+        QuestDebugPanel {
+            force_complete_target: None, state_override_quest: 0, state_override_state: 0,
+            flag_inject_name: String::new(), flag_inject_value: true,
+            active_objectives_list: Vec::new(), step_execute_results: Vec::new(),
+            auto_refresh: false, selected_quest_debug: 0, condition_step_log: Vec::new(),
+        }
+    }
+
+    pub fn refresh_active_objectives(&mut self, quests: &[Quest]) {
+        self.active_objectives_list.clear();
+        for quest in quests {
+            if quest.state != QuestState::Active { continue; }
+            for obj in &quest.objectives {
+                if !obj.completed {
+                    self.active_objectives_list.push(format!(
+                        "[{}] {} {}/{}", quest.name, obj.description, obj.current_progress, obj.required_progress));
+                }
+            }
+        }
+    }
+}
+
+pub fn show_quest_debug(ui: &mut egui::Ui, debug: &mut QuestDebugPanel, editor: &mut QuestEditor) {
+    ui.heading(RichText::new("Quest Debug Tools").size(16.0).color(Color32::from_rgb(255,150,50)));
+    ui.separator();
+
+    egui::CollapsingHeader::new(RichText::new("Force-Complete Objective").color(Color32::from_rgb(255,180,80)))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Quest:");
+                egui::ComboBox::from_id_salt("dbg_quest_sel")
+                    .selected_text(editor.quests.get(debug.selected_quest_debug).map(|q| q.name.as_str()).unwrap_or("None"))
+                    .show_ui(ui, |ui| {
+                        for (i, q) in editor.quests.iter().enumerate() {
+                            if ui.selectable_label(debug.selected_quest_debug == i, &q.name).clicked() {
+                                debug.selected_quest_debug = i;
+                            }
+                        }
+                    });
+            });
+            if let Some(quest) = editor.quests.get(debug.selected_quest_debug) {
+                for (oi, obj) in quest.objectives.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let dc = if obj.completed { Color32::GREEN } else { Color32::GRAY };
+                        ui.label(RichText::new(if obj.completed { "+" } else { "o" }).color(dc));
+                        ui.label(RichText::new(&obj.description).small());
+                        ui.label(RichText::new(format!("{}/{}", obj.current_progress, obj.required_progress)).small().color(Color32::GRAY));
+                        if !obj.completed {
+                            if ui.small_button("Force Done").clicked() {
+                                debug.force_complete_target = Some((debug.selected_quest_debug, oi));
+                            }
+                        }
+                    });
+                }
+            }
+            if let Some((qi, oi)) = debug.force_complete_target.take() {
+                if let Some(quest) = editor.quests.get_mut(qi) {
+                    if let Some(obj) = quest.objectives.get_mut(oi) {
+                        obj.current_progress = obj.required_progress;
+                        obj.completed = true;
+                        debug.step_execute_results.push(format!("[FORCE] '{}' obj '{}' done", quest.name, obj.description));
+                    }
+                }
+            }
+        });
+
+    egui::CollapsingHeader::new(RichText::new("Set Quest State").color(Color32::from_rgb(180,220,255)))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("state_quest")
+                    .selected_text(editor.quests.get(debug.state_override_quest).map(|q| q.name.as_str()).unwrap_or("None"))
+                    .show_ui(ui, |ui| {
+                        for (i, q) in editor.quests.iter().enumerate() {
+                            if ui.selectable_label(debug.state_override_quest == i, &q.name).clicked() {
+                                debug.state_override_quest = i;
+                            }
+                        }
+                    });
+                ui.label("->");
+                egui::ComboBox::from_id_salt("state_target")
+                    .selected_text(QuestState::all().get(debug.state_override_state).map(|s| s.label()).unwrap_or("Active"))
+                    .show_ui(ui, |ui| {
+                        for (i, state) in QuestState::all().iter().enumerate() {
+                            if ui.selectable_label(debug.state_override_state == i, state.label()).clicked() {
+                                debug.state_override_state = i;
+                            }
+                        }
+                    });
+                if ui.button("Apply").clicked() {
+                    let qi = debug.state_override_quest;
+                    let si = debug.state_override_state;
+                    if let Some(quest) = editor.quests.get_mut(qi) {
+                        let ns = QuestState::all()[si].clone();
+                        debug.step_execute_results.push(format!("[STATE] '{}' -> {}", quest.name, ns.label()));
+                        quest.state = ns;
+                    }
+                }
+            });
+        });
+
+    egui::CollapsingHeader::new(RichText::new("Inject Flag").color(Color32::from_rgb(255,220,100)))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Flag:");
+                ui.add(egui::TextEdit::singleline(&mut debug.flag_inject_name).hint_text("flag_name").desired_width(160.0));
+                ui.checkbox(&mut debug.flag_inject_value, "value");
+                if ui.button("Inject").clicked() && !debug.flag_inject_name.is_empty() {
+                    let name = debug.flag_inject_name.clone();
+                    let val = debug.flag_inject_value;
+                    if let Some(flag) = editor.flags.iter_mut().find(|f| f.name == name) {
+                        flag.value = val;
+                        debug.step_execute_results.push(format!("[FLAG] '{}' = {}", name, val));
+                    } else {
+                        let mut nf = QuestFlag::new(&name);
+                        nf.value = val;
+                        editor.flags.push(nf);
+                        debug.step_execute_results.push(format!("[FLAG] Created '{}' = {}", name, val));
+                    }
+                }
+            });
+            egui::ScrollArea::vertical().max_height(100.0).id_salt("flag_list_dbg").show(ui, |ui| {
+                for flag in &editor.flags {
+                    let vc = if flag.value { Color32::GREEN } else { Color32::DARK_GRAY };
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(if flag.value { "[T]" } else { "[F]" }).color(vc).strong().small());
+                        ui.label(RichText::new(&flag.name).small());
+                    });
+                }
+            });
+        });
+
+    egui::CollapsingHeader::new(RichText::new("Step-Execute Conditions").color(Color32::from_rgb(150,255,150)))
+        .default_open(false)
+        .show(ui, |ui| {
+            if ui.button("Step All Active Quests").clicked() {
+                debug.condition_step_log.clear();
+                for quest in &editor.quests {
+                    if quest.state != QuestState::Active { continue; }
+                    debug.condition_step_log.push(format!("Quest: '{}'", quest.name));
+                    for obj in &quest.objectives {
+                        let done = obj.current_progress >= obj.required_progress;
+                        debug.condition_step_log.push(format!(
+                            "  Obj '{}': {}/{} -> {}", obj.description, obj.current_progress, obj.required_progress,
+                            if done { "DONE" } else { "pending" }));
+                    }
+                    debug.condition_step_log.push(format!("  Progress: {:.0}%", quest.progress() * 100.0));
+                }
+            }
+            egui::ScrollArea::vertical().max_height(120.0).id_salt("step_log").show(ui, |ui| {
+                for line in &debug.condition_step_log {
+                    let col = if line.contains("DONE") { Color32::GREEN }
+                        else if line.starts_with("Quest") { Color32::from_rgb(220,200,100) }
+                        else { Color32::LIGHT_GRAY };
+                    ui.label(RichText::new(line).small().color(col));
+                }
+            });
+        });
+
+    egui::CollapsingHeader::new(RichText::new("Active Objectives").color(Color32::from_rgb(100,200,255)))
+        .default_open(true)
+        .show(ui, |ui| {
+            if ui.small_button("Refresh").clicked() || debug.auto_refresh {
+                debug.refresh_active_objectives(&editor.quests);
+            }
+            ui.checkbox(&mut debug.auto_refresh, "Auto-refresh");
+            if debug.active_objectives_list.is_empty() {
+                ui.label(RichText::new("None").small().color(Color32::GRAY));
+            } else {
+                egui::ScrollArea::vertical().max_height(150.0).id_salt("active_obj").show(ui, |ui| {
+                    for line in &debug.active_objectives_list {
+                        ui.label(RichText::new(line).small().color(Color32::LIGHT_GRAY));
+                    }
+                });
+            }
+        });
+
+    if !debug.step_execute_results.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Debug Log").strong().color(Color32::from_rgb(255,150,50)));
+        egui::ScrollArea::vertical().max_height(100.0).id_salt("dbg_log").show(ui, |ui| {
+            let start = debug.step_execute_results.len().saturating_sub(30);
+            for line in &debug.step_execute_results[start..] {
+                let col = if line.starts_with("[FORCE]") { Color32::from_rgb(255,200,80) }
+                    else if line.starts_with("[STATE]") { Color32::from_rgb(100,200,255) }
+                    else { Color32::from_rgb(200,255,100) };
+                ui.label(RichText::new(line).small().color(col));
+            }
+        });
+        if ui.small_button("Clear Log").clicked() { debug.step_execute_results.clear(); }
+    }
+}
+
+// ============================================================
+// NARRATIVE EDITOR (combined panel)
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrativeTab {
+    Quests,
+    Journal,
+    Cutscenes,
+    Reputation,
+    Debug,
+}
+
+impl NarrativeTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Quests => "Quests", Self::Journal => "Journal",
+            Self::Cutscenes => "Cutscenes", Self::Reputation => "Reputation",
+            Self::Debug => "Debug",
+        }
+    }
+    pub fn all() -> &'static [NarrativeTab] {
+        &[Self::Quests, Self::Journal, Self::Cutscenes, Self::Reputation, Self::Debug]
+    }
+}
+
+pub struct NarrativeEditor {
+    pub journal: JournalEditor,
+    pub cutscene_triggers: CutsceneTriggerEditor,
+    pub reputation: ReputationEditor,
+    pub debug: QuestDebugPanel,
+    pub active_tab: NarrativeTab,
+}
+
+impl NarrativeEditor {
+    pub fn new() -> Self {
+        NarrativeEditor {
+            journal: JournalEditor::new(),
+            cutscene_triggers: CutsceneTriggerEditor::new(),
+            reputation: ReputationEditor::new(),
+            debug: QuestDebugPanel::new(),
+            active_tab: NarrativeTab::Quests,
+        }
+    }
+
+    pub fn show_panel(ctx: &egui::Context, quest_editor: &mut QuestEditor, narrative: &mut NarrativeEditor, open: &mut bool) {
+        let mut still_open = *open;
+        egui::Window::new("Narrative Editor")
+            .open(&mut still_open)
+            .resizable(true)
+            .default_size(Vec2::new(1100.0, 720.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for tab in NarrativeTab::all() {
+                        let sel = narrative.active_tab == *tab;
+                        let col = if sel { Color32::from_rgb(220,200,100) } else { Color32::GRAY };
+                        if ui.selectable_label(sel, RichText::new(tab.label()).color(col)).clicked() {
+                            narrative.active_tab = *tab;
+                        }
+                    }
+                });
+                ui.separator();
+                match narrative.active_tab {
+                    NarrativeTab::Quests     => show(ui, quest_editor),
+                    NarrativeTab::Journal    => show_journal(ui, &mut narrative.journal),
+                    NarrativeTab::Cutscenes  => show_cutscene_trigger_editor(ui, &mut narrative.cutscene_triggers, &quest_editor.quests),
+                    NarrativeTab::Reputation => show_reputation_editor(ui, &mut narrative.reputation),
+                    NarrativeTab::Debug      => show_quest_debug(ui, &mut narrative.debug, quest_editor),
+                }
+            });
+        *open = still_open;
+    }
+}

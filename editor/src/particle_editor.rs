@@ -555,7 +555,7 @@ impl RenderMode {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BillboardAlignment {
     View,
     World,
@@ -7387,5 +7387,2126 @@ impl ParticleAssetBrowser {
                 }
             }
         });
+    }
+}
+
+// =============================================================================
+// RIBBON / TRAIL PARTICLE SYSTEM
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RibbonTextureMode {
+    Stretch,
+    Tile,
+    DistributedDirectional,
+    RepeatPerSegment,
+}
+
+impl Default for RibbonTextureMode {
+    fn default() -> Self { RibbonTextureMode::Stretch }
+}
+
+impl RibbonTextureMode {
+    pub fn label(&self) -> &str {
+        match self {
+            RibbonTextureMode::Stretch => "Stretch",
+            RibbonTextureMode::Tile => "Tile",
+            RibbonTextureMode::DistributedDirectional => "Distributed Directional",
+            RibbonTextureMode::RepeatPerSegment => "Repeat Per Segment",
+        }
+    }
+    pub fn all() -> &'static [RibbonTextureMode] {
+        &[
+            RibbonTextureMode::Stretch,
+            RibbonTextureMode::Tile,
+            RibbonTextureMode::DistributedDirectional,
+            RibbonTextureMode::RepeatPerSegment,
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RibbonEmitter {
+    pub enabled: bool,
+    pub width_curve: Curve,
+    pub texture_mode: RibbonTextureMode,
+    pub uv_speed: f32,
+    pub min_vertex_distance: f32,
+    pub max_ribbon_count: u32,
+    pub lifetime: f32,
+    pub inherit_velocity: f32,
+    pub color_over_lifetime: ColorGradient,
+    pub shadow_casting: bool,
+    pub receive_shadows: bool,
+    pub use_world_velocity: bool,
+    pub ribbon_count: u32,
+    pub split_sub_emitter_ribbons: bool,
+    pub attach_ribbons_to_transform: bool,
+    pub end_cap_vertices: u32,
+    pub loop_ribbons: bool,
+    pub generate_lighting_data: bool,
+    pub stretch_over_lifetime: bool,
+}
+
+impl Default for RibbonEmitter {
+    fn default() -> Self {
+        RibbonEmitter {
+            enabled: false,
+            width_curve: Curve::constant(0.1),
+            texture_mode: RibbonTextureMode::Stretch,
+            uv_speed: 0.0,
+            min_vertex_distance: 0.1,
+            max_ribbon_count: 1,
+            lifetime: 1.0,
+            inherit_velocity: 0.0,
+            color_over_lifetime: ColorGradient::default(),
+            shadow_casting: false,
+            receive_shadows: true,
+            use_world_velocity: false,
+            ribbon_count: 1,
+            split_sub_emitter_ribbons: false,
+            attach_ribbons_to_transform: false,
+            end_cap_vertices: 0,
+            loop_ribbons: false,
+            generate_lighting_data: false,
+            stretch_over_lifetime: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TrailRenderer {
+    pub enabled: bool,
+    pub trail_width: Curve,
+    pub trail_color: ColorGradient,
+    pub trail_lifetime: f32,
+    pub min_vertex_distance: f32,
+    pub shadow_bias: f32,
+    pub generate_lighting_data: bool,
+    pub attach_ribbons_to_transform: bool,
+    pub die_with_particles: bool,
+    pub texture_mode: RibbonTextureMode,
+    pub size_affects_width: bool,
+    pub size_affects_lifetime: bool,
+    pub inherit_particle_color: bool,
+    pub width_over_trail: Curve,
+    pub ratio_of_trail_to_particle_lifetime: f32,
+    pub num_corner_vertices: u32,
+    pub num_cap_vertices: u32,
+    pub alignment: BillboardAlignment,
+}
+
+impl Default for TrailRenderer {
+    fn default() -> Self {
+        TrailRenderer {
+            enabled: false,
+            trail_width: Curve::constant(0.05),
+            trail_color: ColorGradient::default(),
+            trail_lifetime: 0.5,
+            min_vertex_distance: 0.1,
+            shadow_bias: 0.5,
+            generate_lighting_data: false,
+            attach_ribbons_to_transform: false,
+            die_with_particles: true,
+            texture_mode: RibbonTextureMode::Stretch,
+            size_affects_width: true,
+            size_affects_lifetime: false,
+            inherit_particle_color: true,
+            width_over_trail: Curve::linear_one_to_zero(),
+            ratio_of_trail_to_particle_lifetime: 1.0,
+            num_corner_vertices: 0,
+            num_cap_vertices: 0,
+            alignment: BillboardAlignment::View,
+        }
+    }
+}
+
+/// A single point in a ribbon: 2D canvas position, timestamp, color, width.
+#[derive(Clone, Debug)]
+pub struct RibbonPoint {
+    pub pos: [f32; 2],
+    pub time: f32,
+    pub color: Color32,
+    pub width: f32,
+}
+
+/// State for one live ribbon instance during preview.
+#[derive(Clone, Debug)]
+pub struct RibbonInstance {
+    pub id: u32,
+    pub points: std::collections::VecDeque<RibbonPoint>,
+    pub velocity: [f32; 2],
+    pub age: f32,
+    pub max_age: f32,
+}
+
+impl RibbonInstance {
+    pub fn new(id: u32, _start: [f32; 2], velocity: [f32; 2], lifetime: f32) -> Self {
+        RibbonInstance {
+            id,
+            points: std::collections::VecDeque::new(),
+            velocity,
+            age: 0.0,
+            max_age: lifetime,
+        }
+    }
+
+    pub fn is_alive(&self) -> bool { self.age < self.max_age }
+
+    pub fn add_point(&mut self, pos: [f32; 2], time: f32, color: Color32, width: f32, min_dist: f32) {
+        if let Some(last) = self.points.back() {
+            let dx = pos[0] - last.pos[0];
+            let dy = pos[1] - last.pos[1];
+            if (dx * dx + dy * dy).sqrt() < min_dist { return; }
+        }
+        self.points.push_back(RibbonPoint { pos, time, color, width });
+    }
+
+    pub fn prune_old_points(&mut self, current_time: f32, lifetime: f32) {
+        while let Some(front) = self.points.front() {
+            if current_time - front.time > lifetime { self.points.pop_front(); } else { break; }
+        }
+    }
+}
+
+/// Overall ribbon preview state for the particle editor canvas.
+#[derive(Clone, Debug, Default)]
+pub struct RibbonPreviewState {
+    pub active_ribbons: Vec<RibbonInstance>,
+    pub next_id: u32,
+    pub simulation_time: f32,
+    pub emit_accumulator: f32,
+}
+
+impl RibbonPreviewState {
+    pub fn new() -> Self { RibbonPreviewState::default() }
+
+    pub fn spawn_ribbon(&mut self, pos: [f32; 2], velocity: [f32; 2], lifetime: f32) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.active_ribbons.push(RibbonInstance::new(id, pos, velocity, lifetime));
+        id
+    }
+
+    pub fn tick(&mut self, dt: f32, emitter: &RibbonEmitter, canvas_origin: [f32; 2]) {
+        self.simulation_time += dt;
+        for ribbon in &mut self.active_ribbons {
+            ribbon.age += dt;
+            ribbon.velocity[1] += 50.0 * dt;
+            let last_pos = ribbon.points.back().map(|p| p.pos).unwrap_or(canvas_origin);
+            let new_pos = [last_pos[0] + ribbon.velocity[0] * dt, last_pos[1] + ribbon.velocity[1] * dt];
+            let life_frac = (ribbon.age / ribbon.max_age).clamp(0.0, 1.0);
+            let color = emitter.color_over_lifetime.evaluate(life_frac);
+            let width = emitter.width_curve.evaluate(life_frac);
+            ribbon.add_point(new_pos, self.simulation_time, color, width, emitter.min_vertex_distance);
+            ribbon.prune_old_points(self.simulation_time, emitter.lifetime);
+        }
+        self.active_ribbons.retain(|r| r.is_alive() && !r.points.is_empty());
+        self.emit_accumulator += dt * emitter.max_ribbon_count as f32;
+        while self.emit_accumulator >= 1.0 {
+            self.emit_accumulator -= 1.0;
+            if (self.active_ribbons.len() as u32) < emitter.max_ribbon_count {
+                let angle = (self.simulation_time * 3.7) % std::f32::consts::TAU;
+                let speed = 80.0f32;
+                self.spawn_ribbon(canvas_origin, [angle.cos() * speed, angle.sin() * speed - 60.0], emitter.lifetime);
+            }
+        }
+    }
+
+    pub fn draw(&self, painter: &Painter, rect: Rect) {
+        for ribbon in &self.active_ribbons {
+            let pts: Vec<_> = ribbon.points.iter().collect();
+            if pts.len() < 2 { continue; }
+            for i in 0..pts.len() - 1 {
+                let a = pts[i];
+                let b = pts[i + 1];
+                let w = lerp(a.width, b.width, 0.5).max(0.5);
+                let alpha_factor = 1.0 - i as f32 / pts.len() as f32;
+                let col = Color32::from_rgba_unmultiplied(a.color.r(), a.color.g(), a.color.b(), (a.color.a() as f32 * alpha_factor) as u8);
+                painter.line_segment(
+                    [Pos2::new(rect.min.x + a.pos[0], rect.min.y + a.pos[1]), Pos2::new(rect.min.x + b.pos[0], rect.min.y + b.pos[1])],
+                    Stroke::new(w, col),
+                );
+            }
+        }
+    }
+}
+
+pub fn show_ribbon_emitter_ui(ui: &mut egui::Ui, emitter: &mut RibbonEmitter) {
+    egui::CollapsingHeader::new("Ribbon Emitter").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut emitter.enabled, "Enabled");
+        if !emitter.enabled { return; }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Max Ribbons:");
+            ui.add(egui::DragValue::new(&mut emitter.max_ribbon_count).speed(1.0).range(1..=256));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Lifetime:");
+            ui.add(egui::DragValue::new(&mut emitter.lifetime).speed(0.01).range(0.01..=60.0));
+            ui.label("s");
+        });
+        ui.horizontal(|ui| {
+            ui.label("UV Speed:");
+            ui.add(egui::DragValue::new(&mut emitter.uv_speed).speed(0.01));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Min Vertex Dist:");
+            ui.add(egui::DragValue::new(&mut emitter.min_vertex_distance).speed(0.001).range(0.001..=10.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Inherit Velocity:");
+            ui.add(egui::DragValue::new(&mut emitter.inherit_velocity).speed(0.01).range(0.0..=1.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Texture Mode:");
+            egui::ComboBox::from_id_source("ribbon_tex_mode")
+                .selected_text(emitter.texture_mode.label())
+                .show_ui(ui, |ui| {
+                    for m in RibbonTextureMode::all() {
+                        ui.selectable_value(&mut emitter.texture_mode, m.clone(), m.label());
+                    }
+                });
+        });
+        ui.checkbox(&mut emitter.attach_ribbons_to_transform, "Attach to Transform");
+        ui.checkbox(&mut emitter.generate_lighting_data, "Generate Lighting Data");
+        ui.checkbox(&mut emitter.shadow_casting, "Shadow Casting");
+        ui.checkbox(&mut emitter.receive_shadows, "Receive Shadows");
+        ui.checkbox(&mut emitter.loop_ribbons, "Loop Ribbons");
+        ui.separator();
+        ui.label("Width Curve:");
+        draw_curve_editor_inline(ui, &mut emitter.width_curve, 200.0, 40.0);
+    });
+}
+
+pub fn show_trail_renderer_ui(ui: &mut egui::Ui, trail: &mut TrailRenderer) {
+    egui::CollapsingHeader::new("Trail Renderer").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut trail.enabled, "Enabled");
+        if !trail.enabled { return; }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Trail Lifetime:");
+            ui.add(egui::DragValue::new(&mut trail.trail_lifetime).speed(0.01).range(0.001..=60.0));
+            ui.label("s");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Min Vertex Dist:");
+            ui.add(egui::DragValue::new(&mut trail.min_vertex_distance).speed(0.001).range(0.001..=10.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Shadow Bias:");
+            ui.add(egui::DragValue::new(&mut trail.shadow_bias).speed(0.01));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Lifetime Ratio:");
+            ui.add(egui::DragValue::new(&mut trail.ratio_of_trail_to_particle_lifetime).speed(0.01).range(0.0..=1.0));
+        });
+        ui.checkbox(&mut trail.generate_lighting_data, "Generate Lighting Data");
+        ui.checkbox(&mut trail.attach_ribbons_to_transform, "Attach to Transform");
+        ui.checkbox(&mut trail.die_with_particles, "Die With Particles");
+        ui.checkbox(&mut trail.size_affects_width, "Size Affects Width");
+        ui.checkbox(&mut trail.size_affects_lifetime, "Size Affects Lifetime");
+        ui.checkbox(&mut trail.inherit_particle_color, "Inherit Particle Color");
+        ui.separator();
+        ui.label("Width Over Trail:");
+        draw_curve_editor_inline(ui, &mut trail.width_over_trail, 200.0, 40.0);
+    });
+}
+
+fn draw_curve_editor_inline(ui: &mut egui::Ui, curve: &mut Curve, width: f32, height: f32) {
+    let (rect, _resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    draw_curve_mini(ui.painter(), rect, curve);
+    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Outside);
+}
+
+// =============================================================================
+// MESH PARTICLE SYSTEM
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MeshType {
+    Sphere,
+    Cube,
+    Cylinder,
+    Cone,
+    Torus,
+    Quad,
+    Custom(String),
+}
+
+impl Default for MeshType {
+    fn default() -> Self { MeshType::Quad }
+}
+
+impl MeshType {
+    pub fn label(&self) -> &str {
+        match self {
+            MeshType::Sphere => "Sphere", MeshType::Cube => "Cube", MeshType::Cylinder => "Cylinder",
+            MeshType::Cone => "Cone", MeshType::Torus => "Torus", MeshType::Quad => "Quad",
+            MeshType::Custom(_) => "Custom Mesh",
+        }
+    }
+    pub fn all_standard() -> &'static [MeshType] {
+        &[MeshType::Sphere, MeshType::Cube, MeshType::Cylinder, MeshType::Cone, MeshType::Torus, MeshType::Quad]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MeshWeightMode { Uniform, ByVertex, ByFace, ByVertexAndFace }
+
+impl Default for MeshWeightMode { fn default() -> Self { MeshWeightMode::Uniform } }
+
+impl MeshWeightMode {
+    pub fn label(&self) -> &str {
+        match self {
+            MeshWeightMode::Uniform => "Uniform", MeshWeightMode::ByVertex => "By Vertex",
+            MeshWeightMode::ByFace => "By Face", MeshWeightMode::ByVertexAndFace => "By Vertex And Face",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MeshParticle {
+    pub enabled: bool,
+    pub mesh_type: MeshType,
+    pub scale_curve: Curve,
+    pub rotation_speed: [f32; 3],
+    pub rotation_random_start: [f32; 3],
+    pub face_velocity: bool,
+    pub normal_offset: f32,
+    pub mesh_weight_mode: MeshWeightMode,
+    pub alignment: BillboardAlignment,
+    pub flip_u: bool,
+    pub flip_v: bool,
+    pub cast_shadows: bool,
+    pub receive_shadows: bool,
+    pub motion_blur: bool,
+}
+
+impl Default for MeshParticle {
+    fn default() -> Self {
+        MeshParticle {
+            enabled: false, mesh_type: MeshType::Quad,
+            scale_curve: Curve::constant(1.0), rotation_speed: [0.0; 3],
+            rotation_random_start: [0.0; 3], face_velocity: false, normal_offset: 0.0,
+            mesh_weight_mode: MeshWeightMode::Uniform, alignment: BillboardAlignment::View,
+            flip_u: false, flip_v: false, cast_shadows: true, receive_shadows: true, motion_blur: false,
+        }
+    }
+}
+
+/// GPU instancing data for mesh particles.
+#[derive(Clone, Debug, Default)]
+pub struct GpuInstanceData {
+    pub transform: [f32; 16],
+    pub color: [f32; 4],
+    pub custom_data_1: [f32; 4],
+    pub custom_data_2: [f32; 4],
+}
+
+impl GpuInstanceData {
+    pub fn identity() -> Self {
+        GpuInstanceData {
+            transform: [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0],
+            color: [1.0; 4], custom_data_1: [0.0; 4], custom_data_2: [0.0; 4],
+        }
+    }
+    pub fn with_translation(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.transform[12] = x; self.transform[13] = y; self.transform[14] = z; self
+    }
+    pub fn with_scale(mut self, sx: f32, sy: f32, sz: f32) -> Self {
+        self.transform[0] = sx; self.transform[5] = sy; self.transform[10] = sz; self
+    }
+    pub fn with_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.color = [r, g, b, a]; self
+    }
+}
+
+pub fn show_mesh_particle_ui(ui: &mut egui::Ui, mesh: &mut MeshParticle) {
+    egui::CollapsingHeader::new("Mesh Particles").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut mesh.enabled, "Enabled");
+        if !mesh.enabled { return; }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Mesh Type:");
+            egui::ComboBox::from_id_source("mesh_type_select")
+                .selected_text(mesh.mesh_type.label())
+                .show_ui(ui, |ui| {
+                    for mt in MeshType::all_standard() {
+                        ui.selectable_value(&mut mesh.mesh_type, mt.clone(), mt.label());
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Alignment:");
+            egui::ComboBox::from_id_source("mesh_alignment")
+                .selected_text(mesh.alignment.label())
+                .show_ui(ui, |ui| {
+                    for a in [BillboardAlignment::View, BillboardAlignment::World, BillboardAlignment::Local, BillboardAlignment::Velocity] {
+                        let lbl = a.label();
+                        ui.selectable_value(&mut mesh.alignment, a, lbl);
+                    }
+                });
+        });
+        ui.label("Rotation Speed (deg/s):");
+        ui.horizontal(|ui| {
+            ui.label("X:"); ui.add(egui::DragValue::new(&mut mesh.rotation_speed[0]).speed(0.5));
+            ui.label("Y:"); ui.add(egui::DragValue::new(&mut mesh.rotation_speed[1]).speed(0.5));
+            ui.label("Z:"); ui.add(egui::DragValue::new(&mut mesh.rotation_speed[2]).speed(0.5));
+        });
+        ui.label("Random Start Rotation:");
+        ui.horizontal(|ui| {
+            ui.label("X:"); ui.add(egui::DragValue::new(&mut mesh.rotation_random_start[0]).speed(1.0));
+            ui.label("Y:"); ui.add(egui::DragValue::new(&mut mesh.rotation_random_start[1]).speed(1.0));
+            ui.label("Z:"); ui.add(egui::DragValue::new(&mut mesh.rotation_random_start[2]).speed(1.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Normal Offset:");
+            ui.add(egui::DragValue::new(&mut mesh.normal_offset).speed(0.001));
+        });
+        ui.checkbox(&mut mesh.face_velocity, "Face Velocity");
+        ui.checkbox(&mut mesh.cast_shadows, "Cast Shadows");
+        ui.checkbox(&mut mesh.receive_shadows, "Receive Shadows");
+        ui.checkbox(&mut mesh.motion_blur, "Motion Blur");
+        ui.checkbox(&mut mesh.flip_u, "Flip U");
+        ui.checkbox(&mut mesh.flip_v, "Flip V");
+        ui.separator();
+        ui.label("Scale Curve:");
+        draw_curve_editor_inline(ui, &mut mesh.scale_curve, 200.0, 40.0);
+    });
+}
+
+// =============================================================================
+// SUB-EMITTER CHAINS
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SubEmitterEvent {
+    Birth, Death, Collision, Manual, TriggerZone,
+    OnLifetimePercent(f32), OnDistance(f32),
+}
+
+impl SubEmitterEvent {
+    pub fn label(&self) -> &str {
+        match self {
+            SubEmitterEvent::Birth => "Birth", SubEmitterEvent::Death => "Death",
+            SubEmitterEvent::Collision => "Collision", SubEmitterEvent::Manual => "Manual",
+            SubEmitterEvent::TriggerZone => "Trigger Zone",
+            SubEmitterEvent::OnLifetimePercent(_) => "On Lifetime %",
+            SubEmitterEvent::OnDistance(_) => "On Distance",
+        }
+    }
+    pub fn all_base() -> Vec<SubEmitterEvent> {
+        vec![SubEmitterEvent::Birth, SubEmitterEvent::Death, SubEmitterEvent::Collision, SubEmitterEvent::Manual, SubEmitterEvent::TriggerZone]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubEmitterConfig {
+    pub event: SubEmitterEvent,
+    pub system_index: usize,
+    pub inherit_velocity: f32,
+    pub inherit_color: bool,
+    pub inherit_size: bool,
+    pub emit_count: RangeOrCurve,
+    pub probability: f32,
+    pub emit_probability_affects_burst: bool,
+    pub label: String,
+}
+
+impl Default for SubEmitterConfig {
+    fn default() -> Self {
+        SubEmitterConfig {
+            event: SubEmitterEvent::Death, system_index: 0, inherit_velocity: 0.0,
+            inherit_color: true, inherit_size: true, emit_count: RangeOrCurve::Constant(1.0),
+            probability: 1.0, emit_probability_affects_burst: false, label: String::from("Sub Emitter"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SubEmitterTreeNode {
+    pub system_index: usize,
+    pub name: String,
+    pub children: Vec<usize>,
+    pub depth: usize,
+    pub collapsed: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SubEmitterGraph {
+    pub nodes: Vec<SubEmitterTreeNode>,
+    pub selected: Option<usize>,
+}
+
+impl SubEmitterGraph {
+    pub fn new() -> Self { SubEmitterGraph::default() }
+
+    pub fn build_from_systems(&mut self, configs: &[(usize, Vec<SubEmitterConfig>)], names: &[String]) {
+        self.nodes.clear();
+        for (i, name) in names.iter().enumerate() {
+            let children: Vec<usize> = configs.iter()
+                .filter(|(pi, cfgs)| *pi == i && cfgs.iter().any(|c| c.system_index != i))
+                .flat_map(|(_, cfgs)| cfgs.iter().map(|c| c.system_index))
+                .collect();
+            self.nodes.push(SubEmitterTreeNode { system_index: i, name: name.clone(), children, depth: 0, collapsed: false });
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Sub-Emitter Graph");
+        ui.separator();
+        egui::ScrollArea::vertical().id_source("sub_emit_graph").show(ui, |ui| {
+            let nodes_len = self.nodes.len();
+            for i in 0..nodes_len {
+                let depth = self.nodes[i].depth;
+                let name = self.nodes[i].name.clone();
+                let is_selected = self.selected == Some(i);
+                let children_count = self.nodes[i].children.len();
+                let collapsed = self.nodes[i].collapsed;
+                ui.horizontal(|ui| {
+                    ui.add_space(depth as f32 * 16.0);
+                    if children_count > 0 {
+                        let arrow = if collapsed { "▶" } else { "▼" };
+                        if ui.small_button(arrow).clicked() { self.nodes[i].collapsed = !collapsed; }
+                    } else {
+                        ui.add_space(18.0);
+                    }
+                    let resp = ui.selectable_label(is_selected, egui::RichText::new(format!("[{}] {}", i, name)));
+                    if resp.clicked() { self.selected = if is_selected { None } else { Some(i) }; }
+                    if children_count > 0 {
+                        ui.label(egui::RichText::new(format!("({} children)", children_count)).size(9.0).color(Color32::from_gray(120)));
+                    }
+                });
+            }
+        });
+    }
+}
+
+pub fn show_sub_emitters_ui(ui: &mut egui::Ui, configs: &mut Vec<SubEmitterConfig>, system_names: &[String], graph: &mut SubEmitterGraph) {
+    egui::CollapsingHeader::new("Sub Emitters").default_open(false).show(ui, |ui| {
+        if ui.button("+ Add Sub Emitter").clicked() { configs.push(SubEmitterConfig::default()); }
+        ui.separator();
+        let mut to_remove = None;
+        for (i, cfg) in configs.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                egui::CollapsingHeader::new(format!("[{}] {}", i, cfg.label)).default_open(false).show(ui, |ui| {
+                    ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut cfg.label); });
+                    ui.horizontal(|ui| {
+                        ui.label("Event:");
+                        egui::ComboBox::from_id_source(format!("sub_event_{}", i)).selected_text(cfg.event.label()).show_ui(ui, |ui| {
+                            for ev in SubEmitterEvent::all_base() {
+                                let lbl = ev.label().to_string();
+                                ui.selectable_value(&mut cfg.event, ev, lbl);
+                            }
+                        });
+                    });
+                    if !system_names.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label("System:");
+                            egui::ComboBox::from_id_source(format!("sub_sys_{}", i))
+                                .selected_text(system_names.get(cfg.system_index).map(|s| s.as_str()).unwrap_or("(none)"))
+                                .show_ui(ui, |ui| {
+                                    for (si, sn) in system_names.iter().enumerate() {
+                                        ui.selectable_value(&mut cfg.system_index, si, sn.as_str());
+                                    }
+                                });
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Probability:"); ui.add(egui::DragValue::new(&mut cfg.probability).speed(0.01).range(0.0..=1.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Inherit Velocity:"); ui.add(egui::DragValue::new(&mut cfg.inherit_velocity).speed(0.01).range(0.0..=1.0));
+                    });
+                    ui.checkbox(&mut cfg.inherit_color, "Inherit Color");
+                    ui.checkbox(&mut cfg.inherit_size, "Inherit Size");
+                    ui.checkbox(&mut cfg.emit_probability_affects_burst, "Probability Affects Bursts");
+                    if ui.small_button("Remove").clicked() { to_remove = Some(i); }
+                });
+            });
+        }
+        if let Some(i) = to_remove { configs.remove(i); }
+        ui.separator();
+        graph.show(ui);
+    });
+}
+
+// =============================================================================
+// FORCE FIELD MODULE
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ForceFieldShape { Sphere, Box, Cylinder, Torus, Hemisphere }
+
+impl Default for ForceFieldShape { fn default() -> Self { ForceFieldShape::Sphere } }
+
+impl ForceFieldShape {
+    pub fn label(&self) -> &str {
+        match self {
+            ForceFieldShape::Sphere => "Sphere", ForceFieldShape::Box => "Box",
+            ForceFieldShape::Cylinder => "Cylinder", ForceFieldShape::Torus => "Torus",
+            ForceFieldShape::Hemisphere => "Hemisphere",
+        }
+    }
+    pub fn all() -> &'static [ForceFieldShape] {
+        &[ForceFieldShape::Sphere, ForceFieldShape::Box, ForceFieldShape::Cylinder, ForceFieldShape::Torus, ForceFieldShape::Hemisphere]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ForceDirectionMode { Radial, Aligned, Vortex, Turbulence, Custom }
+
+impl Default for ForceDirectionMode { fn default() -> Self { ForceDirectionMode::Radial } }
+
+impl ForceDirectionMode {
+    pub fn label(&self) -> &str {
+        match self {
+            ForceDirectionMode::Radial => "Radial", ForceDirectionMode::Aligned => "Aligned",
+            ForceDirectionMode::Vortex => "Vortex", ForceDirectionMode::Turbulence => "Turbulence",
+            ForceDirectionMode::Custom => "Custom",
+        }
+    }
+    pub fn all() -> &'static [ForceDirectionMode] {
+        &[ForceDirectionMode::Radial, ForceDirectionMode::Aligned, ForceDirectionMode::Vortex, ForceDirectionMode::Turbulence, ForceDirectionMode::Custom]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForceFieldConfig {
+    pub label: String, pub enabled: bool,
+    pub shape: ForceFieldShape, pub position: [f32; 3], pub rotation: [f32; 3], pub scale: [f32; 3],
+    pub strength: Curve, pub direction_mode: ForceDirectionMode,
+    pub attenuation: f32, pub gravity: f32, pub drag: f32, pub rotation_speed: f32,
+    pub start_range: f32, pub end_range: f32, pub multiplier: f32,
+    pub noise_strength: f32, pub noise_frequency: f32, pub noise_scroll_speed: f32, pub noise_damping: bool,
+}
+
+impl Default for ForceFieldConfig {
+    fn default() -> Self {
+        ForceFieldConfig {
+            label: String::from("Force Field"), enabled: true,
+            shape: ForceFieldShape::Sphere, position: [0.0; 3], rotation: [0.0; 3], scale: [1.0; 3],
+            strength: Curve::constant(1.0), direction_mode: ForceDirectionMode::Radial,
+            attenuation: 1.0, gravity: 0.0, drag: 0.0, rotation_speed: 0.0,
+            start_range: 0.0, end_range: 1.0, multiplier: 1.0,
+            noise_strength: 0.0, noise_frequency: 1.0, noise_scroll_speed: 0.0, noise_damping: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ForceFieldModule {
+    pub enabled: bool,
+    pub fields: Vec<ForceFieldConfig>,
+}
+
+impl ForceFieldModule {
+    pub fn new() -> Self { ForceFieldModule { enabled: false, fields: vec![] } }
+
+    pub fn compute_force(&self, pos: [f32; 3], _vel: [f32; 3], t: f32) -> [f32; 3] {
+        let mut fx = 0.0f32; let mut fy = 0.0f32; let mut fz = 0.0f32;
+        if !self.enabled { return [fx, fy, fz]; }
+        for field in &self.fields {
+            if !field.enabled { continue; }
+            let dx = pos[0] - field.position[0];
+            let dy = pos[1] - field.position[1];
+            let dz = pos[2] - field.position[2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist < field.start_range || dist > field.end_range { continue; }
+            let nd = ((dist - field.start_range) / (field.end_range - field.start_range)).clamp(0.0, 1.0);
+            let strength = field.strength.evaluate(nd) * field.multiplier;
+            let att = 1.0 - nd.powf(field.attenuation);
+            let eff = strength * att;
+            match field.direction_mode {
+                ForceDirectionMode::Radial => {
+                    if dist > 1e-6 { let inv = 1.0 / dist; fx -= dx * inv * eff; fy -= dy * inv * eff; fz -= dz * inv * eff; }
+                }
+                ForceDirectionMode::Aligned => {
+                    let (sa, ca) = field.rotation[1].to_radians().sin_cos();
+                    fx += ca * eff; fz += sa * eff;
+                }
+                ForceDirectionMode::Vortex => {
+                    if dist > 1e-6 { let inv = 1.0 / dist; fx += dz * inv * eff * field.rotation_speed; fz -= dx * inv * eff * field.rotation_speed; }
+                }
+                ForceDirectionMode::Turbulence => {
+                    let nx = ((pos[0] * field.noise_frequency + t * field.noise_scroll_speed).sin() * 2.0 - 1.0);
+                    let ny = ((pos[1] * field.noise_frequency + t * field.noise_scroll_speed * 1.3).cos() * 2.0 - 1.0);
+                    let nz = ((pos[2] * field.noise_frequency + t * field.noise_scroll_speed * 0.7).sin() * 2.0 - 1.0);
+                    fx += nx * field.noise_strength * eff; fy += ny * field.noise_strength * eff; fz += nz * field.noise_strength * eff;
+                }
+                ForceDirectionMode::Custom => {}
+            }
+            fy += field.gravity * eff;
+        }
+        [fx, fy, fz]
+    }
+
+    pub fn draw_preview(&self, painter: &Painter, canvas_rect: Rect, world_to_canvas: impl Fn([f32; 2]) -> Pos2) {
+        if !self.enabled { return; }
+        for field in &self.fields {
+            if !field.enabled { continue; }
+            let center = world_to_canvas([field.position[0], field.position[1]]);
+            let radius_canvas = field.end_range * (canvas_rect.width() / 20.0);
+            let wire_color = Color32::from_rgba_unmultiplied(80, 200, 255, 120);
+            match field.shape {
+                ForceFieldShape::Sphere | ForceFieldShape::Hemisphere => {
+                    painter.circle_stroke(center, radius_canvas, Stroke::new(1.0, wire_color));
+                    if matches!(field.shape, ForceFieldShape::Hemisphere) {
+                        painter.line_segment([Pos2::new(center.x - radius_canvas, center.y), Pos2::new(center.x + radius_canvas, center.y)], Stroke::new(1.0, wire_color));
+                    }
+                }
+                ForceFieldShape::Box => {
+                    let half = radius_canvas;
+                    painter.rect_stroke(Rect::from_center_size(center, Vec2::splat(half * 2.0)), 0.0, Stroke::new(1.0, wire_color), egui::StrokeKind::Outside);
+                }
+                ForceFieldShape::Cylinder => {
+                    painter.rect_stroke(Rect::from_center_size(center, Vec2::new(radius_canvas, radius_canvas * 1.5)), 4.0, Stroke::new(1.0, wire_color), egui::StrokeKind::Outside);
+                }
+                ForceFieldShape::Torus => {
+                    painter.circle_stroke(center, radius_canvas, Stroke::new(1.0, wire_color));
+                    painter.circle_stroke(center, radius_canvas * 0.5, Stroke::new(1.0, wire_color));
+                }
+            }
+            // Force direction arrows
+            for j in 0..8usize {
+                let angle = (j as f32 / 8.0) * std::f32::consts::TAU;
+                let ax = field.position[0] + field.end_range * angle.cos() * 0.8;
+                let ay = field.position[1] + field.end_range * angle.sin() * 0.8;
+                let as_ = world_to_canvas([ax, ay]);
+                let (fdx, fdy) = match field.direction_mode {
+                    ForceDirectionMode::Radial => (-angle.cos(), -angle.sin()),
+                    ForceDirectionMode::Vortex => (-angle.sin(), angle.cos()),
+                    _ => (0.0, -1.0),
+                };
+                let arrow_end = Pos2::new(as_.x + fdx * 10.0, as_.y + fdy * 10.0);
+                painter.arrow(as_, arrow_end - as_, Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 80, 160)));
+            }
+        }
+    }
+}
+
+pub fn show_force_field_module_ui(ui: &mut egui::Ui, module: &mut ForceFieldModule) {
+    egui::CollapsingHeader::new("Force Field").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut module.enabled, "Enabled");
+        if !module.enabled { return; }
+        ui.separator();
+        if ui.button("+ Add Force Field").clicked() { module.fields.push(ForceFieldConfig::default()); }
+        let mut to_remove = None;
+        for (i, field) in module.fields.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                egui::CollapsingHeader::new(format!("[{}] {}", i, field.label)).default_open(false).show(ui, |ui| {
+                    ui.checkbox(&mut field.enabled, "Active");
+                    ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut field.label); });
+                    ui.horizontal(|ui| {
+                        ui.label("Shape:");
+                        egui::ComboBox::from_id_source(format!("ff_shape_{}", i)).selected_text(field.shape.label()).show_ui(ui, |ui| {
+                            for s in ForceFieldShape::all() { ui.selectable_value(&mut field.shape, s.clone(), s.label()); }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Direction:");
+                        egui::ComboBox::from_id_source(format!("ff_dir_{}", i)).selected_text(field.direction_mode.label()).show_ui(ui, |ui| {
+                            for d in ForceDirectionMode::all() { ui.selectable_value(&mut field.direction_mode, d.clone(), d.label()); }
+                        });
+                    });
+                    ui.label("Position:");
+                    ui.horizontal(|ui| {
+                        ui.label("X:"); ui.add(egui::DragValue::new(&mut field.position[0]).speed(0.1));
+                        ui.label("Y:"); ui.add(egui::DragValue::new(&mut field.position[1]).speed(0.1));
+                        ui.label("Z:"); ui.add(egui::DragValue::new(&mut field.position[2]).speed(0.1));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Start Range:"); ui.add(egui::DragValue::new(&mut field.start_range).speed(0.05).range(0.0..=100.0));
+                        ui.label("End Range:"); ui.add(egui::DragValue::new(&mut field.end_range).speed(0.05).range(0.0..=100.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Attenuation:"); ui.add(egui::DragValue::new(&mut field.attenuation).speed(0.01).range(0.01..=10.0));
+                        ui.label("Gravity:"); ui.add(egui::DragValue::new(&mut field.gravity).speed(0.01));
+                        ui.label("Drag:"); ui.add(egui::DragValue::new(&mut field.drag).speed(0.01).range(0.0..=1.0));
+                    });
+                    if matches!(field.direction_mode, ForceDirectionMode::Turbulence) {
+                        ui.separator();
+                        ui.label("Noise:");
+                        ui.horizontal(|ui| {
+                            ui.label("Strength:"); ui.add(egui::DragValue::new(&mut field.noise_strength).speed(0.01).range(0.0..=10.0));
+                            ui.label("Frequency:"); ui.add(egui::DragValue::new(&mut field.noise_frequency).speed(0.01).range(0.01..=20.0));
+                        });
+                        ui.checkbox(&mut field.noise_damping, "Noise Damping");
+                    }
+                    ui.separator();
+                    ui.label("Strength Curve:");
+                    draw_curve_editor_inline(ui, &mut field.strength, 200.0, 40.0);
+                    if ui.small_button("Remove Field").clicked() { to_remove = Some(i); }
+                });
+            });
+        }
+        if let Some(i) = to_remove { module.fields.remove(i); }
+    });
+}
+
+// =============================================================================
+// COLLISION MODULE 2D (expanded)
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CollisionQuality { Low, Medium, High }
+impl Default for CollisionQuality { fn default() -> Self { CollisionQuality::Medium } }
+impl CollisionQuality {
+    pub fn label(&self) -> &str { match self { CollisionQuality::Low => "Low", CollisionQuality::Medium => "Medium", CollisionQuality::High => "High" } }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollisionPlane {
+    pub normal: [f32; 3], pub distance: f32, pub label: String, pub visible: bool,
+}
+
+impl Default for CollisionPlane {
+    fn default() -> Self { CollisionPlane { normal: [0.0, 1.0, 0.0], distance: 0.0, label: String::from("Ground"), visible: true } }
+}
+
+impl CollisionPlane {
+    pub fn floor_at(y: f32) -> Self {
+        CollisionPlane { normal: [0.0, 1.0, 0.0], distance: y, label: format!("Floor y={}", y), visible: true }
+    }
+    pub fn is_below(&self, pos: [f32; 3]) -> bool {
+        pos[0] * self.normal[0] + pos[1] * self.normal[1] + pos[2] * self.normal[2] < self.distance
+    }
+    pub fn reflect_velocity(&self, vel: [f32; 3], bounce: f32, damping: f32) -> [f32; 3] {
+        let dot = vel[0] * self.normal[0] + vel[1] * self.normal[1] + vel[2] * self.normal[2];
+        let scale = bounce * (1.0 - damping);
+        [(vel[0] - 2.0 * dot * self.normal[0]) * scale,
+         (vel[1] - 2.0 * dot * self.normal[1]) * scale,
+         (vel[2] - 2.0 * dot * self.normal[2]) * scale]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollisionModule2D {
+    pub enabled: bool, pub mode: CollisionMode, pub planes: Vec<CollisionPlane>,
+    pub quality: CollisionQuality, pub collision_radius: f32, pub visualize_bounds: bool,
+    pub kill_on_collision: bool, pub min_kill_speed: f32, pub max_kill_speed: f32,
+    pub bounce: f32, pub damping: f32, pub lifetime_loss: f32,
+    pub send_collision_messages: bool, pub max_collision_shapes: u32, pub radius_scale: f32,
+    pub enable_dynamic_colliders: bool,
+}
+
+impl Default for CollisionModule2D {
+    fn default() -> Self {
+        CollisionModule2D {
+            enabled: false, mode: CollisionMode::Planes,
+            planes: vec![CollisionPlane::floor_at(0.0)],
+            quality: CollisionQuality::Medium, collision_radius: 0.0, visualize_bounds: false,
+            kill_on_collision: false, min_kill_speed: 0.0, max_kill_speed: 10000.0,
+            bounce: 0.6, damping: 0.0, lifetime_loss: 0.0,
+            send_collision_messages: false, max_collision_shapes: 256, radius_scale: 1.0,
+            enable_dynamic_colliders: false,
+        }
+    }
+}
+
+pub fn show_collision_module_2d_ui(ui: &mut egui::Ui, col: &mut CollisionModule2D) {
+    egui::CollapsingHeader::new("Collision (2D)").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut col.enabled, "Enabled");
+        if !col.enabled { return; }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Mode:");
+            ui.selectable_value(&mut col.mode, CollisionMode::Planes, "Planes");
+            ui.selectable_value(&mut col.mode, CollisionMode::World, "World");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Quality:");
+            ui.selectable_value(&mut col.quality, CollisionQuality::Low, "Low");
+            ui.selectable_value(&mut col.quality, CollisionQuality::Medium, "Medium");
+            ui.selectable_value(&mut col.quality, CollisionQuality::High, "High");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Bounce:"); ui.add(egui::DragValue::new(&mut col.bounce).speed(0.01).range(0.0..=1.0));
+            ui.label("Damping:"); ui.add(egui::DragValue::new(&mut col.damping).speed(0.01).range(0.0..=1.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Lifetime Loss:"); ui.add(egui::DragValue::new(&mut col.lifetime_loss).speed(0.01).range(0.0..=1.0));
+        });
+        ui.checkbox(&mut col.kill_on_collision, "Kill on Collision");
+        if col.kill_on_collision {
+            ui.horizontal(|ui| {
+                ui.label("Min Kill Speed:"); ui.add(egui::DragValue::new(&mut col.min_kill_speed).speed(0.1));
+                ui.label("Max Kill Speed:"); ui.add(egui::DragValue::new(&mut col.max_kill_speed).speed(1.0));
+            });
+        }
+        ui.checkbox(&mut col.visualize_bounds, "Visualize Bounds");
+        ui.checkbox(&mut col.send_collision_messages, "Send Collision Messages");
+        ui.checkbox(&mut col.enable_dynamic_colliders, "Enable Dynamic Colliders");
+        ui.horizontal(|ui| {
+            ui.label("Max Shapes:"); ui.add(egui::DragValue::new(&mut col.max_collision_shapes).speed(1.0).range(1..=1024));
+        });
+        if matches!(col.mode, CollisionMode::Planes) {
+            ui.separator();
+            ui.label("Collision Planes:");
+            if ui.button("+ Add Plane").clicked() { col.planes.push(CollisionPlane::default()); }
+            let mut to_remove = None;
+            for (i, plane) in col.planes.iter_mut().enumerate() {
+                ui.push_id(i, |ui| {
+                    egui::CollapsingHeader::new(format!("[{}] {}", i, plane.label)).default_open(false).show(ui, |ui| {
+                        ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut plane.label); });
+                        ui.label("Normal:");
+                        ui.horizontal(|ui| {
+                            ui.label("X:"); ui.add(egui::DragValue::new(&mut plane.normal[0]).speed(0.01).range(-1.0..=1.0));
+                            ui.label("Y:"); ui.add(egui::DragValue::new(&mut plane.normal[1]).speed(0.01).range(-1.0..=1.0));
+                            ui.label("Z:"); ui.add(egui::DragValue::new(&mut plane.normal[2]).speed(0.01).range(-1.0..=1.0));
+                        });
+                        ui.horizontal(|ui| { ui.label("Distance:"); ui.add(egui::DragValue::new(&mut plane.distance).speed(0.1)); });
+                        ui.checkbox(&mut plane.visible, "Show in Preview");
+                        if ui.small_button("Remove").clicked() { to_remove = Some(i); }
+                    });
+                });
+            }
+            if let Some(i) = to_remove { col.planes.remove(i); }
+        }
+    });
+}
+
+pub fn draw_collision_planes_preview(painter: &Painter, canvas_rect: Rect, planes: &[CollisionPlane], world_to_canvas: impl Fn([f32; 2]) -> Pos2) {
+    for plane in planes {
+        if !plane.visible { continue; }
+        let col = Color32::from_rgba_unmultiplied(255, 80, 80, 180);
+        if plane.normal[1].abs() > 0.7 {
+            let y = world_to_canvas([0.0, plane.distance]).y;
+            painter.line_segment([Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)], Stroke::new(1.5, col));
+        } else if plane.normal[0].abs() > 0.7 {
+            let x = world_to_canvas([plane.distance, 0.0]).x;
+            painter.line_segment([Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)], Stroke::new(1.5, col));
+        }
+    }
+}
+
+// =============================================================================
+// PARTICLE ATTRACTOR SYSTEM
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum AttractorFalloffMode { Linear, Quadratic, None, Cubic, InverseSquare }
+impl Default for AttractorFalloffMode { fn default() -> Self { AttractorFalloffMode::Linear } }
+impl AttractorFalloffMode {
+    pub fn label(&self) -> &str {
+        match self {
+            AttractorFalloffMode::Linear => "Linear", AttractorFalloffMode::Quadratic => "Quadratic",
+            AttractorFalloffMode::None => "None", AttractorFalloffMode::Cubic => "Cubic",
+            AttractorFalloffMode::InverseSquare => "Inverse Square",
+        }
+    }
+    pub fn all() -> &'static [AttractorFalloffMode] {
+        &[AttractorFalloffMode::None, AttractorFalloffMode::Linear, AttractorFalloffMode::Quadratic, AttractorFalloffMode::Cubic, AttractorFalloffMode::InverseSquare]
+    }
+    pub fn compute_factor(&self, dist: f32, max_dist: f32) -> f32 {
+        if dist >= max_dist { return 0.0; }
+        let t = dist / max_dist;
+        match self {
+            AttractorFalloffMode::None => 1.0,
+            AttractorFalloffMode::Linear => 1.0 - t,
+            AttractorFalloffMode::Quadratic => (1.0 - t) * (1.0 - t),
+            AttractorFalloffMode::Cubic => (1.0 - t).powi(3),
+            AttractorFalloffMode::InverseSquare => 1.0 / (1.0 + dist * dist),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum AttractorType { Point, Line, Plane, Rotation, Orbit }
+impl Default for AttractorType { fn default() -> Self { AttractorType::Point } }
+impl AttractorType {
+    pub fn label(&self) -> &str {
+        match self {
+            AttractorType::Point => "Point", AttractorType::Line => "Line",
+            AttractorType::Plane => "Plane", AttractorType::Rotation => "Rotation",
+            AttractorType::Orbit => "Full Orbit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Attractor {
+    pub label: String, pub enabled: bool, pub position: [f32; 3],
+    pub strength: f32, pub falloff_mode: AttractorFalloffMode, pub max_distance: f32,
+    pub attractor_type: AttractorType, pub orbit_radius: f32, pub orbit_speed: f32,
+    pub line_direction: [f32; 3], pub plane_normal: [f32; 3],
+    pub kill_in_range: f32, pub visualize: bool,
+}
+
+impl Default for Attractor {
+    fn default() -> Self {
+        Attractor {
+            label: String::from("Attractor"), enabled: true, position: [0.0; 3],
+            strength: 1.0, falloff_mode: AttractorFalloffMode::Linear, max_distance: 5.0,
+            attractor_type: AttractorType::Point, orbit_radius: 1.0, orbit_speed: 1.0,
+            line_direction: [0.0, 1.0, 0.0], plane_normal: [0.0, 1.0, 0.0],
+            kill_in_range: 0.0, visualize: true,
+        }
+    }
+}
+
+impl Attractor {
+    pub fn compute_force(&self, pos: [f32; 3]) -> [f32; 3] {
+        if !self.enabled { return [0.0; 3]; }
+        let dx = self.position[0] - pos[0];
+        let dy = self.position[1] - pos[1];
+        let dz = self.position[2] - pos[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        if dist < 1e-6 { return [0.0; 3]; }
+        let falloff = self.falloff_mode.compute_factor(dist, self.max_distance);
+        if falloff <= 0.0 { return [0.0; 3]; }
+        let inv_dist = 1.0 / dist;
+        let fm = self.strength * falloff;
+        match self.attractor_type {
+            AttractorType::Point => [dx * inv_dist * fm, dy * inv_dist * fm, dz * inv_dist * fm],
+            AttractorType::Rotation | AttractorType::Orbit => [-dz * inv_dist * fm * self.orbit_speed, 0.0, dx * inv_dist * fm * self.orbit_speed],
+            AttractorType::Plane => {
+                let dot = dx * self.plane_normal[0] + dy * self.plane_normal[1] + dz * self.plane_normal[2];
+                [self.plane_normal[0] * dot * fm, self.plane_normal[1] * dot * fm, self.plane_normal[2] * dot * fm]
+            }
+            AttractorType::Line => {
+                let t = dx * self.line_direction[0] + dy * self.line_direction[1] + dz * self.line_direction[2];
+                let ldx = self.position[0] + self.line_direction[0] * t - pos[0];
+                let ldy = self.position[1] + self.line_direction[1] * t - pos[1];
+                let ldz = self.position[2] + self.line_direction[2] * t - pos[2];
+                let ld = (ldx * ldx + ldy * ldy + ldz * ldz).sqrt().max(1e-6);
+                [ldx / ld * fm, ldy / ld * fm, ldz / ld * fm]
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AttractorModule {
+    pub enabled: bool, pub attractors: Vec<Attractor>,
+}
+
+impl AttractorModule {
+    pub fn new() -> Self { AttractorModule { enabled: false, attractors: vec![] } }
+
+    pub fn compute_total_force(&self, pos: [f32; 3]) -> [f32; 3] {
+        if !self.enabled { return [0.0; 3]; }
+        let mut fx = 0.0f32; let mut fy = 0.0f32; let mut fz = 0.0f32;
+        for attr in &self.attractors { let f = attr.compute_force(pos); fx += f[0]; fy += f[1]; fz += f[2]; }
+        [fx, fy, fz]
+    }
+
+    pub fn draw_preview(&self, painter: &Painter, world_to_canvas: impl Fn([f32; 2]) -> Pos2) {
+        if !self.enabled { return; }
+        for attr in &self.attractors {
+            if !attr.enabled || !attr.visualize { continue; }
+            let center = world_to_canvas([attr.position[0], attr.position[1]]);
+            let max_r = attr.max_distance * 20.0;
+            painter.circle_stroke(center, max_r, Stroke::new(1.0, Color32::from_rgba_unmultiplied(200, 200, 80, 100)));
+            painter.circle_filled(center, 4.0, Color32::from_rgba_unmultiplied(255, 255, 100, 200));
+            // Trajectory traces for 8 sample particles
+            for j in 0..8usize {
+                let start_angle = (j as f32 / 8.0) * std::f32::consts::TAU;
+                let start_r = max_r * 0.9;
+                let mut px = attr.position[0] + start_r * start_angle.cos() / 20.0;
+                let mut py = attr.position[1] + start_r * start_angle.sin() / 20.0;
+                let mut pvx = 0.0f32; let mut pvy = 0.0f32;
+                let dt = 0.05f32;
+                let mut prev_canvas = world_to_canvas([px, py]);
+                for _ in 0..20 {
+                    let force = attr.compute_force([px, py, 0.0]);
+                    pvx += force[0] * dt; pvy += force[1] * dt;
+                    px += pvx * dt; py += pvy * dt;
+                    let next_canvas = world_to_canvas([px, py]);
+                    painter.line_segment([prev_canvas, next_canvas], Stroke::new(0.8, Color32::from_rgba_unmultiplied(255, 255, 80, 60)));
+                    prev_canvas = next_canvas;
+                }
+            }
+        }
+    }
+}
+
+pub fn show_attractor_module_ui(ui: &mut egui::Ui, module: &mut AttractorModule) {
+    egui::CollapsingHeader::new("Attractors").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut module.enabled, "Enabled");
+        if !module.enabled { return; }
+        ui.separator();
+        if ui.button("+ Add Attractor").clicked() { module.attractors.push(Attractor::default()); }
+        let mut to_remove = None;
+        for (i, attr) in module.attractors.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                egui::CollapsingHeader::new(format!("[{}] {}", i, attr.label)).default_open(false).show(ui, |ui| {
+                    ui.checkbox(&mut attr.enabled, "Active");
+                    ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut attr.label); });
+                    ui.horizontal(|ui| {
+                        ui.label("Type:");
+                        egui::ComboBox::from_id_source(format!("attr_type_{}", i)).selected_text(attr.attractor_type.label()).show_ui(ui, |ui| {
+                            for t in [AttractorType::Point, AttractorType::Line, AttractorType::Plane, AttractorType::Rotation, AttractorType::Orbit] {
+                                let lbl = t.label().to_string();
+                                ui.selectable_value(&mut attr.attractor_type, t, lbl);
+                            }
+                        });
+                    });
+                    ui.label("Position:");
+                    ui.horizontal(|ui| {
+                        ui.label("X:"); ui.add(egui::DragValue::new(&mut attr.position[0]).speed(0.1));
+                        ui.label("Y:"); ui.add(egui::DragValue::new(&mut attr.position[1]).speed(0.1));
+                        ui.label("Z:"); ui.add(egui::DragValue::new(&mut attr.position[2]).speed(0.1));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Strength:"); ui.add(egui::DragValue::new(&mut attr.strength).speed(0.05));
+                        ui.label("Max Dist:"); ui.add(egui::DragValue::new(&mut attr.max_distance).speed(0.1).range(0.01..=100.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Falloff:");
+                        egui::ComboBox::from_id_source(format!("attr_falloff_{}", i)).selected_text(attr.falloff_mode.label()).show_ui(ui, |ui| {
+                            for f in AttractorFalloffMode::all() { ui.selectable_value(&mut attr.falloff_mode, f.clone(), f.label()); }
+                        });
+                    });
+                    if matches!(attr.attractor_type, AttractorType::Rotation | AttractorType::Orbit) {
+                        ui.horizontal(|ui| {
+                            ui.label("Orbit Radius:"); ui.add(egui::DragValue::new(&mut attr.orbit_radius).speed(0.05));
+                            ui.label("Speed:"); ui.add(egui::DragValue::new(&mut attr.orbit_speed).speed(0.05));
+                        });
+                    }
+                    ui.horizontal(|ui| { ui.label("Kill Range:"); ui.add(egui::DragValue::new(&mut attr.kill_in_range).speed(0.01).range(0.0..=10.0)); });
+                    ui.checkbox(&mut attr.visualize, "Visualize");
+                    if ui.small_button("Remove").clicked() { to_remove = Some(i); }
+                });
+            });
+        }
+        if let Some(i) = to_remove { module.attractors.remove(i); }
+    });
+}
+
+// =============================================================================
+// LOD SYSTEM FOR PARTICLES
+// =============================================================================
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LodLevel {
+    pub distance: f32, pub max_particles_factor: f32, pub simulation_speed: f32,
+    pub emit_rate_factor: f32, pub enabled_modules: Vec<bool>, pub label: String,
+    pub simplify_rendering: bool, pub billboard_only: bool,
+}
+
+impl Default for LodLevel {
+    fn default() -> Self {
+        LodLevel {
+            distance: 20.0, max_particles_factor: 1.0, simulation_speed: 1.0,
+            emit_rate_factor: 1.0, enabled_modules: vec![true; 12], label: String::from("LOD 0"),
+            simplify_rendering: false, billboard_only: false,
+        }
+    }
+}
+
+impl LodLevel {
+    pub fn far_lod(distance: f32, level: usize) -> Self {
+        LodLevel {
+            distance, max_particles_factor: 1.0 / (level + 1) as f32, simulation_speed: 0.5,
+            emit_rate_factor: 0.5 / (level + 1) as f32, enabled_modules: vec![true; 12],
+            label: format!("LOD {}", level), simplify_rendering: level > 1, billboard_only: level > 2,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParticleLod {
+    pub enabled: bool, pub lod_levels: Vec<LodLevel>, pub current_lod: usize,
+    pub preview_distance: f32, pub fade_between_lods: bool, pub fade_range: f32,
+    pub animated_cross_fading: bool,
+}
+
+impl Default for ParticleLod {
+    fn default() -> Self {
+        ParticleLod {
+            enabled: false,
+            lod_levels: vec![
+                LodLevel { label: String::from("LOD 0"), distance: 10.0, max_particles_factor: 1.0, simulation_speed: 1.0, emit_rate_factor: 1.0, enabled_modules: vec![true; 12], simplify_rendering: false, billboard_only: false },
+                LodLevel { label: String::from("LOD 1"), distance: 20.0, max_particles_factor: 0.5, simulation_speed: 1.0, emit_rate_factor: 0.5, enabled_modules: vec![true; 12], simplify_rendering: true, billboard_only: false },
+                LodLevel { label: String::from("LOD 2"), distance: 40.0, max_particles_factor: 0.25, simulation_speed: 0.5, emit_rate_factor: 0.2, enabled_modules: vec![true; 12], simplify_rendering: true, billboard_only: true },
+            ],
+            current_lod: 0, preview_distance: 0.0, fade_between_lods: true, fade_range: 2.0, animated_cross_fading: false,
+        }
+    }
+}
+
+impl ParticleLod {
+    pub fn get_lod_for_distance(&self, dist: f32) -> usize {
+        for (i, level) in self.lod_levels.iter().enumerate() { if dist <= level.distance { return i; } }
+        self.lod_levels.len().saturating_sub(1)
+    }
+    pub fn current_level(&self) -> Option<&LodLevel> { self.lod_levels.get(self.current_lod) }
+}
+
+pub fn show_particle_lod_ui(ui: &mut egui::Ui, lod: &mut ParticleLod) {
+    egui::CollapsingHeader::new("LOD (Level of Detail)").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut lod.enabled, "Enabled");
+        if !lod.enabled { return; }
+        ui.separator();
+        ui.checkbox(&mut lod.fade_between_lods, "Fade Between LODs");
+        ui.checkbox(&mut lod.animated_cross_fading, "Animated Cross-Fading");
+        if lod.fade_between_lods {
+            ui.horizontal(|ui| { ui.label("Fade Range:"); ui.add(egui::DragValue::new(&mut lod.fade_range).speed(0.1).range(0.0..=20.0)); });
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Preview at distance:");
+            ui.add(egui::DragValue::new(&mut lod.preview_distance).speed(0.5).range(0.0..=200.0));
+            ui.label("m");
+        });
+        let active_lod = lod.get_lod_for_distance(lod.preview_distance);
+        ui.label(egui::RichText::new(format!("Active LOD: {}", active_lod)).color(Color32::from_rgb(100, 200, 255)));
+        ui.separator();
+        if ui.button("+ Add LOD Level").clicked() {
+            let next_dist = lod.lod_levels.last().map(|l| l.distance * 1.5).unwrap_or(10.0);
+            let next_idx = lod.lod_levels.len();
+            lod.lod_levels.push(LodLevel::far_lod(next_dist, next_idx));
+        }
+        let mut to_remove = None;
+        for (i, level) in lod.lod_levels.iter_mut().enumerate() {
+            let is_active = active_lod == i;
+            ui.push_id(i, |ui| {
+                let hdr_col = if is_active { Color32::from_rgb(100, 220, 100) } else { Color32::from_gray(180) };
+                egui::CollapsingHeader::new(egui::RichText::new(format!("  {} {}", level.label, if is_active { "◀ ACTIVE" } else { "" })).color(hdr_col))
+                    .default_open(is_active)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut level.label); });
+                        ui.horizontal(|ui| { ui.label("Max Distance:"); ui.add(egui::DragValue::new(&mut level.distance).speed(1.0).range(0.1..=10000.0)); ui.label("m"); });
+                        ui.horizontal(|ui| { ui.label("Max Particles:"); ui.add(egui::Slider::new(&mut level.max_particles_factor, 0.0..=1.0).text("x")); });
+                        ui.horizontal(|ui| { ui.label("Sim Speed:"); ui.add(egui::Slider::new(&mut level.simulation_speed, 0.0..=2.0).text("x")); });
+                        ui.horizontal(|ui| { ui.label("Emit Rate:"); ui.add(egui::Slider::new(&mut level.emit_rate_factor, 0.0..=1.0).text("x")); });
+                        ui.checkbox(&mut level.simplify_rendering, "Simplify Rendering");
+                        ui.checkbox(&mut level.billboard_only, "Billboard Only");
+                        if ui.small_button("Remove LOD").clicked() { to_remove = Some(i); }
+                    });
+            });
+        }
+        if let Some(i) = to_remove { lod.lod_levels.remove(i); }
+    });
+}
+
+// =============================================================================
+// PARTICLE EVENT SYSTEM
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ParticleEventTrigger {
+    OnSpawn, OnDeath, OnCollision, OnLifetimePercent(f32), OnDistance(f32),
+    OnVelocityBelow(f32), OnVelocityAbove(f32), Custom(String),
+}
+
+impl ParticleEventTrigger {
+    pub fn label_str(&self) -> String {
+        match self {
+            ParticleEventTrigger::OnSpawn => "On Spawn".to_string(),
+            ParticleEventTrigger::OnDeath => "On Death".to_string(),
+            ParticleEventTrigger::OnCollision => "On Collision".to_string(),
+            ParticleEventTrigger::OnLifetimePercent(p) => format!("Lifetime {}%", (p * 100.0) as u32),
+            ParticleEventTrigger::OnDistance(d) => format!("Distance > {:.1}", d),
+            ParticleEventTrigger::OnVelocityBelow(v) => format!("Velocity < {:.1}", v),
+            ParticleEventTrigger::OnVelocityAbove(v) => format!("Velocity > {:.1}", v),
+            ParticleEventTrigger::Custom(s) => format!("Custom: {}", s),
+        }
+    }
+    pub fn base_variants() -> Vec<ParticleEventTrigger> {
+        vec![ParticleEventTrigger::OnSpawn, ParticleEventTrigger::OnDeath, ParticleEventTrigger::OnCollision]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum EventAction {
+    SpawnSubEmitter(usize), TriggerEffect(String), SetBlackboard(String, f32),
+    PlaySound(String), SpawnDecal(String), StopSystem, RestartSystem, ModifyProperty(String, f32),
+}
+
+impl EventAction {
+    pub fn label_str(&self) -> String {
+        match self {
+            EventAction::SpawnSubEmitter(i) => format!("Spawn Sub[{}]", i),
+            EventAction::TriggerEffect(s) => format!("Effect: {}", s),
+            EventAction::SetBlackboard(k, v) => format!("BB[{}]={}", k, v),
+            EventAction::PlaySound(s) => format!("Sound: {}", s),
+            EventAction::SpawnDecal(s) => format!("Decal: {}", s),
+            EventAction::StopSystem => "Stop System".to_string(),
+            EventAction::RestartSystem => "Restart System".to_string(),
+            EventAction::ModifyProperty(p, v) => format!("Set {}: {}", p, v),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParticleEventRule {
+    pub enabled: bool, pub trigger: ParticleEventTrigger, pub actions: Vec<EventAction>,
+    pub cooldown: f32, pub max_fires: i32, pub label: String,
+}
+
+impl Default for ParticleEventRule {
+    fn default() -> Self {
+        ParticleEventRule {
+            enabled: true, trigger: ParticleEventTrigger::OnDeath, actions: vec![],
+            cooldown: 0.0, max_fires: -1, label: String::from("Event Rule"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ParticleEventSystem {
+    pub enabled: bool, pub rules: Vec<ParticleEventRule>,
+}
+
+impl ParticleEventSystem {
+    pub fn new() -> Self { ParticleEventSystem::default() }
+}
+
+pub fn show_particle_event_system_ui(ui: &mut egui::Ui, events: &mut ParticleEventSystem) {
+    egui::CollapsingHeader::new("Event System").default_open(false).show(ui, |ui| {
+        ui.checkbox(&mut events.enabled, "Enabled");
+        if !events.enabled { return; }
+        ui.separator();
+        if ui.button("+ Add Event Rule").clicked() { events.rules.push(ParticleEventRule::default()); }
+        let mut to_remove = None;
+        for (i, rule) in events.rules.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                egui::CollapsingHeader::new(format!("[{}] {} — {}", i, rule.label, rule.trigger.label_str())).default_open(false).show(ui, |ui| {
+                    ui.checkbox(&mut rule.enabled, "Active");
+                    ui.horizontal(|ui| { ui.label("Label:"); ui.text_edit_singleline(&mut rule.label); });
+                    ui.horizontal(|ui| {
+                        ui.label("Trigger:");
+                        egui::ComboBox::from_id_source(format!("evt_trigger_{}", i)).selected_text(rule.trigger.label_str()).show_ui(ui, |ui| {
+                            for t in ParticleEventTrigger::base_variants() {
+                                let lbl = t.label_str();
+                                ui.selectable_value(&mut rule.trigger, t, lbl);
+                            }
+                            if ui.selectable_label(matches!(&rule.trigger, ParticleEventTrigger::OnLifetimePercent(_)), "On Lifetime %").clicked() {
+                                rule.trigger = ParticleEventTrigger::OnLifetimePercent(0.5);
+                            }
+                            if ui.selectable_label(matches!(&rule.trigger, ParticleEventTrigger::OnDistance(_)), "On Distance").clicked() {
+                                rule.trigger = ParticleEventTrigger::OnDistance(5.0);
+                            }
+                        });
+                    });
+                    match &mut rule.trigger {
+                        ParticleEventTrigger::OnLifetimePercent(p) => {
+                            ui.horizontal(|ui| { ui.label("Lifetime %:"); ui.add(egui::DragValue::new(p).speed(0.01).range(0.0..=1.0)); });
+                        }
+                        ParticleEventTrigger::OnDistance(d) => {
+                            ui.horizontal(|ui| { ui.label("Distance:"); ui.add(egui::DragValue::new(d).speed(0.1).range(0.0..=1000.0)); });
+                        }
+                        _ => {}
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Cooldown:"); ui.add(egui::DragValue::new(&mut rule.cooldown).speed(0.01).range(0.0..=60.0)); ui.label("s");
+                        ui.label("Max Fires:"); ui.add(egui::DragValue::new(&mut rule.max_fires).speed(1.0).range(-1..=10000)); ui.label("(-1=inf)");
+                    });
+                    ui.separator();
+                    ui.label(format!("Actions ({}):", rule.actions.len()));
+                    ui.horizontal(|ui| {
+                        if ui.small_button("+ Sub-Emitter").clicked() { rule.actions.push(EventAction::SpawnSubEmitter(0)); }
+                        if ui.small_button("+ Sound").clicked() { rule.actions.push(EventAction::PlaySound(String::from("explosion"))); }
+                        if ui.small_button("+ Blackboard").clicked() { rule.actions.push(EventAction::SetBlackboard(String::from("key"), 0.0)); }
+                        if ui.small_button("+ Effect").clicked() { rule.actions.push(EventAction::TriggerEffect(String::from("effect_name"))); }
+                    });
+                    let mut action_to_remove = None;
+                    for (ai, action) in rule.actions.iter_mut().enumerate() {
+                        ui.push_id(ai, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{}.", ai));
+                                match action {
+                                    EventAction::SpawnSubEmitter(idx) => {
+                                        ui.label("SpawnSub:"); ui.add(egui::DragValue::new(idx).speed(1.0).range(0..=64));
+                                    }
+                                    EventAction::SetBlackboard(key, val) => {
+                                        ui.text_edit_singleline(key); ui.label("="); ui.add(egui::DragValue::new(val).speed(0.1));
+                                    }
+                                    EventAction::PlaySound(s) | EventAction::TriggerEffect(s) | EventAction::SpawnDecal(s) => {
+                                        ui.text_edit_singleline(s);
+                                    }
+                                    EventAction::ModifyProperty(p, v) => {
+                                        ui.text_edit_singleline(p); ui.add(egui::DragValue::new(v).speed(0.1));
+                                    }
+                                    _ => { ui.label(action.label_str()); }
+                                }
+                                if ui.small_button("X").clicked() { action_to_remove = Some(ai); }
+                            });
+                        });
+                    }
+                    if let Some(ai) = action_to_remove { rule.actions.remove(ai); }
+                    if ui.small_button("Remove Rule").clicked() { to_remove = Some(i); }
+                });
+            });
+        }
+        if let Some(i) = to_remove { events.rules.remove(i); }
+    });
+}
+
+// =============================================================================
+// CURVE LIBRARY PRESETS (30+ curves) + MATH UTILITIES
+// =============================================================================
+
+pub fn all_curve_presets() -> Vec<(&'static str, Curve)> {
+    vec![
+        ("Linear 0→1", Curve::linear_zero_to_one()),
+        ("Linear 1→0", Curve::linear_one_to_zero()),
+        ("Constant 1", Curve::constant(1.0)),
+        ("Constant 0", Curve::constant(0.0)),
+        ("Ease In", curve_ease_in()),
+        ("Ease Out", curve_ease_out()),
+        ("Ease In-Out", curve_ease_in_out()),
+        ("Bounce", curve_bounce()),
+        ("Elastic", curve_elastic()),
+        ("Back", curve_back()),
+        ("Step 25%", curve_step_at(0.25)),
+        ("Step 50%", curve_step_at(0.50)),
+        ("Step 75%", curve_step_at(0.75)),
+        ("Pulse", curve_pulse()),
+        ("Sawtooth", curve_sawtooth()),
+        ("Sine Wave", curve_sine_wave()),
+        ("Square Wave", curve_square_wave()),
+        ("Triangle Wave", curve_triangle_wave()),
+        ("Exp Growth", curve_exponential_growth()),
+        ("Exp Decay", curve_exponential_decay()),
+        ("Logistic (S)", curve_logistic()),
+        ("Bell Curve", curve_bell()),
+        ("Double Peak", curve_double_peak()),
+        ("Ramp Up", curve_ramp_up()),
+        ("Ramp Down", curve_ramp_down()),
+        ("Plateau", curve_plateau()),
+        ("Valley", curve_valley()),
+        ("Spike", curve_spike()),
+        ("Fade In/Out", curve_fade_in_fade_out()),
+        ("Flash", curve_flash()),
+        ("Stairs 4", curve_staircase(4)),
+        ("Stairs 8", curve_staircase(8)),
+        ("Random Walk", curve_random_walk()),
+    ]
+}
+
+fn curve_ease_in() -> Curve {
+    Curve { keys: vec![CurveKey { time: 0.0, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 1.0, value: 1.0, in_tangent: 2.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+fn curve_ease_out() -> Curve {
+    Curve { keys: vec![CurveKey { time: 0.0, value: 0.0, in_tangent: 0.0, out_tangent: 2.0, interpolation: Interpolation::Smooth }, CurveKey { time: 1.0, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+fn curve_ease_in_out() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey::new(1.0, 1.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_bounce() -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey::new(0.0, 0.0),
+            CurveKey { time: 0.36, value: 1.0, in_tangent: 0.0, out_tangent: -4.0, interpolation: Interpolation::Smooth },
+            CurveKey { time: 0.6, value: 0.3, in_tangent: 0.0, out_tangent: 3.0, interpolation: Interpolation::Smooth },
+            CurveKey { time: 0.78, value: 1.0, in_tangent: 0.0, out_tangent: -2.0, interpolation: Interpolation::Smooth },
+            CurveKey { time: 0.9, value: 0.7, in_tangent: 0.0, out_tangent: 1.5, interpolation: Interpolation::Smooth },
+            CurveKey::new(1.0, 1.0),
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_elastic() -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey::new(0.0, 0.0),
+            CurveKey { time: 0.5, value: 1.2, in_tangent: 3.0, out_tangent: 0.0, interpolation: Interpolation::Smooth },
+            CurveKey { time: 0.75, value: 0.9, in_tangent: 0.0, out_tangent: 1.0, interpolation: Interpolation::Smooth },
+            CurveKey { time: 0.875, value: 1.05, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth },
+            CurveKey::new(1.0, 1.0),
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_back() -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey::new(0.0, 0.0),
+            CurveKey { time: 0.3, value: -0.1, in_tangent: 0.0, out_tangent: -1.5, interpolation: Interpolation::Smooth },
+            CurveKey::new(1.0, 1.0),
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_step_at(threshold: f32) -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey { time: 0.0, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: threshold, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: threshold + 0.001, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 1.0, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_pulse() -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey { time: 0.0, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.2, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.201, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.4, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.401, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 1.0, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_sawtooth() -> Curve {
+    Curve {
+        keys: (0..=8).map(|i| { let t = i as f32 / 8.0; let v = t % 0.25 / 0.25; CurveKey { time: t, value: v, in_tangent: 4.0, out_tangent: 4.0, interpolation: Interpolation::Linear } }).collect(),
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_sine_wave() -> Curve {
+    let n = 20usize;
+    Curve {
+        keys: (0..=n).map(|i| { let t = i as f32 / n as f32; let v = (t * std::f32::consts::TAU * 2.0).sin() * 0.5 + 0.5; CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect(),
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_square_wave() -> Curve {
+    Curve {
+        keys: vec![
+            CurveKey { time: 0.0, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.25, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.251, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.5, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.501, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.75, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 0.751, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+            CurveKey { time: 1.0, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant },
+        ],
+        keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0,
+    }
+}
+
+fn curve_triangle_wave() -> Curve {
+    Curve { keys: vec![CurveKey::linear(0.0, 0.0), CurveKey::linear(0.25, 1.0), CurveKey::linear(0.75, 0.0), CurveKey::linear(1.0, 1.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_exponential_growth() -> Curve {
+    let n = 16usize;
+    Curve { keys: (0..=n).map(|i| { let t = i as f32 / n as f32; let v = ((t * 5.0).exp() / (5.0f32).exp()).min(1.0); CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect(), keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_exponential_decay() -> Curve {
+    let n = 16usize;
+    Curve { keys: (0..=n).map(|i| { let t = i as f32 / n as f32; let v = (-t * 5.0).exp(); CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect(), keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_logistic() -> Curve {
+    let n = 20usize;
+    Curve { keys: (0..=n).map(|i| { let t = i as f32 / n as f32; let x = (t - 0.5) * 12.0; let v = 1.0 / (1.0 + (-x).exp()); CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect(), keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_bell() -> Curve {
+    let n = 20usize;
+    Curve { keys: (0..=n).map(|i| { let t = i as f32 / n as f32; let x = (t - 0.5) * 6.0; let v = (-x * x * 0.5).exp(); CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect(), keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_double_peak() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey { time: 0.2, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.5, value: 0.2, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.8, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_ramp_up() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey { time: 0.7, value: 0.1, in_tangent: 0.0, out_tangent: 3.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 1.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_ramp_down() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 1.0), CurveKey { time: 0.3, value: 0.9, in_tangent: -3.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_plateau() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey { time: 0.2, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.8, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_valley() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 1.0), CurveKey { time: 0.2, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.8, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 1.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_spike() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey { time: 0.5, value: 1.0, in_tangent: 10.0, out_tangent: -10.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_fade_in_fade_out() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 0.0), CurveKey { time: 0.15, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.85, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_flash() -> Curve {
+    Curve { keys: vec![CurveKey::new(0.0, 1.0), CurveKey { time: 0.05, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey { time: 0.2, value: 0.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth }, CurveKey::new(1.0, 0.0)], keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_staircase(steps: usize) -> Curve {
+    let mut keys = vec![];
+    for i in 0..steps {
+        let t0 = i as f32 / steps as f32;
+        let t1 = (i + 1) as f32 / steps as f32;
+        let v = i as f32 / (steps.max(2) - 1) as f32;
+        keys.push(CurveKey { time: t0, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant });
+        keys.push(CurveKey { time: t1 - 0.0001, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant });
+    }
+    keys.push(CurveKey { time: 1.0, value: 1.0, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Constant });
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+fn curve_random_walk() -> Curve {
+    let n = 12usize;
+    let mut val = 0.5f32;
+    let mut keys = vec![];
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        keys.push(CurveKey { time: t, value: val.clamp(0.0, 1.0), in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth });
+        let hash = ((t * 73.1 + 17.3).sin() * 43758.5453).fract();
+        val += (hash - 0.5) * 0.3;
+        val = val.clamp(0.0, 1.0);
+    }
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+// Curve math utilities
+pub fn curve_integrate(curve: &Curve, t0: f32, t1: f32) -> f32 {
+    let n = 64usize;
+    let h = (t1 - t0) / n as f32;
+    let mut sum = curve.evaluate(t0) + curve.evaluate(t1);
+    for i in 1..n { let t = t0 + i as f32 * h; let w = if i % 2 == 0 { 2.0 } else { 4.0 }; sum += w * curve.evaluate(t); }
+    sum * h / 3.0
+}
+
+pub fn curve_find_root(curve: &Curve, target: f32) -> f32 {
+    let mut lo = 0.0f32; let mut hi = 1.0f32;
+    for _ in 0..48 { let mid = (lo + hi) * 0.5; if curve.evaluate(mid) < target { lo = mid; } else { hi = mid; } }
+    (lo + hi) * 0.5
+}
+
+pub fn curve_invert(curve: &Curve) -> Curve {
+    let n = 32usize;
+    let keys: Vec<CurveKey> = (0..=n).map(|i| { let v = i as f32 / n as f32; let t = curve_find_root(curve, v); CurveKey { time: v, value: t, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect();
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+pub fn curve_sample_uniform(curve: &Curve, n: usize) -> Vec<(f32, f32)> {
+    (0..=n).map(|i| { let t = i as f32 / n as f32; (t, curve.evaluate(t)) }).collect()
+}
+
+pub fn curve_value_range(curve: &Curve) -> (f32, f32) {
+    let (mut mn, mut mx) = (f32::MAX, f32::MIN);
+    for i in 0..=64 { let v = curve.evaluate(i as f32 / 64.0); if v < mn { mn = v; } if v > mx { mx = v; } }
+    (mn, mx)
+}
+
+pub fn curve_arc_length(curve: &Curve) -> f32 {
+    let n = 64usize; let mut len = 0.0f32; let mut pt = 0.0f32; let mut pv = curve.evaluate(0.0);
+    for i in 1..=n { let t = i as f32 / n as f32; let v = curve.evaluate(t); len += ((t-pt)*(t-pt)+(v-pv)*(v-pv)).sqrt(); pt = t; pv = v; }
+    len
+}
+
+pub fn curve_blend(a: &Curve, b: &Curve, weight: f32) -> Curve {
+    let n = 32usize;
+    let keys: Vec<CurveKey> = (0..=n).map(|i| { let t = i as f32 / n as f32; let v = lerp(a.evaluate(t), b.evaluate(t), weight); CurveKey { time: t, value: v, in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect();
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+pub fn curve_add(a: &Curve, b: &Curve) -> Curve {
+    let n = 32usize;
+    let keys: Vec<CurveKey> = (0..=n).map(|i| { let t = i as f32 / n as f32; CurveKey { time: t, value: a.evaluate(t) + b.evaluate(t), in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect();
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+pub fn curve_multiply(a: &Curve, b: &Curve) -> Curve {
+    let n = 32usize;
+    let keys: Vec<CurveKey> = (0..=n).map(|i| { let t = i as f32 / n as f32; CurveKey { time: t, value: a.evaluate(t) * b.evaluate(t), in_tangent: 0.0, out_tangent: 0.0, interpolation: Interpolation::Smooth } }).collect();
+    Curve { keys, keys2: vec![], mode: CurveMode::Curve, multiplier: 1.0 }
+}
+
+pub fn show_curve_comparison(ui: &mut egui::Ui, curves: &[(&str, &Curve)], width: f32, height: f32) {
+    ui.label("Curve Comparison:");
+    let (rect, _resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, Color32::from_gray(20));
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Outside);
+    for i in 0..=4 {
+        let gx = rect.min.x + i as f32 / 4.0 * rect.width();
+        let gy = rect.min.y + i as f32 / 4.0 * rect.height();
+        painter.line_segment([Pos2::new(gx, rect.min.y), Pos2::new(gx, rect.max.y)], Stroke::new(0.5, Color32::from_gray(35)));
+        painter.line_segment([Pos2::new(rect.min.x, gy), Pos2::new(rect.max.x, gy)], Stroke::new(0.5, Color32::from_gray(35)));
+    }
+    let palette = [Color32::from_rgb(255,100,100), Color32::from_rgb(100,255,100), Color32::from_rgb(100,150,255), Color32::from_rgb(255,200,50), Color32::from_rgb(200,100,255), Color32::from_rgb(100,220,220)];
+    let n = 80usize;
+    for (ci, (name, curve)) in curves.iter().enumerate() {
+        let color = palette[ci % palette.len()];
+        let mut prev: Option<Pos2> = None;
+        for s in 0..=n {
+            let t = s as f32 / n as f32;
+            let v = curve.evaluate(t).clamp(0.0, 1.0);
+            let pt = Pos2::new(rect.min.x + t * rect.width(), rect.max.y - v * rect.height());
+            if let Some(pp) = prev { painter.line_segment([pp, pt], Stroke::new(1.5, color)); }
+            prev = Some(pt);
+        }
+        let ly = rect.min.y + 5.0 + ci as f32 * 14.0;
+        painter.line_segment([Pos2::new(rect.min.x + 5.0, ly + 5.0), Pos2::new(rect.min.x + 20.0, ly + 5.0)], Stroke::new(2.0, color));
+        painter.text(Pos2::new(rect.min.x + 24.0, ly), egui::Align2::LEFT_TOP, *name, FontId::proportional(10.0), color);
+    }
+}
+
+// =============================================================================
+// VFX COMPOSITION LAYER
+// =============================================================================
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LayerBlendMode { Additive, AlphaBlend, Multiply, Screen, Overlay, SoftLight, HardLight }
+
+impl Default for LayerBlendMode { fn default() -> Self { LayerBlendMode::AlphaBlend } }
+
+impl LayerBlendMode {
+    pub fn label(&self) -> &str {
+        match self {
+            LayerBlendMode::Additive => "Additive", LayerBlendMode::AlphaBlend => "Alpha Blend",
+            LayerBlendMode::Multiply => "Multiply", LayerBlendMode::Screen => "Screen",
+            LayerBlendMode::Overlay => "Overlay", LayerBlendMode::SoftLight => "Soft Light",
+            LayerBlendMode::HardLight => "Hard Light",
+        }
+    }
+    pub fn all() -> &'static [LayerBlendMode] {
+        &[LayerBlendMode::AlphaBlend, LayerBlendMode::Additive, LayerBlendMode::Multiply, LayerBlendMode::Screen, LayerBlendMode::Overlay, LayerBlendMode::SoftLight, LayerBlendMode::HardLight]
+    }
+
+    pub fn blend_colors(&self, bg: [f32; 4], fg: [f32; 4]) -> [f32; 4] {
+        let fa = fg[3];
+        match self {
+            LayerBlendMode::AlphaBlend => [lerp(bg[0],fg[0],fa), lerp(bg[1],fg[1],fa), lerp(bg[2],fg[2],fa), bg[3] + fa*(1.0-bg[3])],
+            LayerBlendMode::Additive => [(bg[0]+fg[0]*fa).min(1.0), (bg[1]+fg[1]*fa).min(1.0), (bg[2]+fg[2]*fa).min(1.0), bg[3]],
+            LayerBlendMode::Multiply => [lerp(bg[0],bg[0]*fg[0],fa), lerp(bg[1],bg[1]*fg[1],fa), lerp(bg[2],bg[2]*fg[2],fa), bg[3]],
+            LayerBlendMode::Screen => {
+                let s = |b: f32, f: f32| 1.0 - (1.0-b)*(1.0-f);
+                [lerp(bg[0],s(bg[0],fg[0]),fa), lerp(bg[1],s(bg[1],fg[1]),fa), lerp(bg[2],s(bg[2],fg[2]),fa), bg[3]]
+            }
+            LayerBlendMode::Overlay => {
+                let o = |b: f32, f: f32| if b < 0.5 { 2.0*b*f } else { 1.0 - 2.0*(1.0-b)*(1.0-f) };
+                [lerp(bg[0],o(bg[0],fg[0]),fa), lerp(bg[1],o(bg[1],fg[1]),fa), lerp(bg[2],o(bg[2],fg[2]),fa), bg[3]]
+            }
+            LayerBlendMode::SoftLight => {
+                let sl = |b: f32, f: f32| { if f < 0.5 { b - (1.0-2.0*f)*b*(1.0-b) } else { b + (2.0*f-1.0)*(if b < 0.25 { ((16.0*b-12.0)*b+4.0)*b } else { b.sqrt() } - b) } };
+                [lerp(bg[0],sl(bg[0],fg[0]),fa), lerp(bg[1],sl(bg[1],fg[1]),fa), lerp(bg[2],sl(bg[2],fg[2]),fa), bg[3]]
+            }
+            LayerBlendMode::HardLight => {
+                let hl = |b: f32, f: f32| if f < 0.5 { 2.0*b*f } else { 1.0 - 2.0*(1.0-b)*(1.0-f) };
+                [lerp(bg[0],hl(bg[0],fg[0]),fa), lerp(bg[1],hl(bg[1],fg[1]),fa), lerp(bg[2],hl(bg[2],fg[2]),fa), bg[3]]
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum VfxLayerEffect {
+    ColorGrade { hue_shift: f32, saturation: f32, brightness: f32, contrast: f32 },
+    Bloom { threshold: f32, intensity: f32, scatter: f32 },
+    ChromaticAberration { intensity: f32 },
+    MotionBlur { strength: f32, samples: u32 },
+    DepthOfField { focal_distance: f32, aperture: f32, focal_length: f32 },
+}
+
+impl VfxLayerEffect {
+    pub fn label(&self) -> &str {
+        match self {
+            VfxLayerEffect::ColorGrade { .. } => "Color Grade",
+            VfxLayerEffect::Bloom { .. } => "Bloom",
+            VfxLayerEffect::ChromaticAberration { .. } => "Chromatic Aberration",
+            VfxLayerEffect::MotionBlur { .. } => "Motion Blur",
+            VfxLayerEffect::DepthOfField { .. } => "Depth of Field",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VfxLayer {
+    pub name: String, pub systems: Vec<usize>,
+    pub blend_mode: LayerBlendMode, pub opacity: f32, pub visible: bool,
+    pub solo: bool, pub locked: bool, pub color: [f32; 3], pub effects: Vec<VfxLayerEffect>,
+}
+
+impl Default for VfxLayer {
+    fn default() -> Self {
+        VfxLayer {
+            name: String::from("Layer"), systems: vec![],
+            blend_mode: LayerBlendMode::AlphaBlend, opacity: 1.0, visible: true,
+            solo: false, locked: false, color: [0.5, 0.5, 1.0], effects: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct VfxCompositor {
+    pub layers: Vec<VfxLayer>,
+    pub global_opacity: f32,
+    pub preview_composition: bool,
+}
+
+impl VfxCompositor {
+    pub fn new() -> Self {
+        VfxCompositor { layers: vec![VfxLayer { name: String::from("Base Layer"), ..Default::default() }], global_opacity: 1.0, preview_composition: true }
+    }
+
+    pub fn add_layer(&mut self, name: &str) -> usize {
+        let idx = self.layers.len();
+        self.layers.push(VfxLayer { name: name.to_string(), ..Default::default() });
+        idx
+    }
+
+    pub fn remove_layer(&mut self, idx: usize) { if idx < self.layers.len() { self.layers.remove(idx); } }
+    pub fn move_layer_up(&mut self, idx: usize) { if idx > 0 { self.layers.swap(idx - 1, idx); } }
+    pub fn move_layer_down(&mut self, idx: usize) { if idx + 1 < self.layers.len() { self.layers.swap(idx, idx + 1); } }
+
+    pub fn visible_layers(&self) -> impl Iterator<Item = (usize, &VfxLayer)> {
+        let any_solo = self.layers.iter().any(|l| l.solo);
+        self.layers.iter().enumerate().filter(move |(_, l)| if any_solo { l.solo && l.visible } else { l.visible })
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, total_systems: usize) {
+        ui.heading("VFX Composition");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Global Opacity:");
+            ui.add(egui::Slider::new(&mut self.global_opacity, 0.0..=1.0).text(""));
+            ui.checkbox(&mut self.preview_composition, "Preview");
+        });
+        ui.separator();
+        if ui.button("+ Add Layer").clicked() {
+            let n = format!("Layer {}", self.layers.len());
+            self.add_layer(&n);
+        }
+        let mut action: Option<(usize, u8)> = None;
+        egui::ScrollArea::vertical().id_source("vfx_comp_scroll").show(ui, |ui| {
+            for i in 0..self.layers.len() {
+                ui.push_id(i, |ui| {
+                    let layer_color = {
+                        let c = &self.layers[i].color;
+                        Color32::from_rgb((c[0]*200.0+55.0) as u8, (c[1]*200.0+55.0) as u8, (c[2]*200.0+55.0) as u8)
+                    };
+                    ui.horizontal(|ui| {
+                        let vis_char = if self.layers[i].visible { "O" } else { "_" };
+                        if ui.small_button(vis_char).clicked() { self.layers[i].visible = !self.layers[i].visible; }
+                        let solo_col = if self.layers[i].solo { Color32::YELLOW } else { Color32::from_gray(120) };
+                        if ui.add(egui::Button::new(egui::RichText::new("S").color(solo_col)).small()).clicked() { self.layers[i].solo = !self.layers[i].solo; }
+                        let lock_char = if self.layers[i].locked { "L" } else { "U" };
+                        if ui.small_button(lock_char).clicked() { self.layers[i].locked = !self.layers[i].locked; }
+                        ui.colored_label(layer_color, &self.layers[i].name.clone());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("X").clicked() { action = Some((i, 0)); }
+                            if ui.small_button("v").clicked() { action = Some((i, 2)); }
+                            if ui.small_button("^").clicked() { action = Some((i, 1)); }
+                        });
+                    });
+                    if !self.layers[i].locked {
+                        egui::CollapsingHeader::new(format!("  Layer {} Settings", i)).default_open(false).show(ui, |ui| {
+                            ui.horizontal(|ui| { ui.label("Name:"); ui.text_edit_singleline(&mut self.layers[i].name); });
+                            ui.horizontal(|ui| {
+                                ui.label("Blend:");
+                                egui::ComboBox::from_id_source(format!("layer_blend_{}", i)).selected_text(self.layers[i].blend_mode.label()).show_ui(ui, |ui| {
+                                    for m in LayerBlendMode::all() { ui.selectable_value(&mut self.layers[i].blend_mode, m.clone(), m.label()); }
+                                });
+                            });
+                            ui.horizontal(|ui| { ui.label("Opacity:"); ui.add(egui::Slider::new(&mut self.layers[i].opacity, 0.0..=1.0)); });
+                            ui.separator();
+                            ui.label(format!("Systems ({} available):", total_systems));
+                            for sys_idx in 0..total_systems {
+                                let is_in = self.layers[i].systems.contains(&sys_idx);
+                                let mut enabled = is_in;
+                                if ui.checkbox(&mut enabled, format!("System {}", sys_idx)).changed() {
+                                    if enabled { self.layers[i].systems.push(sys_idx); }
+                                    else { self.layers[i].systems.retain(|&s| s != sys_idx); }
+                                }
+                            }
+                            ui.separator();
+                            ui.label("Post Effects:");
+                            let mut eff_remove = None;
+                            for (ei, eff) in self.layers[i].effects.iter_mut().enumerate() {
+                                ui.push_id(ei, |ui| {
+                                    egui::CollapsingHeader::new(eff.label()).default_open(false).show(ui, |ui| {
+                                        match eff {
+                                            VfxLayerEffect::ColorGrade { hue_shift, saturation, brightness, contrast } => {
+                                                ui.horizontal(|ui| { ui.label("Hue:"); ui.add(egui::DragValue::new(hue_shift).speed(1.0).range(-180.0..=180.0)); ui.label("deg"); });
+                                                ui.horizontal(|ui| { ui.label("Sat:"); ui.add(egui::Slider::new(saturation, 0.0..=2.0)); });
+                                                ui.horizontal(|ui| { ui.label("Bright:"); ui.add(egui::Slider::new(brightness, 0.0..=2.0)); });
+                                                ui.horizontal(|ui| { ui.label("Contrast:"); ui.add(egui::Slider::new(contrast, 0.0..=2.0)); });
+                                            }
+                                            VfxLayerEffect::Bloom { threshold, intensity, scatter } => {
+                                                ui.horizontal(|ui| { ui.label("Threshold:"); ui.add(egui::Slider::new(threshold, 0.0..=1.0)); });
+                                                ui.horizontal(|ui| { ui.label("Intensity:"); ui.add(egui::Slider::new(intensity, 0.0..=5.0)); });
+                                                ui.horizontal(|ui| { ui.label("Scatter:"); ui.add(egui::Slider::new(scatter, 0.0..=1.0)); });
+                                            }
+                                            VfxLayerEffect::ChromaticAberration { intensity } => {
+                                                ui.horizontal(|ui| { ui.label("Intensity:"); ui.add(egui::Slider::new(intensity, 0.0..=1.0)); });
+                                            }
+                                            VfxLayerEffect::MotionBlur { strength, samples } => {
+                                                ui.horizontal(|ui| { ui.label("Strength:"); ui.add(egui::Slider::new(strength, 0.0..=1.0)); });
+                                                ui.horizontal(|ui| { ui.label("Samples:"); ui.add(egui::DragValue::new(samples).speed(1.0).range(2..=32)); });
+                                            }
+                                            VfxLayerEffect::DepthOfField { focal_distance, aperture, focal_length } => {
+                                                ui.horizontal(|ui| { ui.label("Focus:"); ui.add(egui::DragValue::new(focal_distance).speed(0.1)); });
+                                                ui.horizontal(|ui| { ui.label("Aperture:"); ui.add(egui::Slider::new(aperture, 0.1..=32.0)); });
+                                                ui.horizontal(|ui| { ui.label("Focal Length:"); ui.add(egui::DragValue::new(focal_length).speed(1.0).range(10.0..=200.0)); });
+                                            }
+                                        }
+                                        if ui.small_button("Remove Effect").clicked() { eff_remove = Some(ei); }
+                                    });
+                                });
+                            }
+                            if let Some(ei) = eff_remove { self.layers[i].effects.remove(ei); }
+                            ui.horizontal(|ui| {
+                                if ui.small_button("+ Color Grade").clicked() { self.layers[i].effects.push(VfxLayerEffect::ColorGrade { hue_shift: 0.0, saturation: 1.0, brightness: 1.0, contrast: 1.0 }); }
+                                if ui.small_button("+ Bloom").clicked() { self.layers[i].effects.push(VfxLayerEffect::Bloom { threshold: 0.8, intensity: 1.0, scatter: 0.7 }); }
+                                if ui.small_button("+ Motion Blur").clicked() { self.layers[i].effects.push(VfxLayerEffect::MotionBlur { strength: 0.3, samples: 8 }); }
+                                if ui.small_button("+ Chroma Ab").clicked() { self.layers[i].effects.push(VfxLayerEffect::ChromaticAberration { intensity: 0.1 }); }
+                            });
+                        });
+                    }
+                    ui.separator();
+                });
+            }
+        });
+        if let Some((idx, op)) = action {
+            match op { 0 => self.remove_layer(idx), 1 => self.move_layer_up(idx), 2 => self.move_layer_down(idx), _ => {} }
+        }
+    }
+}
+
+// =============================================================================
+// PARTICLE SYSTEM EXTENSIONS CONTAINER
+// =============================================================================
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ParticleSystemExtensions {
+    pub ribbon_emitter: RibbonEmitter,
+    pub trail_renderer: TrailRenderer,
+    pub mesh_particle: MeshParticle,
+    pub sub_emitter_configs: Vec<SubEmitterConfig>,
+    pub force_field: ForceFieldModule,
+    pub collision_2d: CollisionModule2D,
+    pub attractor: AttractorModule,
+    pub lod: ParticleLod,
+    pub event_system: ParticleEventSystem,
+}
+
+impl ParticleSystemExtensions {
+    pub fn new() -> Self { ParticleSystemExtensions::default() }
+
+    pub fn show_all_modules(&mut self, ui: &mut egui::Ui, system_names: &[String], sub_emitter_graph: &mut SubEmitterGraph) {
+        show_ribbon_emitter_ui(ui, &mut self.ribbon_emitter);
+        show_trail_renderer_ui(ui, &mut self.trail_renderer);
+        show_mesh_particle_ui(ui, &mut self.mesh_particle);
+        show_sub_emitters_ui(ui, &mut self.sub_emitter_configs, system_names, sub_emitter_graph);
+        show_force_field_module_ui(ui, &mut self.force_field);
+        show_collision_module_2d_ui(ui, &mut self.collision_2d);
+        show_attractor_module_ui(ui, &mut self.attractor);
+        show_particle_lod_ui(ui, &mut self.lod);
+        show_particle_event_system_ui(ui, &mut self.event_system);
+    }
+}
+
+/// Global extended preview state: ribbons, compositor, curve library, sub-emitter graph.
+pub struct ParticleExtendedPreviewState {
+    pub ribbon_state: RibbonPreviewState,
+    pub compositor: VfxCompositor,
+    pub sub_emitter_graph: SubEmitterGraph,
+    pub curve_comparison_curves: Vec<(String, Curve)>,
+    pub show_curve_library: bool,
+    pub show_compositor: bool,
+    pub show_sub_emitter_graph: bool,
+}
+
+impl ParticleExtendedPreviewState {
+    pub fn new() -> Self {
+        ParticleExtendedPreviewState {
+            ribbon_state: RibbonPreviewState::new(),
+            compositor: VfxCompositor::new(),
+            sub_emitter_graph: SubEmitterGraph::new(),
+            curve_comparison_curves: vec![
+                ("Linear".into(), Curve::linear_zero_to_one()),
+                ("Bounce".into(), curve_bounce()),
+                ("Elastic".into(), curve_elastic()),
+            ],
+            show_curve_library: false, show_compositor: false, show_sub_emitter_graph: false,
+        }
+    }
+
+    pub fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.toggle_value(&mut self.show_curve_library, "Curves");
+            ui.toggle_value(&mut self.show_compositor, "Compositor");
+            ui.toggle_value(&mut self.show_sub_emitter_graph, "Sub-Emitters");
+        });
+    }
+
+    pub fn show_panels(&mut self, ui: &mut egui::Ui, extensions: &mut ParticleSystemExtensions) {
+        if self.show_curve_library {
+            egui::CollapsingHeader::new("Curve Library").default_open(true).show(ui, |ui| {
+                let presets = all_curve_presets();
+                let refs: Vec<(&str, &Curve)> = presets.iter().map(|(n, c)| (*n, c)).collect();
+                let comp_refs: Vec<(&str, &Curve)> = self.curve_comparison_curves.iter().map(|(n, c)| (n.as_str(), c)).collect();
+                show_curve_comparison(ui, &comp_refs, 300.0, 80.0);
+                ui.separator();
+                ui.label("Curve Math:");
+                ui.horizontal(|ui| {
+                    if ui.small_button("Integrate Bounce [0,1]").clicked() {
+                        let area = curve_integrate(&curve_bounce(), 0.0, 1.0);
+                        ui.label(format!("Area = {:.4}", area));
+                    }
+                    if ui.small_button("Invert Bell").clicked() {
+                        let _inv = curve_invert(&curve_bell());
+                    }
+                    if ui.small_button("Add to Compare").clicked() {
+                        self.curve_comparison_curves.push(("Bell".into(), curve_bell()));
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().id_source("curve_lib_extended").max_height(200.0).show(ui, |ui| {
+                    for (name, curve) in &refs {
+                        ui.horizontal(|ui| {
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(60.0, 18.0), egui::Sense::click());
+                            draw_curve_mini(ui.painter(), rect, curve);
+                            if resp.hovered() { ui.painter().rect_stroke(rect, 1.0, Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Outside); }
+                            ui.label(egui::RichText::new(*name).size(10.0));
+                            if resp.double_clicked() {
+                                let owned = name.to_string();
+                                if !self.curve_comparison_curves.iter().any(|(n, _)| n == &owned) {
+                                    self.curve_comparison_curves.push((owned, (*curve).clone()));
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        }
+        if self.show_compositor {
+            egui::CollapsingHeader::new("VFX Compositor").default_open(true).show(ui, |ui| {
+                self.compositor.show(ui, 0);
+            });
+        }
+        if self.show_sub_emitter_graph {
+            egui::CollapsingHeader::new("Sub-Emitter Graph").default_open(true).show(ui, |ui| {
+                self.sub_emitter_graph.show(ui);
+            });
+        }
+        let _ = extensions;
+    }
+
+    pub fn tick(&mut self, dt: f32, extensions: &ParticleSystemExtensions, canvas_origin: [f32; 2]) {
+        self.ribbon_state.tick(dt, &extensions.ribbon_emitter, canvas_origin);
+    }
+
+    pub fn draw_preview_overlays(
+        &self,
+        painter: &Painter,
+        canvas_rect: Rect,
+        world_to_canvas: impl Fn([f32; 2]) -> Pos2 + Copy,
+        extensions: &ParticleSystemExtensions,
+    ) {
+        self.ribbon_state.draw(painter, canvas_rect);
+        extensions.force_field.draw_preview(painter, canvas_rect, world_to_canvas);
+        draw_collision_planes_preview(painter, canvas_rect, &extensions.collision_2d.planes, world_to_canvas);
+        extensions.attractor.draw_preview(painter, world_to_canvas);
     }
 }
