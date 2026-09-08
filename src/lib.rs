@@ -117,6 +117,9 @@ pub struct ProofEngine {
     pub scene: SceneGraph,
     pub camera: ProofCamera,
     pub input: InputState,
+    /// Screen-space UI, in pixel coordinates. Cleared at the start of every
+    /// frame by `run_ui`, so games redraw it immediate-mode style.
+    pub ui: render::ui_layer::UiLayer,
     /// Optional audio engine — None if no output device is available.
     pub audio: Option<audio::AudioEngine>,
     // Internal render pipeline (initialized lazily when run() is called)
@@ -134,6 +137,10 @@ impl ProofEngine {
             camera: ProofCamera::new(&config),
             scene: SceneGraph::new(),
             input: InputState::new(),
+            ui: render::ui_layer::UiLayer::new(
+                config.window_width as f32,
+                config.window_height as f32,
+            ),
             audio,
             config,
             pipeline: None,
@@ -207,6 +214,70 @@ impl ProofEngine {
             }
 
             // Swap
+            if let Some(ref mut p) = self.pipeline {
+                if !p.swap() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Run a UI-driven game.
+    ///
+    /// Unlike [`run`], `update` is called *before* the scene is drawn, and the
+    /// screen-space `ui` layer is painted afterwards. That ordering matters for
+    /// a game: what you push this frame is what appears this frame, rather than
+    /// showing up one frame late.
+    ///
+    /// The UI layer is cleared before each `update`, so games redraw it in full
+    /// every frame instead of tracking what to erase.
+    pub fn run_ui<F>(&mut self, mut update: F)
+    where
+        F: FnMut(&mut ProofEngine, f32),
+    {
+        let pipeline = render::Pipeline::init(&self.config);
+        self.pipeline = Some(pipeline);
+
+        // Size the UI layer from the framebuffer, which is what the viewport
+        // uses; the window's own size can differ on a scaled display.
+        let (w, h) = self.render_size();
+        self.ui.resize(w as f32, h as f32);
+
+        let mut last = std::time::Instant::now();
+        let mut last_size = (w, h);
+        loop {
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last).as_secs_f32().min(0.1);
+            last = now;
+
+            if let Some(ref mut p) = self.pipeline {
+                if !p.poll_events(&mut self.input) {
+                    break;
+                }
+            }
+
+            // Keep the UI projection matched to the framebuffer.
+            let size = self.render_size();
+            if size != last_size {
+                last_size = size;
+                self.ui.resize(size.0 as f32, size.1 as f32);
+            }
+
+            self.scene.tick(dt);
+
+            // Game logic and UI construction, both before anything is drawn.
+            self.ui.begin_frame();
+            update(self, dt);
+
+            if let Some(ref mut p) = self.pipeline {
+                p.update_render_config(&self.config.render);
+                p.render(&self.scene, &self.camera);
+            }
+            // Painted after post-processing so the HUD stays sharp.
+            if let Some(ref mut p) = self.pipeline {
+                p.render_ui(&self.ui);
+            }
+
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {
                     break;
@@ -295,6 +366,14 @@ impl ProofEngine {
     /// Get the current window size in pixels.
     pub fn window_size(&self) -> (u32, u32) {
         self.pipeline.as_ref().map(|p| p.window_size()).unwrap_or((1600, 1000))
+    }
+
+    /// The framebuffer size, in the same units the viewport uses.
+    ///
+    /// Screen-space UI must lay out against this, not the window size: on a
+    /// scaled display the two differ and the UI ends up magnified.
+    pub fn render_size(&self) -> (u32, u32) {
+        self.pipeline.as_ref().map(|p| p.render_size()).unwrap_or((1600, 1000))
     }
 }
 

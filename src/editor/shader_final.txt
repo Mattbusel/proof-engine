@@ -1,0 +1,131 @@
+
+// ── Shader Keyword & Identifier Utilities ─────────────────────────────────────
+
+pub fn all_glsl_keywords() -> &'static [&'static str] {
+    &[
+        "attribute", "const", "uniform", "varying", "break", "continue", "do", "for", "while",
+        "if", "else", "in", "out", "inout", "float", "int", "uint", "void", "bool", "true",
+        "false", "lowp", "mediump", "highp", "precision", "invariant", "discard", "return",
+        "mat2", "mat3", "mat4", "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
+        "mat4x2", "mat4x3", "mat4x4", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "bvec2", "bvec3", "bvec4", "uvec2", "uvec3", "uvec4", "sampler2D", "sampler3D",
+        "samplerCube", "sampler2DShadow", "samplerCubeShadow", "sampler2DArray",
+        "sampler2DArrayShadow", "isampler2D", "isampler3D", "isamplerCube", "isampler2DArray",
+        "usampler2D", "usampler3D", "usamplerCube", "usampler2DArray", "struct", "layout",
+        "centroid", "flat", "smooth", "case", "default", "switch",
+    ]
+}
+
+pub fn all_glsl_builtin_functions() -> &'static [&'static str] {
+    &[
+        "radians", "degrees", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh",
+        "tanh", "asinh", "acosh", "atanh", "pow", "exp", "log", "exp2", "log2", "sqrt",
+        "inversesqrt", "abs", "sign", "floor", "trunc", "round", "roundEven", "ceil", "fract",
+        "mod", "modf", "min", "max", "clamp", "mix", "step", "smoothstep", "isnan", "isinf",
+        "floatBitsToInt", "floatBitsToUint", "intBitsToFloat", "uintBitsToFloat", "packSnorm2x16",
+        "unpackSnorm2x16", "packUnorm2x16", "unpackUnorm2x16", "packHalf2x16", "unpackHalf2x16",
+        "length", "distance", "dot", "cross", "normalize", "faceforward", "reflect", "refract",
+        "matrixCompMult", "outerProduct", "transpose", "determinant", "inverse",
+        "lessThan", "lessThanEqual", "greaterThan", "greaterThanEqual", "equal", "notEqual",
+        "any", "all", "not",
+        "textureSize", "texture", "textureProj", "textureLod", "textureOffset", "texelFetch",
+        "texelFetchOffset", "textureProjOffset", "textureLodOffset", "textureProjLod",
+        "textureProjLodOffset", "textureGrad", "textureGradOffset", "textureProjGrad",
+        "textureProjGradOffset", "dFdx", "dFdy", "fwidth", "emit", "endPrimitive",
+        "barrier", "memoryBarrier", "groupMemoryBarrier", "atomicAdd", "atomicMin", "atomicMax",
+        "atomicAnd", "atomicOr", "atomicXor", "atomicExchange", "atomicCompSwap",
+    ]
+}
+
+pub fn glsl_keyword_count() -> usize { all_glsl_keywords().len() }
+pub fn glsl_builtin_function_count() -> usize { all_glsl_builtin_functions().len() }
+pub fn is_glsl_keyword(s: &str) -> bool { all_glsl_keywords().contains(&s) }
+pub fn is_glsl_builtin(s: &str) -> bool { all_glsl_builtin_functions().contains(&s) }
+
+// ── Shader Compiler Module Registry ──────────────────────────────────────────
+
+pub fn shader_compiler_module_list() -> &'static [&'static str] {
+    &[
+        "ShaderProgram", "ShaderProgramRegistry", "ShaderDataType", "ShaderVariable",
+        "ShaderQualifier", "ShaderFunction", "ShaderStruct", "ShaderDiagnostic",
+        "DiagnosticList", "ShaderPreprocessor", "UniformBlock", "PipelineState",
+        "BlendFactor", "BlendOp", "CompareFunc", "CullMode", "FrontFace", "PolygonMode",
+        "ShaderExpr", "BinaryOp", "UnaryOp", "ShaderStmt", "ShaderCodeGen", "CodeGenTarget",
+        "ShaderOptimizer", "OptimizationLevel", "ShaderCacheEntry", "ShaderCache",
+        "ShaderTemplate", "ShaderTemplateLibrary", "ShaderFileWatcher", "ShaderVariant",
+        "ShaderVariantCollection", "ShaderIncludeResolver", "Material", "MaterialTexture",
+        "MaterialProperty", "SamplerType", "MaterialLibrary", "RenderPass", "RenderPassType",
+        "ColorAttachment", "DepthAttachment", "AttachmentFormat", "LoadOp", "StoreOp",
+        "RenderPipeline", "PostProcessEffect", "PostEffectType", "PostProcessStack",
+        "TextureDescriptor", "TextureRegistry", "SamplerDescriptor", "VertexAttribute",
+        "VertexFormat", "VertexLayout", "GpuBuffer", "BufferUsage", "BufferAccess",
+        "BufferRegistry", "ComputePass", "ComputeBinding", "ComputeResourceType",
+        "GpuMemoryBudget", "RenderStatistics", "LightingModel", "LightingModelType",
+        "ShaderLibrary", "ShaderDebugOutput", "ShaderDebugger", "ShaderProfileEntry",
+        "ShaderProfiler", "HotReloadManager", "ShaderPermutationKey", "ShaderPermutationRegistry",
+        "ShaderBindingLayout", "DescriptorBinding", "DescriptorType", "ShaderStage",
+        "PipelineLayout", "CompilePipelineConfig", "CompileResult", "ShaderEditorState",
+        "AutoCompleteItem", "AutoCompleteKind", "AutoCompleteProvider", "ShaderInterface",
+        "ShaderLinker", "ShaderExportOptions", "ShaderExportFormat", "ShaderExportResult",
+        "LintRule", "ShaderLinter", "ShaderFormatterConfig", "BraceStyle", "ShaderFormatter",
+        "UniformTracker", "ShaderErrorReport", "RenderFeatureFlags", "ShaderCompilationContext",
+        "ShaderBundle", "ShaderBundleRegistry", "ShaderWorkspace", "RenderGraphNode",
+        "RenderGraphNodeType", "RenderGraphResource", "RenderGraphResourceType", "RenderGraph",
+        "ShaderCompilerMain", "CompileStats", "ColorGradingSettings", "ToneMappingMode",
+        "SsaoConfig", "SsaoQuality", "DepthOfFieldConfig", "BloomConfig", "BloomMode",
+        "SsrConfig", "TaaConfig", "VolumetricFogConfig", "LensFlareConfig",
+        "FullPostProcessConfig", "RenderQualityPreset", "InstanceData", "InstanceBatch",
+        "InstanceBatchManager", "OcclusionQuery", "OcclusionCullSystem", "RenderStateTracker",
+        "ShadowMapAtlasEntry", "ShadowMapAtlas", "MotionBlurConfig", "VignetteConfig",
+        "ChromaticAberrationConfig", "FilmGrainConfig", "AntiAliasingConfig", "AntiAliasingMode",
+        "ExtendedPostProcessConfig", "GpuProgramLifecycle", "GpuProgramState",
+        "InputAssemblerConfig", "PrimitiveTopology", "StencilConfig", "StencilOp",
+        "ViewportConfig", "RasterizerState", "GraphicsPipelineDescriptor", "RenderTargetSet",
+        "RenderTargetManager", "FrameGraphExecutor", "ShaderCompilerStats", "ShaderManager",
+        "GlslIntrinsicDoc", "GeometryShaderConfig", "GeometryPrimitive", "TessellationConfig",
+        "TessSpacing", "TessWinding", "TessPrimitive", "WireframeConfig", "ShaderFallback",
+        "ShaderSystemState",
+    ]
+}
+
+pub fn shader_module_count() -> usize { shader_compiler_module_list().len() }
+
+pub fn supported_render_apis() -> &'static [&'static str] {
+    &["Vulkan", "Metal", "DirectX12", "DirectX11", "OpenGL", "WebGPU", "OpenGLES"]
+}
+
+pub fn shader_system_version() -> &'static str { "2.0.0" }
+
+pub const SHADER_MAX_PROGRAMS: usize = 4096;
+pub const SHADER_MAX_MATERIALS: usize = 8192;
+pub const SHADER_MAX_TEXTURES: usize = 16384;
+pub const SHADER_MAX_BUFFERS: usize = 2048;
+pub const SHADER_MAX_SAMPLERS: usize = 2048;
+pub const SHADER_MAX_VARIANTS_PER_PROGRAM: usize = 256;
+pub const SHADER_MAX_DEFINES: usize = 128;
+pub const SHADER_MAX_INCLUDE_DEPTH: usize = 16;
+pub const SHADER_BUILTIN_SNIPPETS: usize = 8;
+pub const SHADER_GLSL_BUILTIN_FUNCTIONS: usize = 80;
+pub const RENDER_QUALITY_PRESET_COUNT: usize = 5;
+pub const SHADER_MAX_UNIFORM_BLOCKS: usize = 16;
+pub const SHADER_MAX_VERTEX_ATTRIBUTES: usize = 16;
+pub const SHADER_MAX_COLOR_ATTACHMENTS: usize = 8;
+pub const SHADER_MAX_COMPUTE_BINDINGS: usize = 32;
+pub const SHADER_MAX_RENDER_PASSES: usize = 64;
+pub const SHADER_CACHE_MAX_ENTRIES: usize = 1024;
+pub const SHADER_PROFILE_MAX_ENTRIES: usize = 512;
+pub const HOT_RELOAD_POLL_INTERVAL_MS: u64 = 500;
+pub const SHADER_MAX_LINTER_RULES: usize = 64;
+pub const SHADER_FORMATTER_MAX_LINE_LENGTH: usize = 120;
+pub const SHADER_MAX_EXPORT_FORMATS: usize = 8;
+
+pub fn shader_compiler_full_info() -> String {
+    format!(
+        "ShaderCompilerEditor v{} — {} modules, {} render APIs, {} GLSL keywords, {} GLSL builtins",
+        shader_system_version(),
+        shader_module_count(),
+        supported_render_apis().len(),
+        glsl_keyword_count(),
+        glsl_builtin_function_count(),
+    )
+}

@@ -1,0 +1,157 @@
+
+// ── Shader Input Assembler ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct InputAssemblerConfig {
+    pub topology: PrimitiveTopology,
+    pub restart_enabled: bool,
+    pub restart_index: u32,
+    pub vertex_layout: VertexLayout,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimitiveTopology { PointList, LineList, LineStrip, TriangleList, TriangleStrip, TriangleFan, PatchList(u32) }
+
+impl PrimitiveTopology {
+    pub fn name(&self) -> &'static str {
+        match self { PrimitiveTopology::PointList => "PointList", PrimitiveTopology::LineList => "LineList", PrimitiveTopology::LineStrip => "LineStrip", PrimitiveTopology::TriangleList => "TriangleList", PrimitiveTopology::TriangleStrip => "TriangleStrip", PrimitiveTopology::TriangleFan => "TriangleFan", PrimitiveTopology::PatchList(_) => "PatchList" }
+    }
+    pub fn is_strip(&self) -> bool { matches!(self, PrimitiveTopology::LineStrip | PrimitiveTopology::TriangleStrip) }
+    pub fn is_triangle(&self) -> bool { matches!(self, PrimitiveTopology::TriangleList | PrimitiveTopology::TriangleStrip | PrimitiveTopology::TriangleFan) }
+}
+
+impl InputAssemblerConfig {
+    pub fn triangles(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::TriangleList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+    pub fn lines(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::LineList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+    pub fn points(layout: VertexLayout) -> Self { Self { topology: PrimitiveTopology::PointList, restart_enabled: false, restart_index: 0xFFFFFFFF, vertex_layout: layout } }
+}
+
+// ── Stencil Config ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct StencilConfig {
+    pub enabled: bool,
+    pub ref_value: u32,
+    pub read_mask: u32,
+    pub write_mask: u32,
+    pub fail_op: StencilOp,
+    pub depth_fail_op: StencilOp,
+    pub pass_op: StencilOp,
+    pub compare_func: CompareFunc,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StencilOp { Keep, Zero, Replace, IncrClamp, DecrClamp, Invert, IncrWrap, DecrWrap }
+
+impl StencilConfig {
+    pub fn disabled() -> Self { Self { enabled: false, ref_value: 0, read_mask: 0xFF, write_mask: 0xFF, fail_op: StencilOp::Keep, depth_fail_op: StencilOp::Keep, pass_op: StencilOp::Keep, compare_func: CompareFunc::Always } }
+    pub fn write_mask(mask: u32) -> Self { Self { enabled: true, write_mask: mask, pass_op: StencilOp::Replace, ref_value: mask, ..Self::disabled() } }
+    pub fn test_mask(mask: u32) -> Self { Self { enabled: true, read_mask: mask, ref_value: mask, ..Self::disabled() } }
+}
+
+impl Default for StencilConfig { fn default() -> Self { Self::disabled() } }
+
+// ── Viewport Config ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ViewportConfig {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub min_depth: f32,
+    pub max_depth: f32,
+}
+
+impl ViewportConfig {
+    pub fn new(width: f32, height: f32) -> Self { Self { x: 0.0, y: 0.0, width, height, min_depth: 0.0, max_depth: 1.0 } }
+    pub fn aspect_ratio(&self) -> f32 { if self.height == 0.0 { 1.0 } else { self.width / self.height } }
+    pub fn scale(mut self, s: f32) -> Self { self.width *= s; self.height *= s; self }
+    pub fn ndc_to_pixel(&self, ndc_x: f32, ndc_y: f32) -> (f32, f32) {
+        ((ndc_x * 0.5 + 0.5) * self.width + self.x, (ndc_y * -0.5 + 0.5) * self.height + self.y)
+    }
+    pub fn pixel_to_ndc(&self, px: f32, py: f32) -> (f32, f32) {
+        ((px - self.x) / self.width * 2.0 - 1.0, -((py - self.y) / self.height * 2.0 - 1.0))
+    }
+}
+
+impl Default for ViewportConfig { fn default() -> Self { Self::new(1920.0, 1080.0) } }
+
+// ── Rasterizer State ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RasterizerState {
+    pub cull_mode: CullMode,
+    pub front_face: FrontFace,
+    pub polygon_mode: PolygonMode,
+    pub depth_bias: f32,
+    pub depth_bias_slope_scale: f32,
+    pub depth_bias_clamp: f32,
+    pub depth_clamp: bool,
+    pub rasterizer_discard: bool,
+    pub multisample: bool,
+    pub line_width: f32,
+    pub conservative: bool,
+}
+
+impl Default for RasterizerState {
+    fn default() -> Self { Self { cull_mode: CullMode::Back, front_face: FrontFace::CounterClockwise, polygon_mode: PolygonMode::Fill, depth_bias: 0.0, depth_bias_slope_scale: 0.0, depth_bias_clamp: 0.0, depth_clamp: false, rasterizer_discard: false, multisample: false, line_width: 1.0, conservative: false } }
+}
+
+impl RasterizerState {
+    pub fn wireframe() -> Self { Self { polygon_mode: PolygonMode::Line, cull_mode: CullMode::None, ..Default::default() } }
+    pub fn shadow_map() -> Self { Self { depth_bias: 1.0, depth_bias_slope_scale: 1.5, ..Default::default() } }
+    pub fn two_sided() -> Self { Self { cull_mode: CullMode::None, ..Default::default() } }
+    pub fn is_wireframe(&self) -> bool { self.polygon_mode == PolygonMode::Line }
+    pub fn has_depth_bias(&self) -> bool { self.depth_bias.abs() > 1e-6 || self.depth_bias_slope_scale.abs() > 1e-6 }
+}
+
+// ── Complete Graphics Pipeline Descriptor ─────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GraphicsPipelineDescriptor {
+    pub name: String,
+    pub vertex_shader_id: u32,
+    pub fragment_shader_id: u32,
+    pub geometry_shader_id: Option<u32>,
+    pub input_assembly: InputAssemblerConfig,
+    pub rasterizer: RasterizerState,
+    pub depth_stencil: (bool, bool, CompareFunc, StencilConfig),
+    pub blend_state: PipelineState,
+    pub viewport: ViewportConfig,
+    pub render_pass_id: u32,
+    pub subpass: u32,
+    pub layout: PipelineLayout,
+}
+
+impl GraphicsPipelineDescriptor {
+    pub fn new(name: impl Into<String>, vert_id: u32, frag_id: u32) -> Self {
+        Self { name: name.into(), vertex_shader_id: vert_id, fragment_shader_id: frag_id, geometry_shader_id: None, input_assembly: InputAssemblerConfig::triangles(VertexLayout::standard_mesh()), rasterizer: RasterizerState::default(), depth_stencil: (true, true, CompareFunc::Less, StencilConfig::disabled()), blend_state: PipelineState::opaque(), viewport: ViewportConfig::default(), render_pass_id: 0, subpass: 0, layout: PipelineLayout::new() }
+    }
+    pub fn transparent(name: impl Into<String>, vert_id: u32, frag_id: u32) -> Self {
+        let mut d = Self::new(name, vert_id, frag_id); d.blend_state = PipelineState::transparent(); d.depth_stencil.1 = false; d
+    }
+    pub fn has_geometry_shader(&self) -> bool { self.geometry_shader_id.is_some() }
+    pub fn depth_test_enabled(&self) -> bool { self.depth_stencil.0 }
+    pub fn depth_write_enabled(&self) -> bool { self.depth_stencil.1 }
+}
+
+// ── Final shader constants ────────────────────────────────────────────────────
+
+pub const STENCIL_MAX_REF_VALUE: u32 = 255;
+pub const VIEWPORT_MAX_RENDER_SCALE: f32 = 2.0;
+pub const RASTERIZER_MAX_LINE_WIDTH: f32 = 16.0;
+pub const GRAPHICS_PIPELINE_MAX: usize = 512;
+pub const INPUT_ASSEMBLER_MAX_VERTEX_STREAMS: usize = 8;
+
+pub fn stencil_op_name(op: &StencilOp) -> &'static str {
+    match op { StencilOp::Keep => "Keep", StencilOp::Zero => "Zero", StencilOp::Replace => "Replace", StencilOp::IncrClamp => "IncrClamp", StencilOp::DecrClamp => "DecrClamp", StencilOp::Invert => "Invert", StencilOp::IncrWrap => "IncrWrap", StencilOp::DecrWrap => "DecrWrap" }
+}
+pub fn primitive_topology_vertex_count(topo: &PrimitiveTopology, primitive_count: u32) -> u32 {
+    match topo { PrimitiveTopology::PointList => primitive_count, PrimitiveTopology::LineList => primitive_count * 2, PrimitiveTopology::LineStrip => primitive_count + 1, PrimitiveTopology::TriangleList => primitive_count * 3, PrimitiveTopology::TriangleStrip | PrimitiveTopology::TriangleFan => primitive_count + 2, PrimitiveTopology::PatchList(n) => primitive_count * n }
+}
+
+pub fn shader_compiler_feature_summary() -> String {
+    let features = shader_compiler_module_list();
+    format!("ShaderCompilerEditor v{}: {} modules — {}", shader_system_version(), features.len(), features.join(", "))
+}

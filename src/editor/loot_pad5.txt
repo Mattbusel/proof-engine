@@ -1,0 +1,138 @@
+
+// ── Inventory Management ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct InventorySlot {
+    pub slot_index: u32,
+    pub item_id: Option<u32>,
+    pub quantity: u32,
+    pub locked: bool,
+}
+
+impl InventorySlot {
+    pub fn empty(index: u32) -> Self { Self { slot_index: index, item_id: None, quantity: 0, locked: false } }
+    pub fn filled(index: u32, item_id: u32, qty: u32) -> Self { Self { slot_index: index, item_id: Some(item_id), quantity: qty, locked: false } }
+    pub fn is_empty(&self) -> bool { self.item_id.is_none() || self.quantity == 0 }
+    pub fn clear(&mut self) { self.item_id = None; self.quantity = 0; }
+    pub fn lock(&mut self) { self.locked = true; }
+    pub fn unlock(&mut self) { self.locked = false; }
+}
+
+#[derive(Clone, Debug)]
+pub struct Inventory {
+    pub slots: Vec<InventorySlot>,
+    pub capacity: u32,
+    pub owner_id: u32,
+    pub bag_type: String,
+}
+
+impl Inventory {
+    pub fn new(owner_id: u32, capacity: u32) -> Self {
+        Self { slots: (0..capacity).map(InventorySlot::empty).collect(), capacity, owner_id, bag_type: "standard".into() }
+    }
+    pub fn free_slots(&self) -> usize { self.slots.iter().filter(|s| s.is_empty()).count() }
+    pub fn used_slots(&self) -> usize { self.slots.iter().filter(|s| !s.is_empty()).count() }
+    pub fn is_full(&self) -> bool { self.free_slots() == 0 }
+    pub fn find_item(&self, item_id: u32) -> Option<&InventorySlot> { self.slots.iter().find(|s| s.item_id == Some(item_id)) }
+    pub fn add_item(&mut self, item_id: u32, qty: u32) -> bool {
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.is_empty() && !s.locked) {
+            slot.item_id = Some(item_id); slot.quantity = qty; true
+        } else { false }
+    }
+    pub fn remove_item(&mut self, item_id: u32) -> bool {
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.item_id == Some(item_id)) {
+            slot.clear(); true
+        } else { false }
+    }
+    pub fn item_count(&self, item_id: u32) -> u32 {
+        self.slots.iter().filter(|s| s.item_id == Some(item_id)).map(|s| s.quantity).sum()
+    }
+    pub fn all_items(&self) -> Vec<(u32, u32)> {
+        self.slots.iter().filter_map(|s| s.item_id.map(|id| (id, s.quantity))).collect()
+    }
+    pub fn sort_by_id(&mut self) {
+        self.slots.sort_by_key(|s| s.item_id.unwrap_or(u32::MAX));
+    }
+    pub fn fill_percent(&self) -> f32 {
+        if self.capacity == 0 { return 0.0; }
+        self.used_slots() as f32 / self.capacity as f32 * 100.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InventorySystem {
+    pub bags: HashMap<u32, Inventory>,
+    pub next_owner: u32,
+}
+
+impl InventorySystem {
+    pub fn new() -> Self { Self { bags: HashMap::new(), next_owner: 1 } }
+    pub fn create_inventory(&mut self, capacity: u32) -> u32 {
+        let id = self.next_owner; self.next_owner += 1;
+        self.bags.insert(id, Inventory::new(id, capacity));
+        id
+    }
+    pub fn get(&self, owner_id: u32) -> Option<&Inventory> { self.bags.get(&owner_id) }
+    pub fn get_mut(&mut self, owner_id: u32) -> Option<&mut Inventory> { self.bags.get_mut(&owner_id) }
+    pub fn transfer(&mut self, from: u32, to: u32, item_id: u32) -> bool {
+        let qty = self.bags.get(&from).and_then(|b| b.find_item(item_id)).map(|s| s.quantity).unwrap_or(0);
+        if qty == 0 { return false; }
+        if self.bags.get(&to).map(|b| b.is_full()).unwrap_or(true) { return false; }
+        if let Some(b) = self.bags.get_mut(&from) { b.remove_item(item_id); }
+        if let Some(b) = self.bags.get_mut(&to) { b.add_item(item_id, qty) } else { false }
+    }
+    pub fn total_inventories(&self) -> usize { self.bags.len() }
+}
+
+impl Default for InventorySystem {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Merchant NPC System ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct MerchantInventory {
+    pub merchant_id: u32,
+    pub merchant_name: String,
+    pub items: Vec<(u32, u32, u32)>,
+    pub restock_interval_secs: f32,
+    pub last_restock: f32,
+    pub accepts_currency: Vec<u32>,
+    pub markup: f32,
+    pub discount_for_faction: HashMap<String, f32>,
+}
+
+impl MerchantInventory {
+    pub fn new(merchant_id: u32, name: impl Into<String>) -> Self {
+        Self { merchant_id, merchant_name: name.into(), items: Vec::new(), restock_interval_secs: 3600.0, last_restock: 0.0, accepts_currency: vec![0], markup: 1.2, discount_for_faction: HashMap::new() }
+    }
+    pub fn add_item(&mut self, item_id: u32, price: u32, stock: u32) {
+        self.items.push((item_id, price, stock));
+    }
+    pub fn buy_item(&mut self, item_id: u32) -> Option<u32> {
+        if let Some(entry) = self.items.iter_mut().find(|(id, _, stock)| *id == item_id && *stock > 0) {
+            entry.2 -= 1;
+            Some(entry.1)
+        } else { None }
+    }
+    pub fn effective_price(&self, base: u32, faction: &str) -> u32 {
+        let discount = self.discount_for_faction.get(faction).copied().unwrap_or(1.0);
+        (base as f32 * self.markup * discount) as u32
+    }
+    pub fn needs_restock(&self, time: f32) -> bool { time - self.last_restock >= self.restock_interval_secs }
+    pub fn restock(&mut self, time: f32) { self.last_restock = time; }
+    pub fn in_stock_count(&self) -> usize { self.items.iter().filter(|(_, _, s)| *s > 0).count() }
+    pub fn add_faction_discount(&mut self, faction: impl Into<String>, discount: f32) { self.discount_for_faction.insert(faction.into(), discount); }
+}
+
+// ── Final system info ─────────────────────────────────────────────────────────
+
+pub const LOOT_INVENTORY_DEFAULT_SLOTS: u32 = 40;
+pub const LOOT_MERCHANT_MAX_ITEMS: usize = 64;
+pub const LOOT_MERCHANT_MAX_MARKUP: f32 = 3.0;
+pub const LOOT_MERCHANT_MIN_MARKUP: f32 = 0.5;
+pub const LOOT_TRANSFER_COOLDOWN_SECS: f32 = 0.1;
+
+pub fn loot_editor_info() -> String {
+    format!("LootEditor — {} total subsystems, full drop pipeline from zone to player wallet", total_loot_modules())
+}

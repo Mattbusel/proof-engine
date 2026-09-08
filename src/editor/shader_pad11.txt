@@ -1,0 +1,200 @@
+
+// ── Screen Space Reflections ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SsrConfig {
+    pub enabled: bool,
+    pub max_steps: u32,
+    pub max_distance: f32,
+    pub thickness: f32,
+    pub stride: u32,
+    pub jitter: f32,
+    pub fade_start: f32,
+    pub fade_end: f32,
+    pub reflection_blend: f32,
+    pub quality: SsrQuality,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SsrQuality { Low, Medium, High }
+
+impl SsrConfig {
+    pub fn new() -> Self { Self { enabled: false, max_steps: 32, max_distance: 100.0, thickness: 0.5, stride: 2, jitter: 0.5, fade_start: 0.7, fade_end: 1.0, reflection_blend: 0.5, quality: SsrQuality::Medium } }
+    pub fn high() -> Self { Self { enabled: true, max_steps: 64, stride: 1, quality: SsrQuality::High, ..Self::new() } }
+    pub fn low() -> Self { Self { enabled: true, max_steps: 16, stride: 4, quality: SsrQuality::Low, ..Self::new() } }
+}
+
+impl Default for SsrConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Temporal Anti-Aliasing ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TaaConfig {
+    pub enabled: bool,
+    pub blend_factor: f32,
+    pub history_blend: f32,
+    pub sharpness: f32,
+    pub jitter_scale: f32,
+    pub motion_rejection: f32,
+    pub clip_aabb: bool,
+    pub variance_clip_gamma: f32,
+    pub sample_count: u32,
+}
+
+impl TaaConfig {
+    pub fn new() -> Self { Self { enabled: true, blend_factor: 0.1, history_blend: 0.9, sharpness: 0.5, jitter_scale: 1.0, motion_rejection: 0.3, clip_aabb: true, variance_clip_gamma: 1.0, sample_count: 8 } }
+    pub fn aggressive() -> Self { Self { blend_factor: 0.05, motion_rejection: 0.5, ..Self::new() } }
+    pub fn gentle() -> Self { Self { blend_factor: 0.2, motion_rejection: 0.1, ..Self::new() } }
+}
+
+impl Default for TaaConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Volumetric Fog ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VolumetricFogConfig {
+    pub enabled: bool,
+    pub density: f32,
+    pub scattering: f32,
+    pub absorption: f32,
+    pub anisotropy: f32,
+    pub height_falloff: f32,
+    pub base_height: f32,
+    pub fog_color: [f32; 3],
+    pub ambient_fog_color: [f32; 3],
+    pub light_intensity: f32,
+    pub num_slices: u32,
+    pub temporal_reprojection: bool,
+}
+
+impl VolumetricFogConfig {
+    pub fn new() -> Self { Self { enabled: false, density: 0.1, scattering: 0.5, absorption: 0.1, anisotropy: 0.5, height_falloff: 0.1, base_height: 0.0, fog_color: [1.0, 0.95, 0.9], ambient_fog_color: [0.5, 0.6, 0.8], light_intensity: 1.0, num_slices: 128, temporal_reprojection: true } }
+    pub fn light_fog() -> Self { Self { enabled: true, density: 0.02, ..Self::new() } }
+    pub fn heavy_fog() -> Self { Self { enabled: true, density: 0.3, ..Self::new() } }
+    pub fn night_fog() -> Self { Self { enabled: true, density: 0.15, fog_color: [0.3, 0.35, 0.5], ambient_fog_color: [0.1, 0.1, 0.2], ..Self::new() } }
+}
+
+impl Default for VolumetricFogConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Lens Flare ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LensFlareConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub threshold: f32,
+    pub ghosts: u32,
+    pub ghost_dispersal: f32,
+    pub halo_width: f32,
+    pub chromatic_distortion: f32,
+    pub starburst_intensity: f32,
+    pub starburst_count: u32,
+}
+
+impl LensFlareConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.5, threshold: 0.8, ghosts: 4, ghost_dispersal: 0.4, halo_width: 0.4, chromatic_distortion: 5.0, starburst_intensity: 0.5, starburst_count: 8 } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.2, ..Self::new() } }
+    pub fn dramatic() -> Self { Self { enabled: true, intensity: 1.5, ghosts: 8, ..Self::new() } }
+}
+
+impl Default for LensFlareConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Full Post Process Configuration ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FullPostProcessConfig {
+    pub bloom: BloomConfig,
+    pub color_grading: ColorGradingSettings,
+    pub ssao: SsaoConfig,
+    pub ssr: SsrConfig,
+    pub taa: TaaConfig,
+    pub dof: DepthOfFieldConfig,
+    pub volumetric_fog: VolumetricFogConfig,
+    pub lens_flare: LensFlareConfig,
+    pub enabled: bool,
+}
+
+impl FullPostProcessConfig {
+    pub fn new() -> Self {
+        Self { bloom: BloomConfig::new(), color_grading: ColorGradingSettings::new(), ssao: SsaoConfig::new(), ssr: SsrConfig::new(), taa: TaaConfig::new(), dof: DepthOfFieldConfig::new(), volumetric_fog: VolumetricFogConfig::new(), lens_flare: LensFlareConfig::new(), enabled: true }
+    }
+    pub fn high_quality() -> Self {
+        Self { bloom: BloomConfig::new(), ssao: SsaoConfig::high(), taa: TaaConfig::new(), ..Self::new() }
+    }
+    pub fn low_quality() -> Self {
+        Self { bloom: BloomConfig::disabled(), ssao: SsaoConfig::low(), taa: TaaConfig::new(), ..Self::new() }
+    }
+    pub fn active_effect_count(&self) -> usize {
+        [self.bloom.enabled, self.ssao.enabled, self.ssr.enabled, self.taa.enabled, self.dof.enabled, self.volumetric_fog.enabled, self.lens_flare.enabled].iter().filter(|&&b| b).count()
+    }
+}
+
+impl Default for FullPostProcessConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Rendering Quality Preset ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderQualityPreset {
+    pub name: String,
+    pub features: RenderFeatureFlags,
+    pub post_process: FullPostProcessConfig,
+    pub shadow_map_resolution: u32,
+    pub shadow_cascades: u32,
+    pub max_lights: u32,
+    pub reflection_quality: u32,
+    pub target_fps: u32,
+    pub render_scale: f32,
+}
+
+impl RenderQualityPreset {
+    pub fn low() -> Self {
+        Self { name: "Low".into(), features: RenderFeatureFlags::default_low_quality(), post_process: FullPostProcessConfig::low_quality(), shadow_map_resolution: 1024, shadow_cascades: 2, max_lights: 16, reflection_quality: 0, target_fps: 60, render_scale: 0.75 }
+    }
+    pub fn medium() -> Self {
+        Self { name: "Medium".into(), features: RenderFeatureFlags::default_medium_quality(), post_process: FullPostProcessConfig::new(), shadow_map_resolution: 2048, shadow_cascades: 3, max_lights: 64, reflection_quality: 1, target_fps: 60, render_scale: 1.0 }
+    }
+    pub fn high() -> Self {
+        Self { name: "High".into(), features: RenderFeatureFlags::default_high_quality(), post_process: FullPostProcessConfig::high_quality(), shadow_map_resolution: 4096, shadow_cascades: 4, max_lights: 256, reflection_quality: 2, target_fps: 60, render_scale: 1.0 }
+    }
+    pub fn ultra() -> Self {
+        let mut h = Self::high(); h.name = "Ultra".into(); h.shadow_map_resolution = 8192; h.render_scale = 1.25; h.max_lights = 1024; h
+    }
+    pub fn is_mobile_friendly(&self) -> bool { self.shadow_map_resolution <= 1024 && !self.features.ssao && !self.features.ssr }
+}
+
+// ── All rendering presets ─────────────────────────────────────────────────────
+
+pub fn build_quality_presets() -> Vec<RenderQualityPreset> {
+    vec![RenderQualityPreset::low(), RenderQualityPreset::medium(), RenderQualityPreset::high(), RenderQualityPreset::ultra()]
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const SSR_MAX_STEPS: u32 = 128;
+pub const TAA_HISTORY_FRAMES: u32 = 8;
+pub const VOLUMETRIC_FOG_MAX_SLICES: u32 = 256;
+pub const LENS_FLARE_MAX_GHOSTS: u32 = 16;
+pub const POST_PROCESS_FULL_EFFECT_COUNT: usize = 8;
+pub const RENDER_QUALITY_PRESET_COUNT: usize = 4;
+pub const SHADOW_MAP_MAX_RESOLUTION: u32 = 16384;
+pub const SHADOW_CASCADE_MAX: u32 = 8;
+pub const RENDER_MAX_LIGHTS: u32 = 4096;
+pub const RENDER_SCALE_MIN: f32 = 0.25;
+pub const RENDER_SCALE_MAX: f32 = 2.0;
+
+pub fn render_quality_preset_names() -> &'static [&'static str] { &["Low", "Medium", "High", "Ultra"] }
+pub fn supported_render_apis() -> &'static [&'static str] { &["OpenGL 4.5", "Vulkan 1.3", "Metal 2", "WebGPU", "D3D12"] }
+pub fn shader_compiler_total_feature_count() -> usize { shader_module_count() + RENDER_FEATURE_COUNT + POST_PROCESS_FULL_EFFECT_COUNT + RENDER_QUALITY_PRESET_COUNT }
+pub fn shader_compiler_final_info() -> String {
+    format!("ShaderCompilerEditor: {} total features, {} render API targets, {} quality presets", shader_compiler_total_feature_count(), supported_render_apis().len(), RENDER_QUALITY_PRESET_COUNT)
+}

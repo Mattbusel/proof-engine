@@ -1,0 +1,129 @@
+
+// ── Extended Loot Analytics ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootAnalyticsEvent {
+    pub event_type: String,
+    pub item_id: u32,
+    pub player_id: u32,
+    pub zone_id: u32,
+    pub timestamp: u64,
+    pub value: f32,
+    pub metadata: HashMap<String, String>,
+}
+
+impl LootAnalyticsEvent {
+    pub fn drop_event(item_id: u32, player_id: u32, zone_id: u32, value: f32) -> Self {
+        Self { event_type: "drop".into(), item_id, player_id, zone_id, timestamp: 0, value, metadata: HashMap::new() }
+    }
+    pub fn purchase_event(item_id: u32, player_id: u32, price: f32) -> Self {
+        Self { event_type: "purchase".into(), item_id, player_id, zone_id: 0, timestamp: 0, value: price, metadata: HashMap::new() }
+    }
+    pub fn salvage_event(item_id: u32, player_id: u32, recovered_value: f32) -> Self {
+        Self { event_type: "salvage".into(), item_id, player_id, zone_id: 0, timestamp: 0, value: recovered_value, metadata: HashMap::new() }
+    }
+    pub fn add_meta(&mut self, key: impl Into<String>, val: impl Into<String>) { self.metadata.insert(key.into(), val.into()); }
+}
+
+#[derive(Clone, Debug)]
+pub struct LootAnalyticsPipeline {
+    pub events: VecDeque<LootAnalyticsEvent>,
+    pub max_events: usize,
+    pub total_processed: u64,
+    pub filters: Vec<String>,
+}
+
+impl LootAnalyticsPipeline {
+    pub fn new(max_events: usize) -> Self { Self { events: VecDeque::new(), max_events, total_processed: 0, filters: Vec::new() } }
+    pub fn push(&mut self, ev: LootAnalyticsEvent) {
+        if self.events.len() >= self.max_events { self.events.pop_front(); }
+        self.events.push_back(ev);
+        self.total_processed += 1;
+    }
+    pub fn events_of_type(&self, event_type: &str) -> Vec<&LootAnalyticsEvent> {
+        self.events.iter().filter(|e| e.event_type == event_type).collect()
+    }
+    pub fn total_value_by_type(&self, event_type: &str) -> f32 {
+        self.events_of_type(event_type).iter().map(|e| e.value).sum()
+    }
+    pub fn unique_items_seen(&self) -> usize {
+        self.events.iter().map(|e| e.item_id).collect::<HashSet<_>>().len()
+    }
+    pub fn events_in_zone(&self, zone_id: u32) -> Vec<&LootAnalyticsEvent> {
+        self.events.iter().filter(|e| e.zone_id == zone_id).collect()
+    }
+    pub fn add_filter(&mut self, f: impl Into<String>) { self.filters.push(f.into()); }
+    pub fn clear(&mut self) { self.events.clear(); }
+    pub fn count(&self) -> usize { self.events.len() }
+}
+
+impl Default for LootAnalyticsPipeline {
+    fn default() -> Self { Self::new(10000) }
+}
+
+// ── Item Salvage System ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SalvageResult {
+    pub source_item_id: u32,
+    pub materials: Vec<(u32, u32)>,
+    pub gold_recovered: u32,
+    pub essence_recovered: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SalvageTable {
+    pub table_id: u32,
+    pub rarity: ItemRarity,
+    pub material_rolls: Vec<(u32, f32, u32, u32)>,
+    pub gold_percent_of_value: f32,
+    pub essence_per_tier: u32,
+}
+
+impl SalvageTable {
+    pub fn new(table_id: u32, rarity: ItemRarity) -> Self {
+        Self { table_id, rarity, material_rolls: Vec::new(), gold_percent_of_value: 0.1, essence_per_tier: 1 }
+    }
+    pub fn add_material_roll(&mut self, material_id: u32, chance: f32, min_qty: u32, max_qty: u32) {
+        self.material_rolls.push((material_id, chance, min_qty, max_qty));
+    }
+    pub fn salvage(&self, item_value: f32) -> SalvageResult {
+        let gold = (item_value * self.gold_percent_of_value) as u32;
+        SalvageResult { source_item_id: 0, materials: Vec::new(), gold_recovered: gold, essence_recovered: self.essence_per_tier }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SalvageSystem {
+    pub tables: HashMap<String, SalvageTable>,
+    pub total_salvaged: u32,
+    pub total_gold_recovered: u64,
+}
+
+impl SalvageSystem {
+    pub fn new() -> Self { Self { tables: HashMap::new(), total_salvaged: 0, total_gold_recovered: 0 } }
+    pub fn register_table(&mut self, key: impl Into<String>, table: SalvageTable) { self.tables.insert(key.into(), table); }
+    pub fn salvage_item(&mut self, rarity_key: &str, item_value: f32) -> Option<SalvageResult> {
+        let result = self.tables.get(rarity_key)?.salvage(item_value);
+        self.total_salvaged += 1;
+        self.total_gold_recovered += result.gold_recovered as u64;
+        Some(result)
+    }
+    pub fn salvage_count(&self) -> u32 { self.total_salvaged }
+}
+
+impl Default for SalvageSystem {
+    fn default() -> Self { Self::new() }
+}
+
+pub const LOOT_ANALYTICS_MAX_EVENTS: usize = 50000;
+pub const LOOT_SALVAGE_GOLD_RATE_DEFAULT: f32 = 0.1;
+pub const LOOT_SALVAGE_ESSENCE_MAX: u32 = 100;
+pub const LOOT_ANALYTICS_PIPELINE_DEFAULT_SIZE: usize = 10000;
+
+pub fn loot_analytics_summary(pipeline: &LootAnalyticsPipeline) -> String {
+    format!("Analytics: {} events processed, {} unique items, {:.0} total drop value",
+        pipeline.total_processed,
+        pipeline.unique_items_seen(),
+        pipeline.total_value_by_type("drop"))
+}

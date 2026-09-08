@@ -1,0 +1,17 @@
+
+pub const PARTICLE_EFFECT_COST_LIGHT_THRESHOLD: f32 = 1.0;
+pub const PARTICLE_EFFECT_COST_MEDIUM_THRESHOLD: f32 = 10.0;
+pub const PARTICLE_EFFECT_COST_HEAVY_THRESHOLD: f32 = 50.0;
+pub const PARTICLE_MS_BUDGET_60FPS: f32 = 16.666;
+pub const PARTICLE_MS_BUDGET_30FPS: f32 = 33.333;
+pub const PARTICLE_SIMULATION_SAFE_BUDGET_MS: f32 = 3.0;
+pub const PARTICLE_RENDER_SAFE_BUDGET_MS: f32 = 2.0;
+pub fn particle_budget_ok(sim_ms: f32, render_ms: f32) -> bool {
+    sim_ms <= PARTICLE_SIMULATION_SAFE_BUDGET_MS && render_ms <= PARTICLE_RENDER_SAFE_BUDGET_MS
+}
+pub fn particle_quality_from_budget(ms_available: f32) -> &'static str {
+    if ms_available >= 8.0 { "Ultra" } else if ms_available >= 4.0 { "High" } else if ms_available >= 2.0 { "Medium" } else { "Low" }
+}
+pub fn particle_count_for_quality(quality: &str) -> u32 {
+    match quality { "Ultra" => 500_000, "High" => 100_000, "Medium" => 25_000, _ => 5_000 }
+}

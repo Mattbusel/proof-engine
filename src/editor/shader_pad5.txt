@@ -1,0 +1,318 @@
+
+// ── Lighting Model ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LightingModel {
+    pub name: String,
+    pub model_type: LightingModelType,
+    pub diffuse_weight: f32,
+    pub specular_weight: f32,
+    pub ambient_weight: f32,
+    pub subsurface_weight: f32,
+    pub emission_weight: f32,
+    pub roughness: f32,
+    pub metalness: f32,
+    pub ior: f32,
+    pub transmission: f32,
+    pub anisotropy: f32,
+    pub clearcoat: f32,
+    pub sheen: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LightingModelType { Phong, BlinnPhong, Pbr, Lambert, Toon, Unlit, Custom(String) }
+
+impl LightingModel {
+    pub fn phong() -> Self { Self { name: "Phong".into(), model_type: LightingModelType::Phong, diffuse_weight: 1.0, specular_weight: 0.5, ambient_weight: 0.1, subsurface_weight: 0.0, emission_weight: 0.0, roughness: 0.5, metalness: 0.0, ior: 1.5, transmission: 0.0, anisotropy: 0.0, clearcoat: 0.0, sheen: 0.0 } }
+    pub fn pbr() -> Self { Self { name: "PBR".into(), model_type: LightingModelType::Pbr, diffuse_weight: 1.0, specular_weight: 1.0, ambient_weight: 0.1, subsurface_weight: 0.0, emission_weight: 0.0, roughness: 0.5, metalness: 0.0, ior: 1.5, transmission: 0.0, anisotropy: 0.0, clearcoat: 0.0, sheen: 0.0 } }
+    pub fn unlit() -> Self { Self { name: "Unlit".into(), model_type: LightingModelType::Unlit, diffuse_weight: 0.0, specular_weight: 0.0, ambient_weight: 0.0, subsurface_weight: 0.0, emission_weight: 1.0, roughness: 1.0, metalness: 0.0, ior: 1.0, transmission: 0.0, anisotropy: 0.0, clearcoat: 0.0, sheen: 0.0 } }
+    pub fn toon() -> Self { Self { name: "Toon".into(), model_type: LightingModelType::Toon, diffuse_weight: 1.0, specular_weight: 1.0, ambient_weight: 0.2, subsurface_weight: 0.0, emission_weight: 0.0, roughness: 1.0, metalness: 0.0, ior: 1.5, transmission: 0.0, anisotropy: 0.0, clearcoat: 0.0, sheen: 0.0 } }
+    pub fn is_pbr(&self) -> bool { self.model_type == LightingModelType::Pbr }
+    pub fn is_unlit(&self) -> bool { self.model_type == LightingModelType::Unlit }
+    pub fn is_toon(&self) -> bool { self.model_type == LightingModelType::Toon }
+    pub fn uses_ibl(&self) -> bool { self.is_pbr() }
+    pub fn glsl_function_name(&self) -> &str {
+        match self.model_type { LightingModelType::Phong => "shade_phong", LightingModelType::BlinnPhong => "shade_blinn_phong", LightingModelType::Pbr => "shade_pbr", LightingModelType::Lambert => "shade_lambert", LightingModelType::Toon => "shade_toon", LightingModelType::Unlit => "shade_unlit", _ => "shade_custom" }
+    }
+}
+
+impl Default for LightingModel {
+    fn default() -> Self { Self::pbr() }
+}
+
+// ── GLSL Code Snippets ────────────────────────────────────────────────────────
+
+pub struct GlslSnippet {
+    pub name: &'static str,
+    pub code: &'static str,
+    pub dependencies: &'static [&'static str],
+}
+
+pub const SNIPPET_GAMMA_CORRECT: GlslSnippet = GlslSnippet {
+    name: "gamma_correct",
+    code: "vec3 gamma_correct(vec3 color) { return pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_LINEAR_TO_SRGB: GlslSnippet = GlslSnippet {
+    name: "linear_to_srgb",
+    code: "vec3 linear_to_srgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), c)); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_SRGB_TO_LINEAR: GlslSnippet = GlslSnippet {
+    name: "srgb_to_linear",
+    code: "vec3 srgb_to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_ACES_TONEMAP: GlslSnippet = GlslSnippet {
+    name: "aces_tonemap",
+    code: "vec3 aces_tonemap(vec3 x) { float a=2.51; float b=0.03; float c=2.43; float d=0.59; float e=0.14; return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_REINHARD_TONEMAP: GlslSnippet = GlslSnippet {
+    name: "reinhard",
+    code: "vec3 reinhard(vec3 c) { return c / (c + vec3(1.0)); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_FRESNEL: GlslSnippet = GlslSnippet {
+    name: "fresnel_schlick",
+    code: "vec3 fresnel_schlick(float cosTheta, vec3 F0) { return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_NDF_GGX: GlslSnippet = GlslSnippet {
+    name: "ndf_ggx",
+    code: "float ndf_ggx(vec3 N, vec3 H, float roughness) { float a = roughness*roughness; float a2 = a*a; float NdotH = max(dot(N,H),0.0); float NdotH2 = NdotH*NdotH; float num = a2; float denom = NdotH2*(a2-1.0)+1.0; denom = 3.14159265*denom*denom; return num/denom; }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_GEOMETRY_SMITH: GlslSnippet = GlslSnippet {
+    name: "geometry_smith",
+    code: "float geometry_schlick_ggx(float NdotV, float r) { float r2=(r+1.0); float k=r2*r2/8.0; return NdotV/(NdotV*(1.0-k)+k); } float geometry_smith(vec3 N, vec3 V, vec3 L, float r) { return geometry_schlick_ggx(max(dot(N,V),0.0),r)*geometry_schlick_ggx(max(dot(N,L),0.0),r); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_SHADOW_PCF: GlslSnippet = GlslSnippet {
+    name: "shadow_pcf",
+    code: "float shadow_pcf(sampler2DShadow shadowMap, vec4 shadowCoord) { float shadow = 0.0; vec2 texelSize = 1.0/textureSize(shadowMap,0); for(int x=-1;x<=1;++x) for(int y=-1;y<=1;++y) shadow += texture(shadowMap, shadowCoord.xyz/shadowCoord.w + vec3(vec2(x,y)*texelSize,0)); return shadow/9.0; }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_NORMAL_FROM_MAP: GlslSnippet = GlslSnippet {
+    name: "normal_from_map",
+    code: "vec3 normal_from_map(sampler2D normalMap, vec2 uv, vec3 worldNormal, vec3 worldTangent) { vec3 n = texture(normalMap, uv).xyz * 2.0 - 1.0; vec3 T = normalize(worldTangent - dot(worldTangent,worldNormal)*worldNormal); vec3 B = cross(worldNormal, T); mat3 TBN = mat3(T,B,worldNormal); return normalize(TBN * n); }",
+    dependencies: &[],
+};
+
+pub const SNIPPET_PARALLAX_OCCLUSION: GlslSnippet = GlslSnippet {
+    name: "parallax_occlusion",
+    code: "vec2 parallax_mapping(sampler2D heightMap, vec2 uv, vec3 viewDir, float scale) { float numLayers = mix(32.0, 8.0, abs(dot(vec3(0,0,1),viewDir))); float layerDepth = 1.0/numLayers; float currentDepth = 0.0; vec2 P = viewDir.xy/viewDir.z*scale; vec2 deltaTexCoords = P/numLayers; vec2 currentTexCoords = uv; float currentDepthMapValue = 1.0 - texture(heightMap,currentTexCoords).r; while(currentDepth < currentDepthMapValue) { currentTexCoords -= deltaTexCoords; currentDepthMapValue = 1.0 - texture(heightMap,currentTexCoords).r; currentDepth += layerDepth; } return currentTexCoords; }",
+    dependencies: &[],
+};
+
+// ── Shader Library ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderLibrary {
+    pub snippets: HashMap<String, String>,
+    pub categories: HashMap<String, Vec<String>>,
+}
+
+impl ShaderLibrary {
+    pub fn new() -> Self { Self { snippets: HashMap::new(), categories: HashMap::new() } }
+    pub fn add(&mut self, name: impl Into<String>, code: impl Into<String>, category: impl Into<String>) {
+        let n = name.into(); let cat = category.into();
+        self.snippets.insert(n.clone(), code.into());
+        self.categories.entry(cat).or_default().push(n);
+    }
+    pub fn get(&self, name: &str) -> Option<&str> { self.snippets.get(name).map(|s| s.as_str()) }
+    pub fn in_category(&self, cat: &str) -> Vec<&str> {
+        self.categories.get(cat).map(|names| names.iter().map(|n| self.snippets.get(n.as_str()).map(|_| n.as_str()).unwrap_or("")).collect()).unwrap_or_default()
+    }
+    pub fn count(&self) -> usize { self.snippets.len() }
+    pub fn build_standard() -> Self {
+        let mut lib = Self::new();
+        lib.add("gamma_correct", SNIPPET_GAMMA_CORRECT.code, "color");
+        lib.add("linear_to_srgb", SNIPPET_LINEAR_TO_SRGB.code, "color");
+        lib.add("srgb_to_linear", SNIPPET_SRGB_TO_LINEAR.code, "color");
+        lib.add("aces_tonemap", SNIPPET_ACES_TONEMAP.code, "tonemap");
+        lib.add("reinhard", SNIPPET_REINHARD_TONEMAP.code, "tonemap");
+        lib.add("fresnel_schlick", SNIPPET_FRESNEL.code, "pbr");
+        lib.add("ndf_ggx", SNIPPET_NDF_GGX.code, "pbr");
+        lib.add("geometry_smith", SNIPPET_GEOMETRY_SMITH.code, "pbr");
+        lib.add("shadow_pcf", SNIPPET_SHADOW_PCF.code, "shadow");
+        lib.add("normal_from_map", SNIPPET_NORMAL_FROM_MAP.code, "normal");
+        lib.add("parallax_occlusion", SNIPPET_PARALLAX_OCCLUSION.code, "normal");
+        lib
+    }
+}
+
+impl Default for ShaderLibrary {
+    fn default() -> Self { Self::build_standard() }
+}
+
+// ── Shader Debug Tools ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderDebugOutput {
+    pub name: String,
+    pub output_type: DebugOutputType,
+    pub channel_mask: [bool; 4],
+    pub scale: f32,
+    pub bias: f32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DebugOutputType { Albedo, Normal, Roughness, Metalness, Depth, AmbientOcclusion, Emission, Velocity, ShadowMap, LightContribution, Custom(String) }
+
+impl ShaderDebugOutput {
+    pub fn new(name: impl Into<String>, output_type: DebugOutputType) -> Self {
+        Self { name: name.into(), output_type, channel_mask: [true; 4], scale: 1.0, bias: 0.0, enabled: true }
+    }
+    pub fn depth() -> Self { let mut d = Self::new("Depth", DebugOutputType::Depth); d.scale = 100.0; d }
+    pub fn normal() -> Self { let mut d = Self::new("Normal", DebugOutputType::Normal); d.bias = 0.5; d }
+    pub fn glsl_code(&self) -> String {
+        format!("// Debug output: {}", self.name)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderDebugger {
+    pub outputs: Vec<ShaderDebugOutput>,
+    pub active_output: Option<usize>,
+    pub enabled: bool,
+    pub show_overdraw: bool,
+    pub show_wireframe: bool,
+    pub show_normals: bool,
+}
+
+impl ShaderDebugger {
+    pub fn new() -> Self { Self { outputs: Vec::new(), active_output: None, enabled: false, show_overdraw: false, show_wireframe: false, show_normals: false } }
+    pub fn add_output(&mut self, output: ShaderDebugOutput) { self.outputs.push(output); }
+    pub fn activate(&mut self, idx: usize) { self.active_output = Some(idx); self.enabled = true; }
+    pub fn deactivate(&mut self) { self.active_output = None; self.enabled = false; }
+    pub fn active(&self) -> Option<&ShaderDebugOutput> { self.active_output.and_then(|i| self.outputs.get(i)) }
+    pub fn output_count(&self) -> usize { self.outputs.len() }
+    pub fn build_defaults() -> Self {
+        let mut d = Self::new();
+        d.add_output(ShaderDebugOutput::new("Albedo", DebugOutputType::Albedo));
+        d.add_output(ShaderDebugOutput::normal());
+        d.add_output(ShaderDebugOutput::new("Roughness", DebugOutputType::Roughness));
+        d.add_output(ShaderDebugOutput::new("Metalness", DebugOutputType::Metalness));
+        d.add_output(ShaderDebugOutput::depth());
+        d.add_output(ShaderDebugOutput::new("AO", DebugOutputType::AmbientOcclusion));
+        d
+    }
+}
+
+impl Default for ShaderDebugger {
+    fn default() -> Self { Self::build_defaults() }
+}
+
+// ── Shader Profiler ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ShaderProfileEntry {
+    pub shader_id: u32,
+    pub shader_name: String,
+    pub gpu_time_ms: f32,
+    pub draw_calls: u32,
+    pub triangles: u64,
+    pub frame_count: u64,
+    pub avg_gpu_ms: f32,
+}
+
+impl ShaderProfileEntry {
+    pub fn new(shader_id: u32, name: impl Into<String>) -> Self { Self { shader_id, shader_name: name.into(), ..Default::default() } }
+    pub fn record_frame(&mut self, gpu_ms: f32, draws: u32, tris: u64) {
+        self.gpu_time_ms = gpu_ms;
+        self.draw_calls = draws;
+        self.triangles = tris;
+        self.avg_gpu_ms = (self.avg_gpu_ms * self.frame_count as f32 + gpu_ms) / (self.frame_count + 1) as f32;
+        self.frame_count += 1;
+    }
+    pub fn is_expensive(&self) -> bool { self.avg_gpu_ms > 2.0 }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderProfiler {
+    pub entries: HashMap<u32, ShaderProfileEntry>,
+    pub enabled: bool,
+    pub frame: u64,
+}
+
+impl ShaderProfiler {
+    pub fn new() -> Self { Self { entries: HashMap::new(), enabled: false, frame: 0 } }
+    pub fn enable(&mut self) { self.enabled = true; }
+    pub fn disable(&mut self) { self.enabled = false; }
+    pub fn begin_frame(&mut self) { self.frame += 1; }
+    pub fn record(&mut self, shader_id: u32, name: &str, gpu_ms: f32, draws: u32, tris: u64) {
+        if !self.enabled { return; }
+        self.entries.entry(shader_id).or_insert_with(|| ShaderProfileEntry::new(shader_id, name)).record_frame(gpu_ms, draws, tris);
+    }
+    pub fn expensive_shaders(&self) -> Vec<&ShaderProfileEntry> { self.entries.values().filter(|e| e.is_expensive()).collect() }
+    pub fn total_gpu_ms(&self) -> f32 { self.entries.values().map(|e| e.gpu_time_ms).sum() }
+    pub fn shader_count(&self) -> usize { self.entries.len() }
+}
+
+impl Default for ShaderProfiler {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Hot Reload Manager ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct HotReloadManager {
+    pub watcher: ShaderFileWatcher,
+    pub registry: ShaderProgramRegistry,
+    pub reload_count: u32,
+    pub last_reload_time: f32,
+    pub reload_on_focus: bool,
+    pub auto_save_on_compile: bool,
+}
+
+impl HotReloadManager {
+    pub fn new() -> Self { Self { watcher: ShaderFileWatcher::new(), registry: ShaderProgramRegistry::new(), reload_count: 0, last_reload_time: 0.0, reload_on_focus: true, auto_save_on_compile: false } }
+    pub fn watch_shader(&mut self, path: impl Into<String>, shader_id: u32) { self.watcher.watch(path, shader_id); }
+    pub fn tick(&mut self, _dt: f32) -> Vec<u32> {
+        let mut reloaded = Vec::new();
+        while let Some(path) = self.watcher.next_reload() {
+            let ids = self.watcher.shader_ids_for(&path);
+            reloaded.extend_from_slice(&ids);
+            self.reload_count += ids.len() as u32;
+        }
+        reloaded
+    }
+    pub fn force_reload_all(&mut self) {
+        let paths: Vec<_> = self.watcher.watched_files.keys().cloned().collect();
+        for path in paths { self.watcher.mark_modified(&path); }
+    }
+    pub fn reload_count(&self) -> u32 { self.reload_count }
+}
+
+impl Default for HotReloadManager {
+    fn default() -> Self { Self::new() }
+}
+
+// ── More constants ────────────────────────────────────────────────────────────
+
+pub const LIGHTING_MODEL_COUNT: usize = 7;
+pub const SHADER_LIBRARY_STANDARD_SNIPPET_COUNT: usize = 11;
+pub const SHADER_DEBUG_OUTPUT_MAX: usize = 16;
+pub const SHADER_PROFILER_EXPENSIVE_THRESHOLD_MS: f32 = 2.0;
+pub const SHADER_HOT_RELOAD_DEBOUNCE_MS: u32 = 300;
+pub const MATERIAL_MAX_BLEND_MODES: usize = 8;
+pub const SHADER_SNIPPET_MAX_SIZE_CHARS: usize = 4096;
+pub const GLSL_MAX_VARYING_COMPONENTS: u32 = 128;
+pub const GLSL_MAX_TEXTURE_SAMPLERS: u32 = 16;
+pub const GLSL_MAX_UNIFORM_BLOCKS: u32 = 14;
+pub const WGSL_MAX_BIND_GROUPS: u32 = 4;
+pub const WGSL_MAX_BINDINGS_PER_GROUP: u32 = 8;
+
+pub fn lighting_model_name(model: &LightingModel) -> &str { &model.name }
+pub fn shader_system_info() -> String { format!("ShaderSystem: compiler + materials + textures + buffers + post-process + lighting + hot-reload") }

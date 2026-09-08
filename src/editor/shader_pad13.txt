@@ -1,0 +1,181 @@
+
+// ── Motion Blur ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct MotionBlurConfig {
+    pub enabled: bool,
+    pub shutter_angle: f32,
+    pub sample_count: u32,
+    pub tile_size: u32,
+    pub max_blur_pixels: f32,
+    pub motion_scale: f32,
+    pub camera_motion_blur: bool,
+    pub object_motion_blur: bool,
+}
+
+impl MotionBlurConfig {
+    pub fn new() -> Self { Self { enabled: false, shutter_angle: 180.0, sample_count: 8, tile_size: 10, max_blur_pixels: 40.0, motion_scale: 1.0, camera_motion_blur: true, object_motion_blur: true } }
+    pub fn cinematic() -> Self { Self { enabled: true, shutter_angle: 270.0, sample_count: 16, ..Self::new() } }
+    pub fn subtle() -> Self { Self { enabled: true, shutter_angle: 90.0, sample_count: 4, max_blur_pixels: 20.0, ..Self::new() } }
+}
+
+impl Default for MotionBlurConfig { fn default() -> Self { Self::new() } }
+
+// ── Vignette ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VignetteConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub smoothness: f32,
+    pub roundness: f32,
+    pub color: [f32; 3],
+    pub center: [f32; 2],
+    pub mask_texture_id: Option<u32>,
+}
+
+impl VignetteConfig {
+    pub fn new() -> Self { Self { enabled: true, intensity: 0.45, smoothness: 0.2, roundness: 1.0, color: [0.0; 3], center: [0.5, 0.5], mask_texture_id: None } }
+    pub fn subtle() -> Self { Self { intensity: 0.2, ..Self::new() } }
+    pub fn dramatic() -> Self { Self { intensity: 0.8, smoothness: 0.4, ..Self::new() } }
+    pub fn colored(r: f32, g: f32, b: f32) -> Self { Self { color: [r, g, b], ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+}
+
+impl Default for VignetteConfig { fn default() -> Self { Self::new() } }
+
+// ── Chromatic Aberration ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ChromaticAberrationConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub radial: bool,
+    pub offset_r: [f32; 2],
+    pub offset_g: [f32; 2],
+    pub offset_b: [f32; 2],
+    pub sample_count: u32,
+}
+
+impl ChromaticAberrationConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.5, radial: true, offset_r: [-0.01, 0.0], offset_g: [0.0, 0.0], offset_b: [0.01, 0.0], sample_count: 3 } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.2, ..Self::new() } }
+    pub fn strong() -> Self { Self { enabled: true, intensity: 1.5, sample_count: 5, ..Self::new() } }
+}
+
+impl Default for ChromaticAberrationConfig { fn default() -> Self { Self::new() } }
+
+// ── Film Grain ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FilmGrainConfig {
+    pub enabled: bool,
+    pub intensity: f32,
+    pub size: f32,
+    pub luminance_contribution: f32,
+    pub color: bool,
+    pub animated: bool,
+}
+
+impl FilmGrainConfig {
+    pub fn new() -> Self { Self { enabled: false, intensity: 0.1, size: 1.5, luminance_contribution: 0.8, color: false, animated: true } }
+    pub fn subtle() -> Self { Self { enabled: true, intensity: 0.05, ..Self::new() } }
+    pub fn heavy() -> Self { Self { enabled: true, intensity: 0.4, ..Self::new() } }
+}
+
+impl Default for FilmGrainConfig { fn default() -> Self { Self::new() } }
+
+// ── Anti-Aliasing Config ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct AntiAliasingConfig {
+    pub mode: AntiAliasingMode,
+    pub msaa_samples: u32,
+    pub fxaa: bool,
+    pub taa: Option<TaaConfig>,
+    pub smaa_quality: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AntiAliasingMode { None, Msaa, Fxaa, Taa, Smaa, Dlss }
+
+impl AntiAliasingConfig {
+    pub fn none() -> Self { Self { mode: AntiAliasingMode::None, msaa_samples: 1, fxaa: false, taa: None, smaa_quality: 0 } }
+    pub fn fxaa() -> Self { Self { mode: AntiAliasingMode::Fxaa, fxaa: true, ..Self::none() } }
+    pub fn taa() -> Self { Self { mode: AntiAliasingMode::Taa, taa: Some(TaaConfig::new()), ..Self::none() } }
+    pub fn msaa(samples: u32) -> Self { Self { mode: AntiAliasingMode::Msaa, msaa_samples: samples, ..Self::none() } }
+    pub fn smaa(quality: u32) -> Self { Self { mode: AntiAliasingMode::Smaa, smaa_quality: quality, ..Self::none() } }
+    pub fn is_temporal(&self) -> bool { self.mode == AntiAliasingMode::Taa || self.mode == AntiAliasingMode::Dlss }
+    pub fn requires_velocity_buffer(&self) -> bool { self.is_temporal() }
+}
+
+impl Default for AntiAliasingConfig { fn default() -> Self { Self::fxaa() } }
+
+// ── Extended post process config ──────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ExtendedPostProcessConfig {
+    pub motion_blur: MotionBlurConfig,
+    pub vignette: VignetteConfig,
+    pub chromatic_aberration: ChromaticAberrationConfig,
+    pub film_grain: FilmGrainConfig,
+    pub anti_aliasing: AntiAliasingConfig,
+}
+
+impl ExtendedPostProcessConfig {
+    pub fn new() -> Self { Self::default() }
+    pub fn cinematic() -> Self {
+        Self { motion_blur: MotionBlurConfig::cinematic(), vignette: VignetteConfig::dramatic(), chromatic_aberration: ChromaticAberrationConfig::subtle(), film_grain: FilmGrainConfig::subtle(), anti_aliasing: AntiAliasingConfig::taa() }
+    }
+    pub fn game() -> Self {
+        Self { motion_blur: MotionBlurConfig::subtle(), vignette: VignetteConfig::subtle(), anti_aliasing: AntiAliasingConfig::fxaa(), ..Self::new() }
+    }
+    pub fn count_active(&self) -> usize {
+        [self.motion_blur.enabled, self.vignette.enabled, self.chromatic_aberration.enabled, self.film_grain.enabled].iter().filter(|&&b| b).count()
+    }
+}
+
+// ── GPU Program Lifecycle ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GpuProgramState { Uncompiled, Compiling, Compiled, Failed, Stale }
+
+#[derive(Clone, Debug)]
+pub struct GpuProgramLifecycle {
+    pub program_id: u32,
+    pub state: GpuProgramState,
+    pub compile_attempts: u32,
+    pub last_success: Option<u64>,
+    pub last_failure: Option<u64>,
+    pub auto_retry: bool,
+    pub max_retries: u32,
+}
+
+impl GpuProgramLifecycle {
+    pub fn new(program_id: u32) -> Self { Self { program_id, state: GpuProgramState::Uncompiled, compile_attempts: 0, last_success: None, last_failure: None, auto_retry: true, max_retries: 3 } }
+    pub fn begin_compile(&mut self) { self.state = GpuProgramState::Compiling; self.compile_attempts += 1; }
+    pub fn mark_success(&mut self, ts: u64) { self.state = GpuProgramState::Compiled; self.last_success = Some(ts); }
+    pub fn mark_failure(&mut self, ts: u64) { self.state = GpuProgramState::Failed; self.last_failure = Some(ts); }
+    pub fn mark_stale(&mut self) { self.state = GpuProgramState::Stale; }
+    pub fn can_retry(&self) -> bool { self.auto_retry && self.compile_attempts < self.max_retries }
+    pub fn is_compiled(&self) -> bool { self.state == GpuProgramState::Compiled }
+    pub fn is_failed(&self) -> bool { self.state == GpuProgramState::Failed }
+}
+
+// ── Final system constants ────────────────────────────────────────────────────
+
+pub const MOTION_BLUR_MAX_SAMPLES: u32 = 32;
+pub const FILM_GRAIN_MAX_SIZE: f32 = 10.0;
+pub const VIGNETTE_MAX_INTENSITY: f32 = 1.0;
+pub const CHROMATIC_MAX_OFFSET: f32 = 0.1;
+pub const AA_MSAA_MAX_SAMPLES: u32 = 8;
+pub const SHADER_GPU_PROGRAM_MAX_RETRIES: u32 = 3;
+pub const RENDER_EXTENDED_PP_EFFECT_COUNT: usize = 5;
+
+pub fn anti_aliasing_name(mode: &AntiAliasingMode) -> &'static str {
+    match mode { AntiAliasingMode::None => "None", AntiAliasingMode::Msaa => "MSAA", AntiAliasingMode::Fxaa => "FXAA", AntiAliasingMode::Taa => "TAA", AntiAliasingMode::Smaa => "SMAA", AntiAliasingMode::Dlss => "DLSS" }
+}
+pub fn gpu_program_state_name(s: &GpuProgramState) -> &'static str {
+    match s { GpuProgramState::Uncompiled => "Uncompiled", GpuProgramState::Compiling => "Compiling", GpuProgramState::Compiled => "Compiled", GpuProgramState::Failed => "Failed", GpuProgramState::Stale => "Stale" }
+}
+pub fn shader_editor_complete_version() -> String { format!("ShaderCompilerEditor — complete build, v{}", shader_system_version()) }

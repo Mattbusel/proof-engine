@@ -1,0 +1,155 @@
+
+// ── Item Tag System ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemTagDefinition {
+    pub tag: String,
+    pub display_name: String,
+    pub color: [u8; 4],
+    pub searchable: bool,
+    pub filterable: bool,
+    pub exclusive_group: Option<String>,
+}
+
+impl ItemTagDefinition {
+    pub fn new(tag: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self { tag: tag.into(), display_name: display_name.into(), color: [200, 200, 200, 255], searchable: true, filterable: true, exclusive_group: None }
+    }
+    pub fn with_color(mut self, r: u8, g: u8, b: u8) -> Self { self.color = [r, g, b, 255]; self }
+    pub fn in_group(mut self, group: impl Into<String>) -> Self { self.exclusive_group = Some(group.into()); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct TagRegistry {
+    pub tags: HashMap<String, ItemTagDefinition>,
+}
+
+impl TagRegistry {
+    pub fn new() -> Self { Self { tags: HashMap::new() } }
+    pub fn register(&mut self, def: ItemTagDefinition) { self.tags.insert(def.tag.clone(), def); }
+    pub fn get(&self, tag: &str) -> Option<&ItemTagDefinition> { self.tags.get(tag) }
+    pub fn all_tags(&self) -> Vec<&str> { self.tags.keys().map(|k| k.as_str()).collect() }
+    pub fn filterable_tags(&self) -> Vec<&str> { self.tags.values().filter(|t| t.filterable).map(|t| t.tag.as_str()).collect() }
+    pub fn count(&self) -> usize { self.tags.len() }
+    pub fn build_defaults() -> Self {
+        let mut r = Self::new();
+        r.register(ItemTagDefinition::new("fire", "Fire").with_color(255, 80, 0));
+        r.register(ItemTagDefinition::new("ice", "Ice").with_color(80, 180, 255));
+        r.register(ItemTagDefinition::new("holy", "Holy").with_color(255, 255, 100));
+        r.register(ItemTagDefinition::new("poison", "Poison").with_color(80, 255, 80));
+        r.register(ItemTagDefinition::new("unique", "Unique").with_color(255, 200, 0));
+        r.register(ItemTagDefinition::new("crafted", "Crafted").with_color(150, 150, 255));
+        r.register(ItemTagDefinition::new("event", "Event").with_color(255, 0, 200));
+        r.register(ItemTagDefinition::new("starter", "Starter").with_color(180, 180, 180));
+        r.register(ItemTagDefinition::new("bind_on_equip", "BoE").with_color(255, 150, 50));
+        r.register(ItemTagDefinition::new("bind_on_pickup", "BoP").with_color(200, 50, 255));
+        r
+    }
+}
+
+impl Default for TagRegistry {
+    fn default() -> Self { Self::build_defaults() }
+}
+
+// ── Visual Item Presentation ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemVisual {
+    pub item_id: u32,
+    pub sprite_id: u32,
+    pub icon_id: u32,
+    pub world_model_id: u32,
+    pub scale: f32,
+    pub glow_color: Option<[f32; 4]>,
+    pub particle_effect: Option<String>,
+    pub sound_pickup: Option<String>,
+    pub sound_equip: Option<String>,
+}
+
+impl ItemVisual {
+    pub fn new(item_id: u32, sprite_id: u32, icon_id: u32) -> Self {
+        Self { item_id, sprite_id, icon_id, world_model_id: 0, scale: 1.0, glow_color: None, particle_effect: None, sound_pickup: None, sound_equip: None }
+    }
+    pub fn with_glow(mut self, r: f32, g: f32, b: f32, a: f32) -> Self { self.glow_color = Some([r, g, b, a]); self }
+    pub fn with_effect(mut self, effect: impl Into<String>) -> Self { self.particle_effect = Some(effect.into()); self }
+    pub fn has_glow(&self) -> bool { self.glow_color.is_some() }
+    pub fn has_effect(&self) -> bool { self.particle_effect.is_some() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemVisualRegistry {
+    pub visuals: HashMap<u32, ItemVisual>,
+}
+
+impl ItemVisualRegistry {
+    pub fn new() -> Self { Self { visuals: HashMap::new() } }
+    pub fn register(&mut self, v: ItemVisual) { self.visuals.insert(v.item_id, v); }
+    pub fn get(&self, item_id: u32) -> Option<&ItemVisual> { self.visuals.get(&item_id) }
+    pub fn items_with_glow(&self) -> Vec<u32> { self.visuals.values().filter(|v| v.has_glow()).map(|v| v.item_id).collect() }
+    pub fn count(&self) -> usize { self.visuals.len() }
+}
+
+impl Default for ItemVisualRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot Search & Index ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootSearchQuery {
+    pub text: String,
+    pub rarity: Option<ItemRarity>,
+    pub item_type: Option<ItemType>,
+    pub min_level: u32,
+    pub max_level: u32,
+    pub tags: Vec<String>,
+    pub sort_by: String,
+    pub descending: bool,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+impl LootSearchQuery {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), rarity: None, item_type: None, min_level: 0, max_level: u32::MAX, tags: Vec::new(), sort_by: "name".into(), descending: false, page: 0, page_size: 50 }
+    }
+    pub fn for_rarity(mut self, r: ItemRarity) -> Self { self.rarity = Some(r); self }
+    pub fn for_type(mut self, t: ItemType) -> Self { self.item_type = Some(t); self }
+    pub fn level_range(mut self, min: u32, max: u32) -> Self { self.min_level = min; self.max_level = max; self }
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self { self.tags.push(tag.into()); self }
+    pub fn sort(mut self, by: impl Into<String>, desc: bool) -> Self { self.sort_by = by.into(); self.descending = desc; self }
+    pub fn page(mut self, page: usize) -> Self { self.page = page; self }
+    pub fn has_filters(&self) -> bool { self.rarity.is_some() || self.item_type.is_some() || !self.tags.is_empty() }
+}
+
+impl Default for LootSearchQuery {
+    fn default() -> Self { Self::new("") }
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const LOOT_TAG_MAX: usize = 64;
+pub const LOOT_VISUAL_REGISTRY_MAX: usize = 65536;
+pub const LOOT_SEARCH_PAGE_SIZE_DEFAULT: usize = 50;
+pub const LOOT_SEARCH_PAGE_SIZE_MAX: usize = 500;
+pub const LOOT_MERCHANT_RESTOCK_DEFAULT_SECS: f32 = 3600.0;
+pub const LOOT_INVENTORY_DEFAULT_CAPACITY: u32 = 40;
+pub const LOOT_INVENTORY_MAX_CAPACITY: u32 = 240;
+pub const LOOT_ITEM_GLOW_INTENSITY_MAX: f32 = 5.0;
+
+pub fn build_default_tag_registry() -> TagRegistry { TagRegistry::build_defaults() }
+
+pub fn loot_pipeline_steps() -> &'static [&'static str] {
+    &[
+        "1. Roll drop check against base rate",
+        "2. Apply magic find and luck modifiers",
+        "3. Apply event and seasonal multipliers",
+        "4. Check pity system for forced drops",
+        "5. Select pool from zone config",
+        "6. Weighted roll within pool",
+        "7. Roll item level within zone bounds",
+        "8. Roll affixes (prefix/suffix/implicit)",
+        "9. Apply buff multipliers to quantity",
+        "10. Notify player and update history",
+    ]
+}

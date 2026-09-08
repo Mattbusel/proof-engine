@@ -1,0 +1,275 @@
+
+// ── Item Identification System ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct UnidentifiedItem {
+    pub id: u32,
+    pub base_type: ItemType,
+    pub ilvl: u32,
+    pub identified: bool,
+    pub hidden_affixes: Vec<u32>,
+    pub hidden_rarity: ItemRarity,
+    pub acquire_timestamp: u64,
+}
+
+impl UnidentifiedItem {
+    pub fn new(id: u32, base_type: ItemType, ilvl: u32, rarity: ItemRarity) -> Self {
+        Self { id, base_type, ilvl, identified: false, hidden_affixes: Vec::new(), hidden_rarity: rarity, acquire_timestamp: 0 }
+    }
+    pub fn identify(&mut self) -> ItemRarity { self.identified = true; self.hidden_rarity.clone() }
+    pub fn add_hidden_affix(&mut self, affix_id: u32) { self.hidden_affixes.push(affix_id); }
+    pub fn affix_count(&self) -> usize { self.hidden_affixes.len() }
+    pub fn needs_scroll(&self) -> bool { !self.identified }
+}
+
+#[derive(Clone, Debug)]
+pub struct IdentificationService {
+    pub pending: Vec<UnidentifiedItem>,
+    pub scroll_cost: u32,
+    pub npc_cost_gold: u32,
+    pub instant_identify_level: u32,
+}
+
+impl IdentificationService {
+    pub fn new() -> Self { Self { pending: Vec::new(), scroll_cost: 1, npc_cost_gold: 100, instant_identify_level: 50 } }
+    pub fn add_unidentified(&mut self, item: UnidentifiedItem) { self.pending.push(item); }
+    pub fn identify_by_id(&mut self, id: u32) -> Option<ItemRarity> {
+        self.pending.iter_mut().find(|i| i.id == id).map(|i| i.identify())
+    }
+    pub fn identify_all(&mut self) -> Vec<(u32, ItemRarity)> {
+        self.pending.iter_mut().filter(|i| !i.identified).map(|i| (i.id, i.identify())).collect()
+    }
+    pub fn pending_count(&self) -> usize { self.pending.iter().filter(|i| !i.identified).count() }
+    pub fn remove_identified(&mut self) { self.pending.retain(|i| !i.identified); }
+}
+
+impl Default for IdentificationService {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Currency & Exchange System ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct CurrencyStack {
+    pub currency_id: u32,
+    pub name: String,
+    pub quantity: u64,
+    pub exchange_rate_to_gold: f32,
+    pub icon_id: u32,
+}
+
+impl CurrencyStack {
+    pub fn new(currency_id: u32, name: impl Into<String>, exchange_rate: f32) -> Self {
+        Self { currency_id, name: name.into(), quantity: 0, exchange_rate_to_gold: exchange_rate, icon_id: 0 }
+    }
+    pub fn add(&mut self, amount: u64) { self.quantity += amount; }
+    pub fn spend(&mut self, amount: u64) -> bool {
+        if self.quantity < amount { return false; }
+        self.quantity -= amount; true
+    }
+    pub fn gold_value(&self) -> f64 { self.quantity as f64 * self.exchange_rate_to_gold as f64 }
+}
+
+#[derive(Clone, Debug)]
+pub struct PlayerWallet {
+    pub gold: u64,
+    pub currencies: HashMap<u32, CurrencyStack>,
+}
+
+impl PlayerWallet {
+    pub fn new() -> Self { Self { gold: 0, currencies: HashMap::new() } }
+    pub fn add_gold(&mut self, amount: u64) { self.gold += amount; }
+    pub fn spend_gold(&mut self, amount: u64) -> bool {
+        if self.gold < amount { return false; }
+        self.gold -= amount; true
+    }
+    pub fn add_currency(&mut self, stack: CurrencyStack) {
+        self.currencies.entry(stack.currency_id).and_modify(|s| s.quantity += stack.quantity).or_insert(stack);
+    }
+    pub fn total_gold_equivalent(&self) -> f64 {
+        self.gold as f64 + self.currencies.values().map(|c| c.gold_value()).sum::<f64>()
+    }
+    pub fn currency_amount(&self, currency_id: u32) -> u64 {
+        self.currencies.get(&currency_id).map(|c| c.quantity).unwrap_or(0)
+    }
+}
+
+impl Default for PlayerWallet {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot Notification System ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootNotification {
+    pub id: u32,
+    pub item_id: u32,
+    pub item_name: String,
+    pub rarity: ItemRarity,
+    pub quantity: u32,
+    pub source: String,
+    pub timestamp: u64,
+    pub shown: bool,
+    pub important: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootNotificationQueue {
+    pub notifications: VecDeque<LootNotification>,
+    pub max_queue: usize,
+    pub show_common: bool,
+    pub next_id: u32,
+}
+
+impl LootNotificationQueue {
+    pub fn new() -> Self { Self { notifications: VecDeque::new(), max_queue: 50, show_common: false, next_id: 1 } }
+    pub fn push(&mut self, item_id: u32, name: impl Into<String>, rarity: ItemRarity, qty: u32, source: impl Into<String>) {
+        let important = !matches!(rarity, ItemRarity::Common | ItemRarity::Uncommon);
+        if !self.show_common && !important { return; }
+        if self.notifications.len() >= self.max_queue { self.notifications.pop_front(); }
+        let id = self.next_id; self.next_id += 1;
+        self.notifications.push_back(LootNotification { id, item_id, item_name: name.into(), rarity, quantity: qty, source: source.into(), timestamp: 0, shown: false, important });
+    }
+    pub fn next_unshown(&mut self) -> Option<&mut LootNotification> {
+        self.notifications.iter_mut().find(|n| !n.shown)
+    }
+    pub fn mark_shown(&mut self, id: u32) {
+        if let Some(n) = self.notifications.iter_mut().find(|n| n.id == id) { n.shown = true; }
+    }
+    pub fn clear_shown(&mut self) { self.notifications.retain(|n| !n.shown); }
+    pub fn important_unshown(&self) -> Vec<&LootNotification> {
+        self.notifications.iter().filter(|n| n.important && !n.shown).collect()
+    }
+}
+
+impl Default for LootNotificationQueue {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot Streak & Bonus System ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootStreak {
+    pub entity_id: u32,
+    pub consecutive_kills: u32,
+    pub current_bonus: f32,
+    pub max_bonus: f32,
+    pub bonus_per_kill: f32,
+    pub decay_per_sec: f32,
+    pub last_kill_time: f32,
+}
+
+impl LootStreak {
+    pub fn new(entity_id: u32) -> Self {
+        Self { entity_id, consecutive_kills: 0, current_bonus: 0.0, max_bonus: 2.0, bonus_per_kill: 0.05, decay_per_sec: 0.1, last_kill_time: 0.0 }
+    }
+    pub fn record_kill(&mut self, time: f32) {
+        self.consecutive_kills += 1;
+        self.current_bonus = (self.current_bonus + self.bonus_per_kill).min(self.max_bonus);
+        self.last_kill_time = time;
+    }
+    pub fn tick(&mut self, time: f32) {
+        let elapsed = time - self.last_kill_time;
+        if elapsed > 5.0 {
+            self.current_bonus = (self.current_bonus - self.decay_per_sec * elapsed).max(0.0);
+            if self.current_bonus <= 0.0 { self.consecutive_kills = 0; }
+        }
+    }
+    pub fn effective_multiplier(&self) -> f32 { 1.0 + self.current_bonus }
+    pub fn streak_level(&self) -> u32 {
+        if self.consecutive_kills >= 20 { 4 }
+        else if self.consecutive_kills >= 10 { 3 }
+        else if self.consecutive_kills >= 5 { 2 }
+        else if self.consecutive_kills >= 2 { 1 }
+        else { 0 }
+    }
+}
+
+// ── Loot Map Integration ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ZoneLootConfig {
+    pub zone_id: u32,
+    pub zone_name: String,
+    pub base_ilvl: u32,
+    pub ilvl_variance: u32,
+    pub pool_ids: Vec<u32>,
+    pub boss_pool_ids: Vec<u32>,
+    pub chest_pool_ids: Vec<u32>,
+    pub drop_rate_modifier: f32,
+    pub gold_modifier: f32,
+    pub magic_find_bonus: f32,
+    pub min_player_level: u32,
+}
+
+impl ZoneLootConfig {
+    pub fn new(zone_id: u32, name: impl Into<String>, base_ilvl: u32) -> Self {
+        Self { zone_id, zone_name: name.into(), base_ilvl, ilvl_variance: 5, pool_ids: Vec::new(), boss_pool_ids: Vec::new(), chest_pool_ids: Vec::new(), drop_rate_modifier: 1.0, gold_modifier: 1.0, magic_find_bonus: 0.0, min_player_level: 1 }
+    }
+    pub fn add_pool(&mut self, id: u32) { self.pool_ids.push(id); }
+    pub fn add_boss_pool(&mut self, id: u32) { self.boss_pool_ids.push(id); }
+    pub fn add_chest_pool(&mut self, id: u32) { self.chest_pool_ids.push(id); }
+    pub fn effective_ilvl(&self, rng_val: f32) -> u32 {
+        let var = (self.ilvl_variance as f32 * rng_val) as u32;
+        self.base_ilvl.saturating_sub(self.ilvl_variance / 2) + var
+    }
+    pub fn is_accessible(&self, player_level: u32) -> bool { player_level >= self.min_player_level }
+}
+
+#[derive(Clone, Debug)]
+pub struct ZoneLootRegistry {
+    pub zones: HashMap<u32, ZoneLootConfig>,
+}
+
+impl ZoneLootRegistry {
+    pub fn new() -> Self { Self { zones: HashMap::new() } }
+    pub fn register(&mut self, cfg: ZoneLootConfig) { self.zones.insert(cfg.zone_id, cfg); }
+    pub fn get(&self, zone_id: u32) -> Option<&ZoneLootConfig> { self.zones.get(&zone_id) }
+    pub fn zones_for_level(&self, player_level: u32) -> Vec<&ZoneLootConfig> {
+        self.zones.values().filter(|z| z.is_accessible(player_level)).collect()
+    }
+    pub fn zone_count(&self) -> usize { self.zones.len() }
+}
+
+impl Default for ZoneLootRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Final constants & helpers ─────────────────────────────────────────────────
+
+pub const LOOT_STREAK_MAX_LEVEL: u32 = 4;
+pub const LOOT_NOTIFICATION_TTL_SECS: f32 = 8.0;
+pub const LOOT_UNIDENTIFIED_SLOT_MAX: usize = 20;
+pub const LOOT_CURRENCY_TYPE_MAX: usize = 16;
+pub const LOOT_ZONE_MAX: usize = 256;
+pub const LOOT_CHEST_RESPAWN_MIN_SECS: f32 = 300.0;
+pub const LOOT_PRESTIGE_MAX_LEVEL: u32 = 20;
+pub const LOOT_SEASONAL_EVENT_MAX: usize = 8;
+pub const LOOT_ROTATING_SHOP_SLOTS: usize = 12;
+pub const LOOT_AFFIX_PERFECT_THRESHOLD: f32 = 0.95;
+
+pub fn loot_full_system_summary() -> String {
+    format!(concat!(
+        "LootSystem Summary:\n",
+        "  Rarities: 7 tiers (Common → Mythic)\n",
+        "  Affixes: prefix/suffix/implicit/corrupted\n",
+        "  Pity: configurable threshold per item\n",
+        "  Economy: inflation tracking, price bounds\n",
+        "  Events: seasonal & rotating loot\n",
+        "  Prestige: up to {} levels\n",
+        "  Zones: per-zone ilvl config\n",
+        "  Crafting: recipe unlock queue\n",
+        "  Enchantment: multi-tier enchant system\n",
+    ), LOOT_PRESTIGE_MAX_LEVEL)
+}
+
+pub fn gold_to_components(gold: u64) -> (u64, u64, u64) {
+    let g = gold / 10000;
+    let s = (gold % 10000) / 100;
+    let c = gold % 100;
+    (g, s, c)
+}
+
+pub fn components_to_gold(gold: u64, silver: u64, copper: u64) -> u64 {
+    gold * 10000 + silver * 100 + copper
+}

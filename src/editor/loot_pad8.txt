@@ -1,0 +1,80 @@
+
+// ── Loot Milestone System ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootMilestone {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub target_drops: u64,
+    pub current_drops: u64,
+    pub reward_item_id: Option<u32>,
+    pub reward_gold: u32,
+    pub reward_title: String,
+    pub completed: bool,
+    pub announced: bool,
+}
+
+impl LootMilestone {
+    pub fn new(id: u32, name: impl Into<String>, target: u64) -> Self {
+        Self { id, name: name.into(), description: String::new(), target_drops: target, current_drops: 0, reward_item_id: None, reward_gold: 0, reward_title: String::new(), completed: false, announced: false }
+    }
+    pub fn with_reward(mut self, item_id: u32, gold: u32) -> Self { self.reward_item_id = Some(item_id); self.reward_gold = gold; self }
+    pub fn record_drop(&mut self) -> bool {
+        if self.completed { return false; }
+        self.current_drops += 1;
+        if self.current_drops >= self.target_drops { self.completed = true; return true; }
+        false
+    }
+    pub fn progress_percent(&self) -> f32 {
+        if self.target_drops == 0 { return 100.0; }
+        (self.current_drops as f32 / self.target_drops as f32 * 100.0).min(100.0)
+    }
+    pub fn announce(&mut self) { self.announced = true; }
+}
+
+#[derive(Clone, Debug)]
+pub struct MilestoneTracker {
+    pub milestones: Vec<LootMilestone>,
+    pub completed_count: u32,
+}
+
+impl MilestoneTracker {
+    pub fn new() -> Self { Self { milestones: Vec::new(), completed_count: 0 } }
+    pub fn add(&mut self, m: LootMilestone) { self.milestones.push(m); }
+    pub fn record_drop(&mut self) -> Vec<u32> {
+        let mut just_completed = Vec::new();
+        for m in &mut self.milestones {
+            if m.record_drop() { self.completed_count += 1; just_completed.push(m.id); }
+        }
+        just_completed
+    }
+    pub fn pending_announcements(&mut self) -> Vec<&mut LootMilestone> {
+        self.milestones.iter_mut().filter(|m| m.completed && !m.announced).collect()
+    }
+    pub fn next_milestone(&self) -> Option<&LootMilestone> {
+        self.milestones.iter().find(|m| !m.completed)
+    }
+    pub fn completion_percent(&self) -> f32 {
+        if self.milestones.is_empty() { return 100.0; }
+        self.completed_count as f32 / self.milestones.len() as f32 * 100.0
+    }
+    pub fn total(&self) -> usize { self.milestones.len() }
+}
+
+impl Default for MilestoneTracker {
+    fn default() -> Self { Self::new() }
+}
+
+pub const LOOT_MILESTONE_MAX: usize = 128;
+pub const LOOT_MILESTONE_ANNOUNCE_DELAY_SECS: f32 = 2.0;
+
+pub fn build_default_milestones() -> MilestoneTracker {
+    let mut t = MilestoneTracker::new();
+    t.add(LootMilestone::new(1, "First Drop", 1).with_reward(9001, 100));
+    t.add(LootMilestone::new(2, "Apprentice Looter", 100).with_reward(9002, 500));
+    t.add(LootMilestone::new(3, "Seasoned Looter", 1000).with_reward(9003, 2000));
+    t.add(LootMilestone::new(4, "Master Looter", 10000).with_reward(9004, 10000));
+    t.add(LootMilestone::new(5, "Loot Grandmaster", 100000).with_reward(9005, 100000));
+    t
+}

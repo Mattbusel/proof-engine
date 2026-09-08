@@ -1,0 +1,268 @@
+
+// ── Item Comparison Tools ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemComparator {
+    pub weights: HashMap<String, f32>,
+}
+
+impl ItemComparator {
+    pub fn new() -> Self {
+        let mut w = HashMap::new();
+        w.insert("attack".into(), 1.0);
+        w.insert("defense".into(), 0.8);
+        w.insert("speed".into(), 0.6);
+        w.insert("magic".into(), 0.9);
+        w.insert("hp".into(), 0.5);
+        w.insert("mp".into(), 0.4);
+        w.insert("crit_chance".into(), 1.2);
+        w.insert("crit_damage".into(), 1.1);
+        Self { weights: w }
+    }
+    pub fn score(&self, stats: &HashMap<String, f32>) -> f32 {
+        stats.iter().map(|(k, v)| self.weights.get(k).copied().unwrap_or(0.5) * v).sum()
+    }
+    pub fn set_weight(&mut self, stat: impl Into<String>, weight: f32) { self.weights.insert(stat.into(), weight); }
+    pub fn compare(&self, a: &HashMap<String, f32>, b: &HashMap<String, f32>) -> std::cmp::Ordering {
+        self.score(a).partial_cmp(&self.score(b)).unwrap_or(std::cmp::Ordering::Equal)
+    }
+    pub fn better_stats(&self, a: &HashMap<String, f32>, b: &HashMap<String, f32>) -> Vec<String> {
+        a.keys().filter(|k| a.get(*k).unwrap_or(&0.0) > b.get(*k).unwrap_or(&0.0)).cloned().collect()
+    }
+}
+
+impl Default for ItemComparator {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Drop Source Tracking ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct DropSource {
+    pub source_id: u32,
+    pub source_type: String,
+    pub name: String,
+    pub location: String,
+    pub level: u32,
+    pub guaranteed_items: Vec<u32>,
+    pub pool_ids: Vec<u32>,
+    pub cooldown_secs: Option<f32>,
+    pub requires_group: bool,
+}
+
+impl DropSource {
+    pub fn new(source_id: u32, source_type: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { source_id, source_type: source_type.into(), name: name.into(), location: String::new(), level: 1, guaranteed_items: Vec::new(), pool_ids: Vec::new(), cooldown_secs: None, requires_group: false }
+    }
+    pub fn with_level(mut self, level: u32) -> Self { self.level = level; self }
+    pub fn in_location(mut self, loc: impl Into<String>) -> Self { self.location = loc.into(); self }
+    pub fn guarantee(&mut self, item_id: u32) { self.guaranteed_items.push(item_id); }
+    pub fn add_pool(&mut self, pool_id: u32) { self.pool_ids.push(pool_id); }
+    pub fn is_boss(&self) -> bool { self.source_type == "boss" }
+    pub fn is_daily(&self) -> bool { self.cooldown_secs.map(|c| c >= 86400.0).unwrap_or(false) }
+}
+
+#[derive(Clone, Debug)]
+pub struct DropSourceRegistry {
+    pub sources: HashMap<u32, DropSource>,
+}
+
+impl DropSourceRegistry {
+    pub fn new() -> Self { Self { sources: HashMap::new() } }
+    pub fn register(&mut self, src: DropSource) { self.sources.insert(src.source_id, src); }
+    pub fn get(&self, id: u32) -> Option<&DropSource> { self.sources.get(&id) }
+    pub fn bosses(&self) -> Vec<&DropSource> { self.sources.values().filter(|s| s.is_boss()).collect() }
+    pub fn sources_for_item(&self, item_id: u32) -> Vec<&DropSource> {
+        self.sources.values().filter(|s| s.guaranteed_items.contains(&item_id)).collect()
+    }
+    pub fn count(&self) -> usize { self.sources.len() }
+}
+
+impl Default for DropSourceRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot Scenario Testing ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootScenario {
+    pub name: String,
+    pub player_level: u32,
+    pub player_luck: f32,
+    pub magic_find: f32,
+    pub active_buffs: Vec<String>,
+    pub zone_id: u32,
+    pub kill_streak: u32,
+    pub pity_counts: HashMap<u32, u32>,
+}
+
+impl LootScenario {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), player_level: 1, player_luck: 1.0, magic_find: 0.0, active_buffs: Vec::new(), zone_id: 0, kill_streak: 0, pity_counts: HashMap::new() }
+    }
+    pub fn with_level(mut self, level: u32) -> Self { self.player_level = level; self }
+    pub fn with_luck(mut self, luck: f32) -> Self { self.player_luck = luck; self }
+    pub fn with_magic_find(mut self, mf: f32) -> Self { self.magic_find = mf; self }
+    pub fn in_zone(mut self, zone_id: u32) -> Self { self.zone_id = zone_id; self }
+    pub fn effective_drop_mult(&self) -> f32 { 1.0 + self.magic_find / 100.0 }
+    pub fn effective_luck(&self) -> f32 { self.player_luck * (1.0 + self.kill_streak as f32 * 0.01) }
+}
+
+#[derive(Clone, Debug)]
+pub struct LootScenarioRunner {
+    pub scenarios: Vec<LootScenario>,
+    pub results: HashMap<String, ItemDropSimulation>,
+}
+
+impl LootScenarioRunner {
+    pub fn new() -> Self { Self { scenarios: Vec::new(), results: HashMap::new() } }
+    pub fn add_scenario(&mut self, scenario: LootScenario) { self.scenarios.push(scenario); }
+    pub fn run_all(&mut self, iterations: u32) {
+        for scenario in &self.scenarios {
+            let sim = ItemDropSimulation::new(scenario.zone_id, iterations);
+            self.results.insert(scenario.name.clone(), sim);
+        }
+    }
+    pub fn get_result(&self, name: &str) -> Option<&ItemDropSimulation> { self.results.get(name) }
+    pub fn scenario_count(&self) -> usize { self.scenarios.len() }
+    pub fn clear_results(&mut self) { self.results.clear(); }
+}
+
+impl Default for LootScenarioRunner {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Item Transmutation & Upgrade ──────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TransmutationRecipe {
+    pub id: u32,
+    pub name: String,
+    pub input_items: Vec<(u32, u32)>,
+    pub output_item_id: u32,
+    pub output_quantity: u32,
+    pub success_rate: f32,
+    pub fail_result: Option<u32>,
+    pub required_station: String,
+}
+
+impl TransmutationRecipe {
+    pub fn new(id: u32, name: impl Into<String>, output_item_id: u32, success_rate: f32) -> Self {
+        Self { id, name: name.into(), input_items: Vec::new(), output_item_id, output_quantity: 1, success_rate, fail_result: None, required_station: "transmuter".into() }
+    }
+    pub fn add_input(mut self, item_id: u32, qty: u32) -> Self { self.input_items.push((item_id, qty)); self }
+    pub fn with_fail_result(mut self, item_id: u32) -> Self { self.fail_result = Some(item_id); self }
+    pub fn is_guaranteed(&self) -> bool { self.success_rate >= 1.0 }
+    pub fn input_count(&self) -> usize { self.input_items.len() }
+}
+
+#[derive(Clone, Debug)]
+pub struct TransmutationSystem {
+    pub recipes: Vec<TransmutationRecipe>,
+    pub history: Vec<(u32, bool)>,
+    pub total_attempts: u32,
+    pub total_successes: u32,
+}
+
+impl TransmutationSystem {
+    pub fn new() -> Self { Self { recipes: Vec::new(), history: Vec::new(), total_attempts: 0, total_successes: 0 } }
+    pub fn add_recipe(&mut self, recipe: TransmutationRecipe) { self.recipes.push(recipe); }
+    pub fn find_recipe(&self, id: u32) -> Option<&TransmutationRecipe> { self.recipes.iter().find(|r| r.id == id) }
+    pub fn attempt(&mut self, recipe_id: u32, roll: f32) -> bool {
+        let success = self.recipes.iter().find(|r| r.id == recipe_id).map(|r| roll <= r.success_rate).unwrap_or(false);
+        self.total_attempts += 1;
+        if success { self.total_successes += 1; }
+        self.history.push((recipe_id, success));
+        success
+    }
+    pub fn success_rate(&self) -> f32 {
+        if self.total_attempts == 0 { return 0.0; }
+        self.total_successes as f32 / self.total_attempts as f32
+    }
+    pub fn recipe_count(&self) -> usize { self.recipes.len() }
+}
+
+impl Default for TransmutationSystem {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Item Durability System ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemDurability {
+    pub item_id: u32,
+    pub current: u32,
+    pub maximum: u32,
+    pub broken: bool,
+    pub repair_cost_per_point: f32,
+}
+
+impl ItemDurability {
+    pub fn new(item_id: u32, maximum: u32) -> Self { Self { item_id, current: maximum, maximum, broken: false, repair_cost_per_point: 1.0 } }
+    pub fn damage(&mut self, amount: u32) {
+        self.current = self.current.saturating_sub(amount);
+        if self.current == 0 { self.broken = true; }
+    }
+    pub fn repair(&mut self, amount: u32) {
+        self.current = (self.current + amount).min(self.maximum);
+        if self.current > 0 { self.broken = false; }
+    }
+    pub fn full_repair_cost(&self) -> f32 { (self.maximum - self.current) as f32 * self.repair_cost_per_point }
+    pub fn percent(&self) -> f32 { if self.maximum == 0 { 0.0 } else { self.current as f32 / self.maximum as f32 * 100.0 } }
+    pub fn condition(&self) -> &'static str {
+        let p = self.percent();
+        if p >= 90.0 { "Pristine" } else if p >= 70.0 { "Good" } else if p >= 40.0 { "Worn" } else if p > 0.0 { "Damaged" } else { "Broken" }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DurabilityTracker {
+    pub items: HashMap<u32, ItemDurability>,
+}
+
+impl DurabilityTracker {
+    pub fn new() -> Self { Self { items: HashMap::new() } }
+    pub fn register(&mut self, item_id: u32, max_durability: u32) {
+        self.items.insert(item_id, ItemDurability::new(item_id, max_durability));
+    }
+    pub fn damage(&mut self, item_id: u32, amount: u32) {
+        if let Some(d) = self.items.get_mut(&item_id) { d.damage(amount); }
+    }
+    pub fn repair(&mut self, item_id: u32, amount: u32) {
+        if let Some(d) = self.items.get_mut(&item_id) { d.repair(amount); }
+    }
+    pub fn broken_items(&self) -> Vec<u32> { self.items.values().filter(|d| d.broken).map(|d| d.item_id).collect() }
+    pub fn total_repair_cost(&self) -> f32 { self.items.values().map(|d| d.full_repair_cost()).sum() }
+}
+
+impl Default for DurabilityTracker {
+    fn default() -> Self { Self::new() }
+}
+
+// ── More constants ────────────────────────────────────────────────────────────
+
+pub const LOOT_TRANSMUTATION_HISTORY_MAX: usize = 500;
+pub const LOOT_DURABILITY_DAMAGE_ON_DEATH: u32 = 10;
+pub const LOOT_DURABILITY_MAX: u32 = 1000;
+pub const LOOT_SCENARIO_MAX: usize = 32;
+pub const LOOT_COMPARATOR_STAT_MAX: usize = 20;
+pub const LOOT_SOURCE_MAX: usize = 1024;
+pub const LOOT_IDENTIFICATION_SCROLL_ID: u32 = 50000;
+pub const LOOT_WALLET_GOLD_CAP: u64 = 9_999_999_999;
+pub const LOOT_NOTIFICATION_ICON_SIZE: u32 = 32;
+pub const LOOT_STREAK_DECAY_THRESHOLD_SECS: f32 = 5.0;
+
+pub fn loot_module_list() -> &'static [&'static str] {
+    &[
+        "filters", "history", "statistics", "enchantments", "buffs",
+        "set_bonuses", "cooldowns", "crafting", "pity", "trades",
+        "events", "simulation", "graph", "rules", "pools",
+        "chests", "analyzer", "npc_loot", "affixes", "quests",
+        "seasonal", "shops", "ratings", "economy", "tiers",
+        "prestige", "identification", "currency", "notifications",
+        "streaks", "zones", "comparator", "sources", "scenarios",
+        "transmutation", "durability",
+    ]
+}
+
+pub fn total_loot_modules() -> usize { loot_module_list().len() }

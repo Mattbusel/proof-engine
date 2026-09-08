@@ -1,0 +1,249 @@
+
+// ── Particle Noise Field ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct NoiseField {
+    pub frequency: f32,
+    pub amplitude: f32,
+    pub octaves: u32,
+    pub lacunarity: f32,
+    pub persistence: f32,
+    pub offset: Vec3,
+    pub scroll_speed: Vec3,
+    pub enabled: bool,
+}
+
+impl NoiseField {
+    pub fn new(frequency: f32, amplitude: f32) -> Self {
+        Self { frequency, amplitude, octaves: 4, lacunarity: 2.0, persistence: 0.5, offset: Vec3::ZERO, scroll_speed: Vec3::ZERO, enabled: true }
+    }
+    pub fn sample(&self, pos: Vec3, time: f32) -> Vec3 {
+        let p = pos * self.frequency + self.offset + self.scroll_speed * time;
+        // Simple pseudo-noise using sin waves
+        let nx = (p.x * 1.1 + p.y * 0.7 + p.z * 0.3).sin() * self.amplitude;
+        let ny = (p.x * 0.3 + p.y * 1.3 + p.z * 0.9).sin() * self.amplitude;
+        let nz = (p.x * 0.7 + p.y * 0.5 + p.z * 1.1).sin() * self.amplitude;
+        Vec3::new(nx, ny, nz)
+    }
+    pub fn scroll(&mut self, dt: f32) { self.offset += self.scroll_speed * dt; }
+    pub fn set_turbulence(mut self, octaves: u32) -> Self { self.octaves = octaves; self }
+}
+
+impl Default for NoiseField {
+    fn default() -> Self { Self::new(0.5, 1.0) }
+}
+
+// ── Particle Spawn Burst ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SpawnBurst {
+    pub time: f32,
+    pub count_min: u32,
+    pub count_max: u32,
+    pub probability: f32,
+    pub triggered: bool,
+    pub cycles: u32,
+    pub cycle_interval: f32,
+    pub cycles_done: u32,
+}
+
+impl SpawnBurst {
+    pub fn new(time: f32, count: u32) -> Self {
+        Self { time, count_min: count, count_max: count, probability: 1.0, triggered: false, cycles: 1, cycle_interval: 0.0, cycles_done: 0 }
+    }
+    pub fn range(mut self, min: u32, max: u32) -> Self { self.count_min = min; self.count_max = max; self }
+    pub fn repeating(mut self, cycles: u32, interval: f32) -> Self { self.cycles = cycles; self.cycle_interval = interval; self }
+    pub fn should_trigger(&self, current_time: f32) -> bool {
+        !self.triggered && self.cycles_done < self.cycles &&
+        current_time >= self.time + self.cycles_done as f32 * self.cycle_interval
+    }
+    pub fn trigger(&mut self) {
+        self.triggered = self.cycles_done + 1 >= self.cycles;
+        self.cycles_done += 1;
+    }
+    pub fn is_done(&self) -> bool { self.cycles_done >= self.cycles }
+}
+
+// ── Particle Sub-Emitter ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SubEmitterEvent { Birth, Death, Collision, Manual }
+
+#[derive(Clone, Debug)]
+pub struct SubEmitter {
+    pub id: u32,
+    pub trigger_event: SubEmitterEvent,
+    pub emitter_asset_id: u32,
+    pub inherit_velocity: bool,
+    pub inherit_color: bool,
+    pub inherit_size: f32,
+    pub probability: f32,
+    pub cooldown: f32,
+    pub last_triggered: f32,
+}
+
+impl SubEmitter {
+    pub fn new(id: u32, event: SubEmitterEvent, asset_id: u32) -> Self {
+        Self { id, trigger_event: event, emitter_asset_id: asset_id, inherit_velocity: true, inherit_color: false, inherit_size: 1.0, probability: 1.0, cooldown: 0.0, last_triggered: -999.0 }
+    }
+    pub fn can_trigger(&self, time: f32, roll: f32) -> bool {
+        time - self.last_triggered >= self.cooldown && roll <= self.probability
+    }
+    pub fn record_trigger(&mut self, time: f32) { self.last_triggered = time; }
+}
+
+// ── Particle Texture Animation ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TextureSheetAnimation {
+    pub columns: u32,
+    pub rows: u32,
+    pub frame_count: u32,
+    pub animation_speed: f32,
+    pub loop_animation: bool,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub random_start_frame: bool,
+}
+
+impl TextureSheetAnimation {
+    pub fn new(columns: u32, rows: u32) -> Self {
+        let total = columns * rows;
+        Self { columns, rows, frame_count: total, animation_speed: 30.0, loop_animation: true, start_frame: 0, end_frame: total.saturating_sub(1), random_start_frame: false }
+    }
+    pub fn frame_at_time(&self, time: f32, lifetime: f32) -> u32 {
+        if self.frame_count == 0 { return 0; }
+        let t = if lifetime > 0.0 { time / lifetime } else { time * self.animation_speed / self.frame_count as f32 };
+        let t = if self.loop_animation { t.fract() } else { t.clamp(0.0, 1.0) };
+        let range = self.end_frame - self.start_frame + 1;
+        self.start_frame + (t * range as f32) as u32 % range
+    }
+    pub fn uv_for_frame(&self, frame: u32) -> (f32, f32, f32, f32) {
+        let frame = frame.min(self.frame_count.saturating_sub(1));
+        let col = frame % self.columns;
+        let row = frame / self.columns;
+        let w = 1.0 / self.columns as f32;
+        let h = 1.0 / self.rows as f32;
+        (col as f32 * w, row as f32 * h, w, h)
+    }
+    pub fn total_frames(&self) -> u32 { self.frame_count }
+    pub fn duration(&self) -> f32 { self.frame_count as f32 / self.animation_speed.max(1.0) }
+}
+
+impl Default for TextureSheetAnimation {
+    fn default() -> Self { Self::new(1, 1) }
+}
+
+// ── Particle Color Over Lifetime ──────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ColorOverLifetime {
+    pub gradient: Vec<(f32, Vec4)>,
+    pub mode: ColorMode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColorMode { Single, Gradient, RandomBetweenTwo, RandomColor }
+
+impl ColorOverLifetime {
+    pub fn constant(color: Vec4) -> Self { Self { gradient: vec![(0.0, color), (1.0, color)], mode: ColorMode::Single } }
+    pub fn gradient(colors: Vec<(f32, Vec4)>) -> Self { Self { gradient: colors, mode: ColorMode::Gradient } }
+    pub fn fade_out(color: Vec4) -> Self {
+        let transparent = Vec4::new(color.x, color.y, color.z, 0.0);
+        Self { gradient: vec![(0.0, color), (1.0, transparent)], mode: ColorMode::Gradient }
+    }
+    pub fn evaluate(&self, t: f32) -> Vec4 {
+        if self.gradient.is_empty() { return Vec4::ONE; }
+        if self.gradient.len() == 1 { return self.gradient[0].1; }
+        let t = t.clamp(0.0, 1.0);
+        let idx = self.gradient.partition_point(|(time, _)| *time <= t).saturating_sub(1);
+        if idx + 1 >= self.gradient.len() { return self.gradient.last().unwrap().1; }
+        let (t0, c0) = self.gradient[idx];
+        let (t1, c1) = self.gradient[idx + 1];
+        let alpha = if (t1 - t0).abs() < 1e-6 { 0.0 } else { (t - t0) / (t1 - t0) };
+        lerp_color(c0, c1, alpha)
+    }
+    pub fn add_stop(&mut self, time: f32, color: Vec4) {
+        self.gradient.push((time, color));
+        self.gradient.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+
+// ── Particle Size Over Lifetime ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SizeOverLifetime {
+    pub curve: FloatCurve,
+    pub base_size: f32,
+}
+
+impl SizeOverLifetime {
+    pub fn constant(size: f32) -> Self { Self { curve: FloatCurve::constant("size", 1.0), base_size: size } }
+    pub fn shrink(start: f32, end: f32) -> Self {
+        let mut curve = FloatCurve::new("size");
+        curve.add_key(0.0, start / start.max(1e-5));
+        curve.add_key(1.0, end / start.max(1e-5));
+        Self { curve, base_size: start }
+    }
+    pub fn evaluate(&self, t: f32) -> f32 { self.base_size * self.curve.evaluate(t) }
+}
+
+// ── Velocity Over Lifetime ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VelocityOverLifetime {
+    pub x_curve: FloatCurve,
+    pub y_curve: FloatCurve,
+    pub z_curve: FloatCurve,
+    pub space: VelocitySpace,
+    pub speed_modifier: FloatCurve,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum VelocitySpace { Local, World }
+
+impl VelocityOverLifetime {
+    pub fn constant(vel: Vec3) -> Self {
+        Self {
+            x_curve: FloatCurve::constant("vx", vel.x),
+            y_curve: FloatCurve::constant("vy", vel.y),
+            z_curve: FloatCurve::constant("vz", vel.z),
+            space: VelocitySpace::World,
+            speed_modifier: FloatCurve::constant("speed", 1.0),
+        }
+    }
+    pub fn evaluate(&self, t: f32) -> Vec3 {
+        let speed = self.speed_modifier.evaluate(t);
+        Vec3::new(self.x_curve.evaluate(t), self.y_curve.evaluate(t), self.z_curve.evaluate(t)) * speed
+    }
+    pub fn zero() -> Self { Self::constant(Vec3::ZERO) }
+}
+
+// ── Extended Particle Constants ───────────────────────────────────────────────
+
+pub const PARTICLE_MAX_BURST_EVENTS: usize = 8;
+pub const PARTICLE_MAX_SUB_EMITTERS: usize = 4;
+pub const PARTICLE_TEXTURE_SHEET_MAX_FRAMES: u32 = 256;
+pub const PARTICLE_COLOR_GRADIENT_MAX_STOPS: usize = 8;
+pub const PARTICLE_NOISE_OCTAVES_MAX: u32 = 8;
+pub const PARTICLE_MAX_TRAIL_EMITTERS: usize = 16;
+pub const PARTICLE_RENDERER_MAX_BATCHES: usize = 512;
+pub const PARTICLE_POOL_OVERCOMMIT: f32 = 0.1;
+pub const PARTICLE_ASSET_LIBRARY_MAX: usize = 1024;
+pub const PARTICLE_SIMULATION_STEP_MAX: f32 = 0.033;
+
+pub fn particle_feature_list() -> &'static [&'static str] {
+    &[
+        "emitters", "trails", "attractors", "force_fields",
+        "colliders", "lod", "presets", "curves", "noise",
+        "bursts", "sub_emitters", "texture_animation",
+        "color_lifetime", "size_lifetime", "velocity_lifetime",
+        "renderer", "pool", "assets", "sim_state", "debug",
+        "statistics", "spawner_shapes",
+    ]
+}
+
+pub fn particle_module_count() -> usize { particle_feature_list().len() }
+pub fn particle_system_full_info() -> String {
+    format!("ParticleSystemEditor v2.0 — {} modules, max {} total particles", particle_module_count(), PARTICLE_MAX_TOTAL)
+}

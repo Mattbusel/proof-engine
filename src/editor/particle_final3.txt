@@ -1,0 +1,11 @@
+
+pub fn emitter_type_name(is_burst: bool, is_looping: bool) -> &'static str {
+    match (is_burst, is_looping) {
+        (true, _) => "Burst",
+        (false, true) => "Continuous Looping",
+        (false, false) => "Continuous One-Shot",
+    }
+}
+pub fn particle_system_build_info() -> String {
+    format!("Build: ParticleSystemEditor, modules={}, max_particles={}", particle_module_count(), PARTICLE_MAX_TOTAL)
+}

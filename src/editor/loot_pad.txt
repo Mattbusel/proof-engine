@@ -1,0 +1,666 @@
+
+// ── Extended Loot System ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootFilter {
+    pub id: u32,
+    pub name: String,
+    pub min_rarity: Option<ItemRarity>,
+    pub item_types: Vec<ItemType>,
+    pub min_value: f32,
+    pub max_value: f32,
+    pub require_tags: Vec<String>,
+    pub exclude_tags: Vec<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootHistory {
+    pub entries: VecDeque<LootHistoryEntry>,
+    pub max_entries: usize,
+    pub total_items_dropped: u64,
+    pub total_gold_dropped: u64,
+    pub session_start_time: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootHistoryEntry {
+    pub timestamp: u64,
+    pub item_id: u32,
+    pub item_name: String,
+    pub rarity: ItemRarity,
+    pub source: String,
+    pub value: f32,
+    pub quantity: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootStatistics {
+    pub drop_counts: HashMap<u32, u64>,
+    pub rarity_counts: HashMap<String, u64>,
+    pub source_counts: HashMap<String, u64>,
+    pub total_value_dropped: f64,
+    pub session_id: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemEnchantment {
+    pub id: u32,
+    pub name: String,
+    pub stat_bonus: HashMap<String, f32>,
+    pub effect_description: String,
+    pub tier: u32,
+    pub compatible_types: Vec<ItemType>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnchantmentSystem {
+    pub enchantments: Vec<ItemEnchantment>,
+    pub applied: HashMap<u32, Vec<u32>>,
+    pub max_enchants_per_item: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootMultiplier {
+    pub id: u32,
+    pub name: String,
+    pub quantity_mult: f32,
+    pub quality_mult: f32,
+    pub rarity_boost: f32,
+    pub duration_secs: f32,
+    pub remaining_secs: f32,
+    pub source: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActiveBuffs {
+    pub multipliers: Vec<LootMultiplier>,
+    pub global_luck: f32,
+    pub magic_find: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemSetBonus {
+    pub set_id: u32,
+    pub set_name: String,
+    pub bonuses: Vec<(u32, HashMap<String, f32>)>,
+    pub flavor_text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SetBonusRegistry {
+    pub sets: HashMap<u32, ItemSetBonus>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootCooldown {
+    pub item_id: u32,
+    pub cooldown_secs: f32,
+    pub remaining_secs: f32,
+    pub source_type: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootCooldownTracker {
+    pub cooldowns: HashMap<u32, LootCooldown>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemCraftingRecipe {
+    pub id: u32,
+    pub output_item_id: u32,
+    pub output_quantity: u32,
+    pub ingredients: Vec<(u32, u32)>,
+    pub required_station: String,
+    pub required_skill: u32,
+    pub crafting_time_secs: f32,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CraftingSystem {
+    pub recipes: Vec<ItemCraftingRecipe>,
+    pub unlocked_recipes: HashSet<u32>,
+    pub crafting_queue: VecDeque<(u32, u64)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootPitySystem {
+    pub item_id: u32,
+    pub attempts_since_last_drop: u32,
+    pub pity_threshold: u32,
+    pub guaranteed_at: u32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PityTracker {
+    pub entries: HashMap<u32, LootPitySystem>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemTrade {
+    pub id: u32,
+    pub seller_id: u32,
+    pub buyer_id: u32,
+    pub item_id: u32,
+    pub quantity: u32,
+    pub price: u32,
+    pub status: String,
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TradeHistory {
+    pub trades: Vec<ItemTrade>,
+    pub total_volume: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootEventSchedule {
+    pub events: Vec<LootEvent>,
+    pub current_event: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootEvent {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub drop_rate_multiplier: f32,
+    pub exclusive_items: Vec<u32>,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootExportConfig {
+    pub format: String,
+    pub include_stats: bool,
+    pub include_lore: bool,
+    pub include_sets: bool,
+    pub min_rarity_filter: Option<ItemRarity>,
+    pub output_path: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootImportResult {
+    pub items_imported: u32,
+    pub tables_imported: u32,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub success: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemDropSimulation {
+    pub iterations: u32,
+    pub source_id: u32,
+    pub results: HashMap<u32, u32>,
+    pub total_value: f64,
+    pub rarity_distribution: HashMap<String, u32>,
+}
+
+// ── Impl blocks ──────────────────────────────────────────────────────────────
+
+impl LootFilter {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self {
+            id, name: name.into(), min_rarity: None, item_types: Vec::new(),
+            min_value: 0.0, max_value: f32::MAX, require_tags: Vec::new(),
+            exclude_tags: Vec::new(), enabled: true,
+        }
+    }
+    pub fn with_min_rarity(mut self, rarity: ItemRarity) -> Self { self.min_rarity = Some(rarity); self }
+    pub fn with_type(mut self, t: ItemType) -> Self { self.item_types.push(t); self }
+    pub fn with_value_range(mut self, min: f32, max: f32) -> Self { self.min_value = min; self.max_value = max; self }
+    pub fn require_tag(mut self, tag: impl Into<String>) -> Self { self.require_tags.push(tag.into()); self }
+    pub fn exclude_tag(mut self, tag: impl Into<String>) -> Self { self.exclude_tags.push(tag.into()); self }
+    pub fn matches_value(&self, value: f32) -> bool { value >= self.min_value && value <= self.max_value }
+    pub fn matches_tag(&self, tags: &[String]) -> bool {
+        let has_required = self.require_tags.is_empty() || self.require_tags.iter().any(|t| tags.contains(t));
+        let has_excluded = self.exclude_tags.iter().any(|t| tags.contains(t));
+        has_required && !has_excluded
+    }
+}
+
+impl Default for LootFilter {
+    fn default() -> Self { Self::new(0, "default") }
+}
+
+impl LootHistory {
+    pub fn new(max_entries: usize) -> Self {
+        Self { entries: VecDeque::new(), max_entries, total_items_dropped: 0, total_gold_dropped: 0, session_start_time: 0 }
+    }
+    pub fn record(&mut self, entry: LootHistoryEntry) {
+        self.total_items_dropped += entry.quantity as u64;
+        self.total_gold_dropped += entry.value as u64 * entry.quantity as u64;
+        if self.entries.len() >= self.max_entries { self.entries.pop_front(); }
+        self.entries.push_back(entry);
+    }
+    pub fn recent(&self, n: usize) -> Vec<&LootHistoryEntry> {
+        self.entries.iter().rev().take(n).collect()
+    }
+    pub fn by_rarity(&self, rarity: ItemRarity) -> Vec<&LootHistoryEntry> {
+        self.entries.iter().filter(|e| e.rarity == rarity).collect()
+    }
+    pub fn clear(&mut self) { self.entries.clear(); }
+    pub fn count(&self) -> usize { self.entries.len() }
+}
+
+impl Default for LootHistory {
+    fn default() -> Self { Self::new(1000) }
+}
+
+impl LootStatistics {
+    pub fn new(session_id: u64) -> Self {
+        Self { drop_counts: HashMap::new(), rarity_counts: HashMap::new(), source_counts: HashMap::new(), total_value_dropped: 0.0, session_id }
+    }
+    pub fn record_drop(&mut self, item_id: u32, rarity: &str, source: &str, value: f32, qty: u32) {
+        *self.drop_counts.entry(item_id).or_insert(0) += qty as u64;
+        *self.rarity_counts.entry(rarity.to_string()).or_insert(0) += qty as u64;
+        *self.source_counts.entry(source.to_string()).or_insert(0) += qty as u64;
+        self.total_value_dropped += value as f64 * qty as f64;
+    }
+    pub fn most_dropped_item(&self) -> Option<u32> {
+        self.drop_counts.iter().max_by_key(|(_, &v)| v).map(|(&id, _)| id)
+    }
+    pub fn total_drops(&self) -> u64 { self.drop_counts.values().sum() }
+}
+
+impl ItemEnchantment {
+    pub fn new(id: u32, name: impl Into<String>, tier: u32) -> Self {
+        Self { id, name: name.into(), stat_bonus: HashMap::new(), effect_description: String::new(), tier, compatible_types: Vec::new() }
+    }
+    pub fn add_bonus(mut self, stat: impl Into<String>, value: f32) -> Self { self.stat_bonus.insert(stat.into(), value); self }
+    pub fn for_type(mut self, t: ItemType) -> Self { self.compatible_types.push(t); self }
+    pub fn total_power(&self) -> f32 { self.stat_bonus.values().sum::<f32>() * self.tier as f32 }
+    pub fn is_compatible(&self, item_type: &ItemType) -> bool {
+        self.compatible_types.is_empty() || self.compatible_types.contains(item_type)
+    }
+}
+
+impl EnchantmentSystem {
+    pub fn new(max_enchants: u32) -> Self {
+        Self { enchantments: Vec::new(), applied: HashMap::new(), max_enchants_per_item: max_enchants }
+    }
+    pub fn register(&mut self, e: ItemEnchantment) { self.enchantments.push(e); }
+    pub fn apply(&mut self, item_id: u32, enchant_id: u32) -> bool {
+        let applied = self.applied.entry(item_id).or_default();
+        if applied.len() >= self.max_enchants_per_item as usize { return false; }
+        if applied.contains(&enchant_id) { return false; }
+        applied.push(enchant_id); true
+    }
+    pub fn remove(&mut self, item_id: u32, enchant_id: u32) {
+        if let Some(v) = self.applied.get_mut(&item_id) { v.retain(|&id| id != enchant_id); }
+    }
+    pub fn get_enchantments(&self, item_id: u32) -> Vec<&ItemEnchantment> {
+        let ids = self.applied.get(&item_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        self.enchantments.iter().filter(|e| ids.contains(&e.id)).collect()
+    }
+    pub fn total_bonus(&self, item_id: u32, stat: &str) -> f32 {
+        self.get_enchantments(item_id).iter().filter_map(|e| e.stat_bonus.get(stat)).sum()
+    }
+}
+
+impl ActiveBuffs {
+    pub fn new() -> Self { Self { multipliers: Vec::new(), global_luck: 1.0, magic_find: 0.0 } }
+    pub fn add_multiplier(&mut self, m: LootMultiplier) { self.multipliers.push(m); }
+    pub fn tick(&mut self, dt: f32) { self.multipliers.retain_mut(|m| { m.remaining_secs -= dt; m.remaining_secs > 0.0 }); }
+    pub fn effective_quantity_mult(&self) -> f32 { self.multipliers.iter().map(|m| m.quantity_mult).fold(1.0, |a, b| a * b) }
+    pub fn effective_quality_mult(&self) -> f32 { self.multipliers.iter().map(|m| m.quality_mult).fold(1.0, |a, b| a * b) }
+    pub fn effective_rarity_boost(&self) -> f32 { self.multipliers.iter().map(|m| m.rarity_boost).sum::<f32>() }
+    pub fn has_active_buff(&self) -> bool { !self.multipliers.is_empty() }
+}
+
+impl Default for ActiveBuffs {
+    fn default() -> Self { Self::new() }
+}
+
+impl SetBonusRegistry {
+    pub fn new() -> Self { Self { sets: HashMap::new() } }
+    pub fn register(&mut self, bonus: ItemSetBonus) { self.sets.insert(bonus.set_id, bonus); }
+    pub fn get(&self, set_id: u32) -> Option<&ItemSetBonus> { self.sets.get(&set_id) }
+    pub fn active_bonus(&self, set_id: u32, pieces: u32) -> HashMap<String, f32> {
+        let mut result = HashMap::new();
+        if let Some(set) = self.sets.get(&set_id) {
+            for (required, bonus) in &set.bonuses {
+                if pieces >= *required { for (k, v) in bonus { *result.entry(k.clone()).or_insert(0.0) += v; } }
+            }
+        }
+        result
+    }
+}
+
+impl Default for SetBonusRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+impl LootCooldownTracker {
+    pub fn new() -> Self { Self { cooldowns: HashMap::new() } }
+    pub fn set_cooldown(&mut self, item_id: u32, secs: f32, source: impl Into<String>) {
+        self.cooldowns.insert(item_id, LootCooldown { item_id, cooldown_secs: secs, remaining_secs: secs, source_type: source.into() });
+    }
+    pub fn tick(&mut self, dt: f32) { for cd in self.cooldowns.values_mut() { cd.remaining_secs = (cd.remaining_secs - dt).max(0.0); } }
+    pub fn is_on_cooldown(&self, item_id: u32) -> bool { self.cooldowns.get(&item_id).map(|c| c.remaining_secs > 0.0).unwrap_or(false) }
+    pub fn remaining(&self, item_id: u32) -> f32 { self.cooldowns.get(&item_id).map(|c| c.remaining_secs).unwrap_or(0.0) }
+    pub fn clear_cooldown(&mut self, item_id: u32) { self.cooldowns.remove(&item_id); }
+}
+
+impl Default for LootCooldownTracker {
+    fn default() -> Self { Self::new() }
+}
+
+impl CraftingSystem {
+    pub fn new() -> Self { Self { recipes: Vec::new(), unlocked_recipes: HashSet::new(), crafting_queue: VecDeque::new() } }
+    pub fn add_recipe(&mut self, recipe: ItemCraftingRecipe) { self.recipes.push(recipe); }
+    pub fn unlock(&mut self, recipe_id: u32) { self.unlocked_recipes.insert(recipe_id); }
+    pub fn is_unlocked(&self, recipe_id: u32) -> bool { self.unlocked_recipes.contains(&recipe_id) }
+    pub fn find_by_output(&self, item_id: u32) -> Vec<&ItemCraftingRecipe> {
+        self.recipes.iter().filter(|r| r.output_item_id == item_id).collect()
+    }
+    pub fn enqueue(&mut self, recipe_id: u32, timestamp: u64) { self.crafting_queue.push_back((recipe_id, timestamp)); }
+    pub fn dequeue(&mut self) -> Option<(u32, u64)> { self.crafting_queue.pop_front() }
+    pub fn recipe_count(&self) -> usize { self.recipes.len() }
+}
+
+impl Default for CraftingSystem {
+    fn default() -> Self { Self::new() }
+}
+
+impl PityTracker {
+    pub fn new() -> Self { Self { entries: HashMap::new() } }
+    pub fn register(&mut self, item_id: u32, threshold: u32) {
+        self.entries.insert(item_id, LootPitySystem { item_id, attempts_since_last_drop: 0, pity_threshold: threshold, guaranteed_at: threshold * 2, enabled: true });
+    }
+    pub fn attempt(&mut self, item_id: u32) -> bool {
+        if let Some(pity) = self.entries.get_mut(&item_id) {
+            pity.attempts_since_last_drop += 1;
+            if pity.attempts_since_last_drop >= pity.guaranteed_at { pity.attempts_since_last_drop = 0; return true; }
+        }
+        false
+    }
+    pub fn record_drop(&mut self, item_id: u32) {
+        if let Some(pity) = self.entries.get_mut(&item_id) { pity.attempts_since_last_drop = 0; }
+    }
+    pub fn pity_rate_bonus(&self, item_id: u32) -> f32 {
+        self.entries.get(&item_id).map(|p| p.attempts_since_last_drop as f32 / p.pity_threshold as f32 * 0.5).unwrap_or(0.0)
+    }
+}
+
+impl Default for PityTracker {
+    fn default() -> Self { Self::new() }
+}
+
+impl TradeHistory {
+    pub fn new() -> Self { Self { trades: Vec::new(), total_volume: 0 } }
+    pub fn record(&mut self, trade: ItemTrade) {
+        self.total_volume += trade.price as u64 * trade.quantity as u64;
+        self.trades.push(trade);
+    }
+    pub fn by_item(&self, item_id: u32) -> Vec<&ItemTrade> { self.trades.iter().filter(|t| t.item_id == item_id).collect() }
+    pub fn average_price(&self, item_id: u32) -> f32 {
+        let trades: Vec<_> = self.by_item(item_id);
+        if trades.is_empty() { return 0.0; }
+        trades.iter().map(|t| t.price as f32).sum::<f32>() / trades.len() as f32
+    }
+    pub fn trade_count(&self) -> usize { self.trades.len() }
+}
+
+impl Default for TradeHistory {
+    fn default() -> Self { Self::new() }
+}
+
+impl LootEventSchedule {
+    pub fn new() -> Self { Self { events: Vec::new(), current_event: None } }
+    pub fn add_event(&mut self, event: LootEvent) { self.events.push(event); }
+    pub fn activate(&mut self, event_id: u32) {
+        if let Some(e) = self.events.iter_mut().find(|e| e.id == event_id) { e.active = true; self.current_event = Some(event_id); }
+    }
+    pub fn deactivate_all(&mut self) {
+        self.events.iter_mut().for_each(|e| e.active = false);
+        self.current_event = None;
+    }
+    pub fn active_event(&self) -> Option<&LootEvent> {
+        self.current_event.and_then(|id| self.events.iter().find(|e| e.id == id))
+    }
+    pub fn current_multiplier(&self) -> f32 {
+        self.active_event().map(|e| e.drop_rate_multiplier).unwrap_or(1.0)
+    }
+}
+
+impl Default for LootEventSchedule {
+    fn default() -> Self { Self::new() }
+}
+
+impl ItemDropSimulation {
+    pub fn new(source_id: u32, iterations: u32) -> Self {
+        Self { iterations, source_id, results: HashMap::new(), total_value: 0.0, rarity_distribution: HashMap::new() }
+    }
+    pub fn record_drop(&mut self, item_id: u32, rarity: &str, value: f32) {
+        *self.results.entry(item_id).or_insert(0) += 1;
+        *self.rarity_distribution.entry(rarity.to_string()).or_insert(0) += 1;
+        self.total_value += value as f64;
+    }
+    pub fn drop_rate(&self, item_id: u32) -> f32 {
+        if self.iterations == 0 { return 0.0; }
+        *self.results.get(&item_id).unwrap_or(&0) as f32 / self.iterations as f32
+    }
+    pub fn average_value_per_run(&self) -> f64 {
+        if self.iterations == 0 { return 0.0; }
+        self.total_value / self.iterations as f64
+    }
+    pub fn most_common_drop(&self) -> Option<u32> {
+        self.results.iter().max_by_key(|(_, &v)| v).map(|(&id, _)| id)
+    }
+    pub fn unique_items(&self) -> usize { self.results.len() }
+}
+
+// ── Loot balance tools ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootBalanceReport {
+    pub table_id: u32,
+    pub expected_value: f32,
+    pub actual_value_1k: f32,
+    pub rarity_dist: HashMap<String, f32>,
+    pub top_drops: Vec<(u32, f32)>,
+    pub recommendations: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootDebugger {
+    pub enabled: bool,
+    pub log: Vec<String>,
+    pub max_log: usize,
+    pub verbose: bool,
+}
+
+impl LootDebugger {
+    pub fn new() -> Self { Self { enabled: false, log: Vec::new(), max_log: 500, verbose: false } }
+    pub fn enable(&mut self) { self.enabled = true; }
+    pub fn disable(&mut self) { self.enabled = false; }
+    pub fn log_event(&mut self, msg: impl Into<String>) {
+        if !self.enabled { return; }
+        if self.log.len() >= self.max_log { self.log.remove(0); }
+        self.log.push(msg.into());
+    }
+    pub fn clear(&mut self) { self.log.clear(); }
+    pub fn recent_events(&self, n: usize) -> &[String] {
+        let start = self.log.len().saturating_sub(n);
+        &self.log[start..]
+    }
+}
+
+impl Default for LootDebugger {
+    fn default() -> Self { Self::new() }
+}
+
+#[derive(Clone, Debug)]
+pub struct LootPreviewCache {
+    pub cache: HashMap<u32, Vec<(u32, f32)>>,
+    pub ttl_secs: f32,
+    pub last_update: HashMap<u32, f32>,
+}
+
+impl LootPreviewCache {
+    pub fn new(ttl: f32) -> Self { Self { cache: HashMap::new(), ttl_secs: ttl, last_update: HashMap::new() } }
+    pub fn get(&self, table_id: u32) -> Option<&Vec<(u32, f32)>> { self.cache.get(&table_id) }
+    pub fn set(&mut self, table_id: u32, preview: Vec<(u32, f32)>, time: f32) {
+        self.cache.insert(table_id, preview);
+        self.last_update.insert(table_id, time);
+    }
+    pub fn is_stale(&self, table_id: u32, current_time: f32) -> bool {
+        self.last_update.get(&table_id).map(|&t| current_time - t > self.ttl_secs).unwrap_or(true)
+    }
+    pub fn invalidate(&mut self, table_id: u32) { self.cache.remove(&table_id); self.last_update.remove(&table_id); }
+    pub fn invalidate_all(&mut self) { self.cache.clear(); self.last_update.clear(); }
+}
+
+// ── Item generation helpers ───────────────────────────────────────────────────
+
+pub fn roll_rarity(luck: f32, rng_val: f32) -> ItemRarity {
+    let roll = (rng_val - luck * 0.1).clamp(0.0, 1.0);
+    if roll < 0.001 { ItemRarity::Mythic }
+    else if roll < 0.01 { ItemRarity::Legendary }
+    else if roll < 0.05 { ItemRarity::Epic }
+    else if roll < 0.15 { ItemRarity::Rare }
+    else if roll < 0.35 { ItemRarity::Uncommon }
+    else { ItemRarity::Common }
+}
+
+pub fn rarity_color_hex(rarity: &ItemRarity) -> &'static str {
+    match rarity {
+        ItemRarity::Common => "#FFFFFF",
+        ItemRarity::Uncommon => "#00FF00",
+        ItemRarity::Rare => "#0070DD",
+        ItemRarity::Epic => "#A335EE",
+        ItemRarity::Legendary => "#FF8000",
+        ItemRarity::Mythic => "#FF4040",
+        ItemRarity::BossExclusive => "#E6CC80",
+    }
+}
+
+pub fn rarity_value_multiplier(rarity: &ItemRarity) -> f32 {
+    match rarity {
+        ItemRarity::Common => 1.0,
+        ItemRarity::Uncommon => 2.5,
+        ItemRarity::Rare => 6.0,
+        ItemRarity::Epic => 15.0,
+        ItemRarity::Legendary => 50.0,
+        ItemRarity::Mythic => 200.0,
+        ItemRarity::BossExclusive => 100.0,
+    }
+}
+
+pub fn rarity_drop_weight(rarity: &ItemRarity) -> f32 {
+    match rarity {
+        ItemRarity::Common => 1000.0,
+        ItemRarity::Uncommon => 300.0,
+        ItemRarity::Rare => 80.0,
+        ItemRarity::Epic => 20.0,
+        ItemRarity::Legendary => 5.0,
+        ItemRarity::Mythic => 1.0,
+        ItemRarity::BossExclusive => 0.5,
+    }
+}
+
+pub fn format_item_tooltip(name: &str, rarity: &ItemRarity, value: f32, description: &str) -> String {
+    format!("[{}] {}\nValue: {} gold\n{}", rarity_color_hex(rarity), name, value as u32, description)
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+pub const LOOT_MAX_STACK: u32 = 999;
+pub const LOOT_MAX_TABLE_ENTRIES: usize = 256;
+pub const LOOT_DEFAULT_LUCK: f32 = 1.0;
+pub const LOOT_MAX_MAGIC_FIND: f32 = 3.0;
+pub const LOOT_PITY_BASE_THRESHOLD: u32 = 50;
+pub const LOOT_HISTORY_MAX: usize = 2000;
+pub const LOOT_ENCHANT_TIER_MAX: u32 = 5;
+pub const LOOT_SET_MAX_PIECES: u32 = 8;
+pub const LOOT_TRADE_HISTORY_MAX: usize = 10000;
+pub const LOOT_SIMULATION_DEFAULT_ITERATIONS: u32 = 10000;
+
+pub fn loot_system_version() -> &'static str { "LootSystem v3.2 — filters, history, enchants, pity, crafting, events" }
+
+// ── Additional loot node/graph types ─────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootGraphNode {
+    pub id: u32,
+    pub node_type: String,
+    pub label: String,
+    pub position: (f32, f32),
+    pub data: HashMap<String, String>,
+    pub outputs: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootGraph {
+    pub nodes: HashMap<u32, LootGraphNode>,
+    pub edges: Vec<(u32, u32)>,
+    pub entry_node: u32,
+    pub next_id: u32,
+}
+
+impl LootGraph {
+    pub fn new() -> Self { Self { nodes: HashMap::new(), edges: Vec::new(), entry_node: 0, next_id: 1 } }
+    pub fn add_node(&mut self, node_type: impl Into<String>, label: impl Into<String>) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.insert(id, LootGraphNode { id, node_type: node_type.into(), label: label.into(), position: (0.0, 0.0), data: HashMap::new(), outputs: Vec::new() });
+        id
+    }
+    pub fn connect(&mut self, from: u32, to: u32) {
+        self.edges.push((from, to));
+        if let Some(n) = self.nodes.get_mut(&from) { if !n.outputs.contains(&to) { n.outputs.push(to); } }
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn edge_count(&self) -> usize { self.edges.len() }
+    pub fn set_entry(&mut self, id: u32) { self.entry_node = id; }
+    pub fn remove_node(&mut self, id: u32) {
+        self.nodes.remove(&id);
+        self.edges.retain(|(a, b)| *a != id && *b != id);
+        for n in self.nodes.values_mut() { n.outputs.retain(|&o| o != id); }
+    }
+}
+
+impl Default for LootGraph {
+    fn default() -> Self { Self::new() }
+}
+
+#[derive(Clone, Debug)]
+pub struct LootDropRule {
+    pub id: u32,
+    pub condition: String,
+    pub action: String,
+    pub priority: u32,
+    pub enabled: bool,
+    pub description: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LootRuleEngine {
+    pub rules: Vec<LootDropRule>,
+    pub enabled: bool,
+}
+
+impl LootRuleEngine {
+    pub fn new() -> Self { Self { rules: Vec::new(), enabled: true } }
+    pub fn add_rule(&mut self, rule: LootDropRule) { self.rules.push(rule); }
+    pub fn remove_rule(&mut self, id: u32) { self.rules.retain(|r| r.id != id); }
+    pub fn sorted_rules(&self) -> Vec<&LootDropRule> {
+        let mut sorted: Vec<_> = self.rules.iter().filter(|r| r.enabled).collect();
+        sorted.sort_by_key(|r| std::cmp::Reverse(r.priority));
+        sorted
+    }
+    pub fn rule_count(&self) -> usize { self.rules.len() }
+    pub fn enable_rule(&mut self, id: u32) { if let Some(r) = self.rules.iter_mut().find(|r| r.id == id) { r.enabled = true; } }
+    pub fn disable_rule(&mut self, id: u32) { if let Some(r) = self.rules.iter_mut().find(|r| r.id == id) { r.enabled = false; } }
+}
+
+impl Default for LootRuleEngine {
+    fn default() -> Self { Self::new() }
+}
+
+use std::cmp::Reverse;

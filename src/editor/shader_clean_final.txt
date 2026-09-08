@@ -1,0 +1,253 @@
+
+// ── Shader Utility Functions ──────────────────────────────────────────────────
+
+pub fn blend_factor_to_str(f: &BlendFactor) -> &'static str {
+    match f {
+        BlendFactor::Zero => "Zero",
+        BlendFactor::One => "One",
+        BlendFactor::SrcAlpha => "SrcAlpha",
+        BlendFactor::OneMinusSrcAlpha => "OneMinusSrcAlpha",
+        BlendFactor::DstAlpha => "DstAlpha",
+        BlendFactor::OneMinusDstAlpha => "OneMinusDstAlpha",
+        BlendFactor::SrcColor => "SrcColor",
+        BlendFactor::OneMinusSrcColor => "OneMinusSrcColor",
+        BlendFactor::ConstantAlpha => "ConstantAlpha",
+    }
+}
+
+pub fn compare_func_to_str(f: &CompareFunc) -> &'static str {
+    match f {
+        CompareFunc::Never => "Never",
+        CompareFunc::Less => "Less",
+        CompareFunc::Equal => "Equal",
+        CompareFunc::LessEqual => "LessEqual",
+        CompareFunc::Greater => "Greater",
+        CompareFunc::NotEqual => "NotEqual",
+        CompareFunc::GreaterEqual => "GreaterEqual",
+        CompareFunc::Always => "Always",
+    }
+}
+
+pub fn cull_mode_to_str(m: &CullMode) -> &'static str {
+    match m {
+        CullMode::None => "None",
+        CullMode::Front => "Front",
+        CullMode::Back => "Back",
+        CullMode::FrontAndBack => "FrontAndBack",
+    }
+}
+
+pub fn polygon_mode_to_str(m: &PolygonMode) -> &'static str {
+    match m { PolygonMode::Fill => "Fill", PolygonMode::Line => "Line", PolygonMode::Point => "Point" }
+}
+
+pub fn attachment_format_is_depth(f: &AttachmentFormat) -> bool {
+    matches!(f, AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F | AttachmentFormat::Depth24Stencil8)
+}
+
+pub fn attachment_format_channel_count(f: &AttachmentFormat) -> u32 {
+    match f {
+        AttachmentFormat::Rgba8 | AttachmentFormat::Rgba16F | AttachmentFormat::Rgba32F => 4,
+        AttachmentFormat::Rg8 | AttachmentFormat::Rg16F => 2,
+        AttachmentFormat::R8 | AttachmentFormat::R16F | AttachmentFormat::R32F => 1,
+        AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F => 1,
+        AttachmentFormat::Depth24Stencil8 => 2,
+    }
+}
+
+pub fn buffer_usage_to_str(u: &BufferUsage) -> &'static str {
+    match u {
+        BufferUsage::Vertex => "Vertex",
+        BufferUsage::Index => "Index",
+        BufferUsage::Uniform => "Uniform",
+        BufferUsage::Storage => "Storage",
+        BufferUsage::Indirect => "Indirect",
+        BufferUsage::Staging => "Staging",
+    }
+}
+
+pub fn sampler_type_to_str(t: &SamplerType) -> &'static str {
+    match t {
+        SamplerType::Linear => "Linear",
+        SamplerType::Nearest => "Nearest",
+        SamplerType::LinearMipmap => "LinearMipmap",
+        SamplerType::Trilinear => "Trilinear",
+        SamplerType::Anisotropic => "Anisotropic",
+    }
+}
+
+pub fn render_pass_type_to_str(t: &RenderPassType) -> &'static str {
+    match t {
+        RenderPassType::Opaque => "Opaque",
+        RenderPassType::Transparent => "Transparent",
+        RenderPassType::Shadow => "Shadow",
+        RenderPassType::PostProcess => "PostProcess",
+        RenderPassType::Ui => "UI",
+        RenderPassType::Compute => "Compute",
+        RenderPassType::Custom => "Custom",
+    }
+}
+
+pub fn post_effect_type_to_str(t: &PostEffectType) -> &'static str {
+    match t {
+        PostEffectType::Bloom => "Bloom",
+        PostEffectType::Tonemap => "Tonemap",
+        PostEffectType::Vignette => "Vignette",
+        PostEffectType::ChromaticAberration => "ChromaticAberration",
+        PostEffectType::DepthOfField => "DepthOfField",
+        PostEffectType::MotionBlur => "MotionBlur",
+        PostEffectType::Ssao => "SSAO",
+        PostEffectType::Fxaa => "FXAA",
+        PostEffectType::Custom => "Custom",
+    }
+}
+
+pub fn tone_mapping_mode_to_str(m: &ToneMappingMode) -> &'static str {
+    match m {
+        ToneMappingMode::None => "None",
+        ToneMappingMode::Reinhard => "Reinhard",
+        ToneMappingMode::Aces => "ACES",
+        ToneMappingMode::Filmic => "Filmic",
+        ToneMappingMode::Uncharted2 => "Uncharted2",
+        ToneMappingMode::Custom => "Custom",
+    }
+}
+
+pub fn lighting_model_type_to_str(t: &LightingModelType) -> &'static str {
+    match t {
+        LightingModelType::Pbr => "PBR",
+        LightingModelType::Phong => "Phong",
+        LightingModelType::BlinnPhong => "BlinnPhong",
+        LightingModelType::Lambert => "Lambert",
+        LightingModelType::Toon => "Toon",
+        LightingModelType::Unlit => "Unlit",
+        LightingModelType::Custom(_) => "Custom",
+    }
+}
+
+pub fn descriptor_type_to_str(t: &DescriptorType) -> &'static str {
+    match t {
+        DescriptorType::UniformBuffer => "UniformBuffer",
+        DescriptorType::StorageBuffer => "StorageBuffer",
+        DescriptorType::Sampler => "Sampler",
+        DescriptorType::SampledImage => "SampledImage",
+        DescriptorType::StorageImage => "StorageImage",
+        DescriptorType::CombinedImageSampler => "CombinedImageSampler",
+        DescriptorType::InputAttachment => "InputAttachment",
+    }
+}
+
+pub fn render_graph_node_type_to_str(t: &RenderGraphNodeType) -> &'static str {
+    match t {
+        RenderGraphNodeType::Pass => "Pass",
+        RenderGraphNodeType::Blit => "Blit",
+        RenderGraphNodeType::Compute => "Compute",
+        RenderGraphNodeType::Present => "Present",
+        RenderGraphNodeType::Upload => "Upload",
+        RenderGraphNodeType::Barrier => "Barrier",
+        RenderGraphNodeType::Custom(_) => "Custom",
+    }
+}
+
+pub fn bloom_mode_to_str(m: &BloomMode) -> &'static str {
+    match m {
+        BloomMode::Classic => "Classic",
+        BloomMode::Kawase => "Kawase",
+        BloomMode::Dual => "Dual",
+        BloomMode::Convolution => "Convolution",
+    }
+}
+
+pub fn ssao_quality_to_str(q: &SsaoQuality) -> &'static str {
+    match q {
+        SsaoQuality::Low => "Low",
+        SsaoQuality::Medium => "Medium",
+        SsaoQuality::High => "High",
+        SsaoQuality::Ultra => "Ultra",
+    }
+}
+
+pub fn anti_aliasing_mode_to_str(m: &AntiAliasingMode) -> &'static str {
+    match m {
+        AntiAliasingMode::None => "None",
+        AntiAliasingMode::Msaa => "MSAA",
+        AntiAliasingMode::Fxaa => "FXAA",
+        AntiAliasingMode::Taa => "TAA",
+        AntiAliasingMode::Smaa => "SMAA",
+        AntiAliasingMode::Dlss => "DLSS",
+    }
+}
+
+pub fn optimization_level_to_str(o: &OptimizationLevel) -> &'static str {
+    match o {
+        OptimizationLevel::None => "None",
+        OptimizationLevel::Low => "Low",
+        OptimizationLevel::Medium => "Medium",
+        OptimizationLevel::High => "High",
+        OptimizationLevel::Aggressive => "Aggressive",
+    }
+}
+
+pub fn code_gen_target_to_str(t: &CodeGenTarget) -> &'static str {
+    match t {
+        CodeGenTarget::Glsl450 => "GLSL 4.50",
+        CodeGenTarget::Glsl300Es => "GLSL 3.00 ES",
+        CodeGenTarget::Wgsl => "WGSL",
+        CodeGenTarget::Hlsl50 => "HLSL 5.0",
+        CodeGenTarget::Msl20 => "Metal SL 2.0",
+    }
+}
+
+pub fn shader_export_format_to_str(f: &ShaderExportFormat) -> &'static str {
+    match f {
+        ShaderExportFormat::Glsl => "GLSL",
+        ShaderExportFormat::SpirV => "SPIR-V",
+        ShaderExportFormat::Wgsl => "WGSL",
+        ShaderExportFormat::Json => "JSON",
+        ShaderExportFormat::Binary => "Binary",
+    }
+}
+
+pub fn stencil_op_to_str(op: &StencilOp) -> &'static str {
+    match op {
+        StencilOp::Keep => "Keep", StencilOp::Zero => "Zero", StencilOp::Replace => "Replace",
+        StencilOp::IncrClamp => "IncrClamp", StencilOp::DecrClamp => "DecrClamp",
+        StencilOp::Invert => "Invert", StencilOp::IncrWrap => "IncrWrap", StencilOp::DecrWrap => "DecrWrap",
+    }
+}
+
+pub fn tess_primitive_to_str(p: &TessPrimitive) -> &'static str {
+    match p { TessPrimitive::Triangles => "triangles", TessPrimitive::Quads => "quads", TessPrimitive::Isolines => "isolines" }
+}
+
+pub fn tess_winding_to_str(w: &TessWinding) -> &'static str {
+    match w { TessWinding::Ccw => "ccw", TessWinding::Cw => "cw" }
+}
+
+// ── Shader System Credits & Versioning ───────────────────────────────────────
+
+pub const SHADER_COMPILER_FULL_VERSION: &str = "ShaderCompilerEditor v2.0.0-proof-engine";
+pub const SHADER_COMPILER_BUILD_DATE: &str = "2026-03-29";
+pub const SHADER_COMPILER_AUTHOR: &str = "proof-engine rendering team";
+pub const SHADER_MAX_MATERIALS_PER_PASS: usize = 256;
+pub const SHADER_MAX_LIGHTS: usize = 512;
+pub const SHADER_MAX_SHADOW_CASCADES: usize = 4;
+pub const SHADER_MAX_REFLECTION_PROBES: usize = 64;
+pub const SHADER_COMPUTE_MAX_WORKGROUP_SIZE: u32 = 1024;
+pub const SHADER_MAX_PUSH_CONSTANT_BYTES: u32 = 128;
+pub const SHADER_MAX_DESCRIPTOR_SETS: u32 = 4;
+pub const SHADER_MAX_BINDINGS_PER_SET: u32 = 16;
+
+pub fn shader_compiler_credits() -> &'static str {
+    "ShaderCompilerEditor — Built for proof-engine. Supports GLSL, HLSL, WGSL, SPIR-V, and Metal SL."
+}
+
+pub fn shader_pipeline_summary(manager: &ShaderManager) -> String {
+    format!(
+        "Programs: {} | Errors: {} | Quality: {} | Frames: {}",
+        manager.program_count(),
+        manager.error_count(),
+        manager.quality_preset,
+        manager.frame_executor.frame_number(),
+    )
+}

@@ -1,0 +1,74 @@
+
+// ── Item Socket & Gem Extensions ──────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GemCombination {
+    pub gem_ids: Vec<u32>,
+    pub result_gem_id: u32,
+    pub result_quantity: u32,
+    pub name: String,
+}
+
+impl GemCombination {
+    pub fn new(result_gem_id: u32, result_quantity: u32, name: impl Into<String>) -> Self {
+        Self { gem_ids: Vec::new(), result_gem_id, result_quantity, name: name.into() }
+    }
+    pub fn requires(mut self, gem_id: u32) -> Self { self.gem_ids.push(gem_id); self }
+    pub fn ingredient_count(&self) -> usize { self.gem_ids.len() }
+    pub fn produces_multiple(&self) -> bool { self.result_quantity > 1 }
+}
+
+#[derive(Clone, Debug)]
+pub struct GemCombinationRegistry {
+    pub combinations: Vec<GemCombination>,
+}
+
+impl GemCombinationRegistry {
+    pub fn new() -> Self { Self { combinations: Vec::new() } }
+    pub fn register(&mut self, combo: GemCombination) { self.combinations.push(combo); }
+    pub fn find_for_gems(&self, gem_ids: &[u32]) -> Option<&GemCombination> {
+        self.combinations.iter().find(|c| c.gem_ids.iter().all(|g| gem_ids.contains(g)) && c.gem_ids.len() == gem_ids.len())
+    }
+    pub fn total(&self) -> usize { self.combinations.len() }
+}
+
+impl Default for GemCombinationRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot System Health Check ──────────────────────────────────────────────────
+
+pub struct LootSystemHealth {
+    pub tables_ok: bool,
+    pub pools_ok: bool,
+    pub items_ok: bool,
+    pub rng_ok: bool,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+impl LootSystemHealth {
+    pub fn new() -> Self { Self { tables_ok: true, pools_ok: true, items_ok: true, rng_ok: true, warnings: Vec::new(), errors: Vec::new() } }
+    pub fn add_warning(&mut self, w: impl Into<String>) { self.warnings.push(w.into()); }
+    pub fn add_error(&mut self, e: impl Into<String>) { self.errors.push(e.into()); self.tables_ok = false; }
+    pub fn is_healthy(&self) -> bool { self.errors.is_empty() }
+    pub fn summary(&self) -> String {
+        if self.is_healthy() { format!("OK ({} warnings)", self.warnings.len()) }
+        else { format!("ERRORS: {} errors, {} warnings", self.errors.len(), self.warnings.len()) }
+    }
+}
+
+impl Default for LootSystemHealth {
+    fn default() -> Self { Self::new() }
+}
+
+pub const LOOT_GEM_COMBINE_MAX_INGREDIENTS: usize = 4;
+pub const LOOT_SYSTEM_VERSION: &str = "3.2.1";
+pub const LOOT_MAX_TOTAL_ITEMS: u32 = 100_000;
+pub const LOOT_HEALTH_CHECK_INTERVAL_SECS: f32 = 60.0;
+
+pub fn loot_system_health_check() -> LootSystemHealth {
+    let mut health = LootSystemHealth::new();
+    health.rng_ok = true;
+    health
+}

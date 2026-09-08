@@ -1,0 +1,172 @@
+
+// ── Particle Rotation Over Lifetime ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RotationOverLifetime {
+    pub curve: FloatCurve,
+    pub start_rotation: f32,
+    pub randomize_start: bool,
+    pub angular_velocity: f32,
+}
+
+impl RotationOverLifetime {
+    pub fn constant(angular_vel: f32) -> Self {
+        Self { curve: FloatCurve::constant("rot", angular_vel), start_rotation: 0.0, randomize_start: false, angular_velocity: angular_vel }
+    }
+    pub fn evaluate_angle(&self, t: f32, lifetime: f32) -> f32 {
+        self.start_rotation + self.curve.evaluate(t) * lifetime
+    }
+    pub fn random_start(mut self) -> Self { self.randomize_start = true; self }
+}
+
+impl Default for RotationOverLifetime {
+    fn default() -> Self { Self::constant(0.0) }
+}
+
+// ── Particle Gravity Modifier ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GravityModifier {
+    pub scale: FloatCurve,
+    pub direction: Vec3,
+}
+
+impl GravityModifier {
+    pub fn new(scale: f32) -> Self { Self { scale: FloatCurve::constant("gravity", scale), direction: Vec3::new(0.0, -1.0, 0.0) } }
+    pub fn no_gravity() -> Self { Self::new(0.0) }
+    pub fn reverse_gravity() -> Self { Self { scale: FloatCurve::constant("gravity", -1.0), direction: Vec3::new(0.0, -1.0, 0.0) } }
+    pub fn evaluate(&self, t: f32) -> Vec3 { self.direction * self.scale.evaluate(t) * 9.81 }
+}
+
+impl Default for GravityModifier {
+    fn default() -> Self { Self::new(1.0) }
+}
+
+// ── Particle Emission Shape Sampler ──────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShapeSampler {
+    pub shape: SpawnerShape,
+    pub align_to_normal: bool,
+    pub random_direction_amount: f32,
+}
+
+impl ShapeSampler {
+    pub fn new(shape: SpawnerShape) -> Self { Self { shape, align_to_normal: false, random_direction_amount: 1.0 } }
+    pub fn point_sampler() -> Self { Self::new(SpawnerShape::point()) }
+    pub fn sphere_sampler(radius: f32) -> Self { Self::new(SpawnerShape::sphere(radius)) }
+    pub fn sample_position(&self, u: f32, v: f32, w: f32) -> Vec3 {
+        match &self.shape.shape_type {
+            SpawnerShapeType::Point => Vec3::ZERO,
+            SpawnerShapeType::Sphere => random_in_sphere(u, v, w) * self.shape.scale.x,
+            SpawnerShapeType::Circle => Vec3::new((u * 2.0 - 1.0) * self.shape.scale.x, 0.0, (v * 2.0 - 1.0) * self.shape.scale.z),
+            SpawnerShapeType::Box => Vec3::new((u * 2.0 - 1.0) * self.shape.scale.x, (v * 2.0 - 1.0) * self.shape.scale.y, (w * 2.0 - 1.0) * self.shape.scale.z),
+            SpawnerShapeType::Cone => {
+                let angle = self.shape.scale.x.to_radians();
+                let h = v * self.shape.scale.y;
+                let r = h * angle.tan();
+                Vec3::new((u * 2.0 - 1.0) * r, h, (w * 2.0 - 1.0) * r)
+            }
+            _ => Vec3::ZERO,
+        }
+    }
+    pub fn sample_direction(&self, pos: Vec3) -> Vec3 {
+        match self.shape.shape_type {
+            SpawnerShapeType::Sphere => if pos.length() > 1e-6 { pos.normalize() } else { Vec3::Y },
+            SpawnerShapeType::Cone => Vec3::new(pos.x, self.shape.scale.y, pos.z).normalize(),
+            _ => Vec3::Y,
+        }
+    }
+}
+
+// ── Particle Render Mode ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParticleRenderMode {
+    Billboard,
+    StretchedBillboard { velocity_scale: f32, length_scale: f32 },
+    HorizontalBillboard,
+    VerticalBillboard,
+    Mesh { mesh_id: u32 },
+    Trail,
+}
+
+impl ParticleRenderMode {
+    pub fn is_billboard(&self) -> bool {
+        matches!(self, ParticleRenderMode::Billboard | ParticleRenderMode::HorizontalBillboard | ParticleRenderMode::VerticalBillboard | ParticleRenderMode::StretchedBillboard { .. })
+    }
+    pub fn is_mesh(&self) -> bool { matches!(self, ParticleRenderMode::Mesh { .. }) }
+    pub fn name(&self) -> &'static str {
+        match self {
+            ParticleRenderMode::Billboard => "Billboard",
+            ParticleRenderMode::StretchedBillboard { .. } => "Stretched Billboard",
+            ParticleRenderMode::HorizontalBillboard => "Horizontal Billboard",
+            ParticleRenderMode::VerticalBillboard => "Vertical Billboard",
+            ParticleRenderMode::Mesh { .. } => "Mesh",
+            ParticleRenderMode::Trail => "Trail",
+        }
+    }
+}
+
+// ── Particle System Profiler ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleProfilerFrame {
+    pub frame_id: u64,
+    pub sim_ms: f32,
+    pub render_ms: f32,
+    pub cull_ms: f32,
+    pub sort_ms: f32,
+    pub total_ms: f32,
+    pub particle_count: u32,
+    pub draw_calls: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleProfiler {
+    pub frames: VecDeque<ParticleProfilerFrame>,
+    pub max_frames: usize,
+    pub enabled: bool,
+}
+
+impl ParticleProfiler {
+    pub fn new(max_frames: usize) -> Self { Self { frames: VecDeque::new(), max_frames, enabled: true } }
+    pub fn record(&mut self, frame: ParticleProfilerFrame) {
+        if !self.enabled { return; }
+        if self.frames.len() >= self.max_frames { self.frames.pop_front(); }
+        self.frames.push_back(frame);
+    }
+    pub fn avg_total_ms(&self) -> f32 {
+        if self.frames.is_empty() { return 0.0; }
+        self.frames.iter().map(|f| f.total_ms).sum::<f32>() / self.frames.len() as f32
+    }
+    pub fn avg_fps(&self) -> f32 { let ms = self.avg_total_ms(); if ms < 1e-6 { 9999.0 } else { 1000.0 / ms } }
+    pub fn peak_particle_count(&self) -> u32 { self.frames.iter().map(|f| f.particle_count).max().unwrap_or(0) }
+    pub fn clear(&mut self) { self.frames.clear(); }
+    pub fn frame_count(&self) -> usize { self.frames.len() }
+}
+
+impl Default for ParticleProfiler {
+    fn default() -> Self { Self::new(300) }
+}
+
+// ── More Particle Constants ───────────────────────────────────────────────────
+
+pub const PARTICLE_PROFILER_FRAME_BUFFER: usize = 300;
+pub const PARTICLE_RENDER_MODE_COUNT: usize = 6;
+pub const PARTICLE_GRAVITY_MODIFIER_DEFAULT: f32 = 1.0;
+pub const PARTICLE_ROTATION_MAX_DEG_PER_SEC: f32 = 3600.0;
+pub const PARTICLE_EMISSION_RATE_MAX: f32 = 100_000.0;
+pub const PARTICLE_LIFETIME_MIN: f32 = 0.01;
+pub const PARTICLE_LIFETIME_MAX: f32 = 300.0;
+pub const PARTICLE_SIZE_MIN: f32 = 0.001;
+pub const PARTICLE_SIZE_MAX: f32 = 100.0;
+pub const PARTICLE_SPEED_MAX: f32 = 1_000.0;
+
+pub fn validate_particle_lifetime(lifetime: f32) -> f32 { lifetime.clamp(PARTICLE_LIFETIME_MIN, PARTICLE_LIFETIME_MAX) }
+pub fn validate_particle_size(size: f32) -> f32 { size.clamp(PARTICLE_SIZE_MIN, PARTICLE_SIZE_MAX) }
+pub fn validate_emission_rate(rate: f32) -> f32 { rate.clamp(0.0, PARTICLE_EMISSION_RATE_MAX) }
+pub fn validate_particle_speed(speed: f32) -> f32 { speed.clamp(-PARTICLE_SPEED_MAX, PARTICLE_SPEED_MAX) }
+pub fn is_valid_particle_config(lifetime: f32, size: f32, rate: f32) -> bool {
+    lifetime >= PARTICLE_LIFETIME_MIN && size >= PARTICLE_SIZE_MIN && rate >= 0.0
+}

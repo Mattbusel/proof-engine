@@ -297,6 +297,11 @@ pub struct Pipeline {
     // ── Font atlas ────────────────────────────────────────────────────────────
     atlas: FontAtlas,
 
+    // ── Screen-space UI pass ──────────────────────────────────────────────────
+    // Builds instances from a UiLayer's draw queue and paints them in pixel
+    // coordinates after post-processing, so panels and text stay crisp.
+    ui_renderer: super::ui_layer_renderer::UiLayerRenderer,
+
     // ── SVOGI Global Illumination ───────────────────────────────────────────
     pub svogi: crate::svogi::integration::CascadedSvogi,
 
@@ -446,6 +451,7 @@ impl Pipeline {
             gl, program, vao, quad_vbo, instance_vbo, atlas_tex, loc_view_proj, loc_n_copies,
             postfx,
             atlas,
+            ui_renderer: super::ui_layer_renderer::UiLayerRenderer::new(),
             instances: Vec::with_capacity(8192),
             fps_counter: FpsCounter::new(),
             frame_start: Instant::now(),
@@ -732,6 +738,70 @@ impl Pipeline {
         unsafe { self.execute_render_passes(view_proj); }
     }
 
+    /// Paint a screen-space UI layer on top of the finished frame.
+    ///
+    /// Runs after post-processing and writes straight to the default
+    /// framebuffer, so panels and text are not smeared by bloom, chromatic
+    /// aberration or grain — a HUD has to stay readable.
+    ///
+    /// Call once per frame, after `render`, before `swap`.
+    pub fn render_ui(&mut self, ui: &super::ui_layer::UiLayer) {
+        if ui.command_count() == 0 {
+            return;
+        }
+        self.ui_renderer.begin();
+        self.ui_renderer.build_instances(ui, &self.atlas);
+        if self.ui_renderer.glyph_count() == 0 {
+            return;
+        }
+        let proj = ui.projection();
+        unsafe { self.draw_ui_pass(proj) };
+        self.stats.draw_calls += 1;
+    }
+
+    /// Upload and draw the UI instance buffer with an orthographic projection.
+    unsafe fn draw_ui_pass(&mut self, proj: Mat4) {
+        let gl = &self.gl;
+
+        // Straight to the screen: post-processing has already composited.
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.viewport(0, 0, self.width as i32, self.height as i32);
+
+        // UI is 2D and ordered by draw call, so depth testing would only cause
+        // z-fighting between overlapping panels.
+        gl.disable(glow::DEPTH_TEST);
+        gl.enable(glow::BLEND);
+        gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+        gl.buffer_data_u8_slice(
+            glow::ARRAY_BUFFER,
+            self.ui_renderer.glyph_bytes(),
+            glow::DYNAMIC_DRAW,
+        );
+
+        gl.use_program(Some(self.program));
+        gl.uniform_matrix_4_f32_slice(Some(&self.loc_view_proj), false, &proj.to_cols_array());
+        // The oversampling trick used by the 3D pass would smear UI text, so
+        // the UI always draws exactly one copy per instance.
+        gl.uniform_1_u32(self.loc_n_copies.as_ref(), 1);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
+        gl.bind_vertex_array(Some(self.vao));
+        for loc in 2u32..=10 {
+            gl.vertex_attrib_divisor(loc, 1);
+        }
+        gl.draw_arrays_instanced(
+            glow::TRIANGLES,
+            0,
+            6,
+            self.ui_renderer.glyph_count() as i32,
+        );
+
+        // Restore state the 3D pass expects on the next frame.
+        gl.enable(glow::DEPTH_TEST);
+    }
+
     /// Swap back buffer to screen. Returns false on window close.
     pub fn swap(&mut self) -> bool {
         if let Err(e) = self.surface.swap_buffers(&self.context) {
@@ -752,6 +822,15 @@ impl Pipeline {
     /// Get the window reference (for egui-winit event processing).
     pub fn window(&self) -> &Window {
         &self.window
+    }
+
+    /// The framebuffer size the viewport is actually set to.
+    ///
+    /// This is what screen-space passes must project against. On a scaled
+    /// display it can differ from the window's logical size, and projecting
+    /// against the wrong one magnifies the whole UI.
+    pub fn render_size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// Get the current window size.

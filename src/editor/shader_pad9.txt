@@ -1,0 +1,211 @@
+
+// ── Render Feature Flags ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderFeatureFlags {
+    pub pbr: bool,
+    pub shadows: bool,
+    pub ssao: bool,
+    pub ssr: bool,
+    pub bloom: bool,
+    pub fxaa: bool,
+    pub taa: bool,
+    pub dof: bool,
+    pub motion_blur: bool,
+    pub volumetric_fog: bool,
+    pub lens_flare: bool,
+    pub chromatic_aberration: bool,
+    pub vignette: bool,
+    pub color_grading: bool,
+    pub debug_mode: bool,
+}
+
+impl RenderFeatureFlags {
+    pub fn all_off() -> Self { Self { pbr: false, shadows: false, ssao: false, ssr: false, bloom: false, fxaa: false, taa: false, dof: false, motion_blur: false, volumetric_fog: false, lens_flare: false, chromatic_aberration: false, vignette: false, color_grading: false, debug_mode: false } }
+    pub fn default_high_quality() -> Self { Self { pbr: true, shadows: true, ssao: true, ssr: false, bloom: true, fxaa: true, taa: true, dof: false, motion_blur: false, volumetric_fog: false, lens_flare: false, chromatic_aberration: false, vignette: true, color_grading: true, debug_mode: false } }
+    pub fn default_medium_quality() -> Self { Self { pbr: true, shadows: true, ssao: false, ssr: false, bloom: true, fxaa: true, taa: false, ..Self::all_off() } }
+    pub fn default_low_quality() -> Self { Self { fxaa: true, ..Self::all_off() } }
+    pub fn active_count(&self) -> usize {
+        [self.pbr, self.shadows, self.ssao, self.ssr, self.bloom, self.fxaa, self.taa, self.dof, self.motion_blur, self.volumetric_fog, self.lens_flare, self.chromatic_aberration, self.vignette, self.color_grading].iter().filter(|&&b| b).count()
+    }
+    pub fn generate_defines(&self) -> Vec<(String, String)> {
+        let mut defines = Vec::new();
+        if self.pbr { defines.push(("USE_PBR".into(), "1".into())); }
+        if self.shadows { defines.push(("USE_SHADOWS".into(), "1".into())); }
+        if self.ssao { defines.push(("USE_SSAO".into(), "1".into())); }
+        if self.bloom { defines.push(("USE_BLOOM".into(), "1".into())); }
+        if self.fxaa { defines.push(("USE_FXAA".into(), "1".into())); }
+        if self.taa { defines.push(("USE_TAA".into(), "1".into())); }
+        defines
+    }
+}
+
+impl Default for RenderFeatureFlags {
+    fn default() -> Self { Self::default_high_quality() }
+}
+
+// ── Shader compilation context ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCompilationContext {
+    pub source_path: String,
+    pub stage: ShaderStage,
+    pub target: CodeGenTarget,
+    pub defines: HashMap<String, String>,
+    pub include_paths: Vec<String>,
+    pub optimization: OptimizationLevel,
+    pub version: String,
+    pub entry_point: String,
+    pub features: RenderFeatureFlags,
+}
+
+impl ShaderCompilationContext {
+    pub fn new(path: impl Into<String>, stage: ShaderStage, target: CodeGenTarget) -> Self {
+        Self { source_path: path.into(), stage, target, defines: HashMap::new(), include_paths: Vec::new(), optimization: OptimizationLevel::Medium, version: "450".into(), entry_point: "main".into(), features: RenderFeatureFlags::default() }
+    }
+    pub fn add_define(&mut self, k: impl Into<String>, v: impl Into<String>) { self.defines.insert(k.into(), v.into()); }
+    pub fn apply_features(&mut self) {
+        for (k, v) in self.features.generate_defines() { self.defines.insert(k, v); }
+    }
+    pub fn is_vertex(&self) -> bool { self.stage == ShaderStage::Vertex }
+    pub fn is_fragment(&self) -> bool { self.stage == ShaderStage::Fragment }
+    pub fn is_compute(&self) -> bool { self.stage == ShaderStage::Compute }
+}
+
+// ── Shader bundle ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderBundle {
+    pub id: u32,
+    pub name: String,
+    pub programs: Vec<ShaderProgram>,
+    pub materials: Vec<Material>,
+    pub templates: Vec<ShaderTemplate>,
+    pub version: u32,
+    pub description: String,
+    pub author: String,
+    pub created_at: u64,
+}
+
+impl ShaderBundle {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), programs: Vec::new(), materials: Vec::new(), templates: Vec::new(), version: 1, description: String::new(), author: String::new(), created_at: 0 }
+    }
+    pub fn add_program(&mut self, p: ShaderProgram) { self.programs.push(p); }
+    pub fn add_material(&mut self, m: Material) { self.materials.push(m); }
+    pub fn add_template(&mut self, t: ShaderTemplate) { self.templates.push(t); }
+    pub fn program_count(&self) -> usize { self.programs.len() }
+    pub fn material_count(&self) -> usize { self.materials.len() }
+    pub fn find_program(&self, name: &str) -> Option<&ShaderProgram> { self.programs.iter().find(|p| p.name == name) }
+    pub fn is_empty(&self) -> bool { self.programs.is_empty() && self.materials.is_empty() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderBundleRegistry {
+    pub bundles: HashMap<u32, ShaderBundle>,
+    pub next_id: u32,
+}
+
+impl ShaderBundleRegistry {
+    pub fn new() -> Self { Self { bundles: HashMap::new(), next_id: 1 } }
+    pub fn register(&mut self, mut b: ShaderBundle) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        b.id = id;
+        self.bundles.insert(id, b);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&ShaderBundle> { self.bundles.get(&id) }
+    pub fn find_by_name(&self, name: &str) -> Option<&ShaderBundle> { self.bundles.values().find(|b| b.name == name) }
+    pub fn total_programs(&self) -> usize { self.bundles.values().map(|b| b.program_count()).sum() }
+    pub fn count(&self) -> usize { self.bundles.len() }
+}
+
+impl Default for ShaderBundleRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Workspace ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderWorkspace {
+    pub registry: ShaderProgramRegistry,
+    pub cache: ShaderCache,
+    pub library: ShaderLibrary,
+    pub material_lib: MaterialLibrary,
+    pub texture_reg: TextureRegistry,
+    pub buffer_reg: BufferRegistry,
+    pub pipeline: RenderPipeline,
+    pub post_process: PostProcessStack,
+    pub template_lib: ShaderTemplateLibrary,
+    pub linter: ShaderLinter,
+    pub formatter: ShaderFormatter,
+    pub debugger: ShaderDebugger,
+    pub profiler: ShaderProfiler,
+    pub hot_reload: HotReloadManager,
+    pub editor_state: ShaderEditorState,
+    pub autocomplete: AutoCompleteProvider,
+    pub linker: ShaderLinker,
+    pub bundle_reg: ShaderBundleRegistry,
+    pub feature_flags: RenderFeatureFlags,
+    pub memory_budget: GpuMemoryBudget,
+    pub render_stats: RenderStatistics,
+}
+
+impl ShaderWorkspace {
+    pub fn new() -> Self {
+        Self {
+            registry: ShaderProgramRegistry::new(),
+            cache: ShaderCache::new(SHADER_CACHE_SIZE),
+            library: ShaderLibrary::build_standard(),
+            material_lib: MaterialLibrary::new(),
+            texture_reg: TextureRegistry::new(),
+            buffer_reg: BufferRegistry::new(),
+            pipeline: RenderPipeline::new(),
+            post_process: PostProcessStack::new(),
+            template_lib: ShaderTemplateLibrary::new(),
+            linter: ShaderLinter::new(),
+            formatter: ShaderFormatter::new(),
+            debugger: ShaderDebugger::build_defaults(),
+            profiler: ShaderProfiler::new(),
+            hot_reload: HotReloadManager::new(),
+            editor_state: ShaderEditorState::new(),
+            autocomplete: AutoCompleteProvider::new(),
+            linker: ShaderLinker::new(),
+            bundle_reg: ShaderBundleRegistry::new(),
+            feature_flags: RenderFeatureFlags::default(),
+            memory_budget: GpuMemoryBudget::new(GPU_MEMORY_BUDGET_DEFAULT_MB * 1024 * 1024),
+            render_stats: RenderStatistics::new(),
+        }
+    }
+    pub fn program_count(&self) -> usize { self.registry.count() }
+    pub fn material_count(&self) -> usize { self.material_lib.count() }
+    pub fn texture_count(&self) -> usize { self.texture_reg.count() }
+    pub fn buffer_count(&self) -> usize { self.buffer_reg.count() }
+    pub fn begin_frame(&mut self) { self.render_stats.begin_frame(); self.profiler.begin_frame(); }
+    pub fn has_program(&self, name: &str) -> bool { self.registry.find_by_name(name).is_some() }
+    pub fn tick(&mut self, dt: f32) { let _ = self.hot_reload.tick(dt); }
+}
+
+impl Default for ShaderWorkspace {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const SHADER_BUNDLE_MAX: usize = 64;
+pub const SHADER_WORKSPACE_MAX_PROGRAMS: usize = SHADER_MAX_PROGRAMS;
+pub const RENDER_FEATURE_COUNT: usize = 15;
+pub const SHADER_VERSION_DEFAULT: &str = "450";
+pub const SHADER_ES_VERSION_DEFAULT: &str = "300 es";
+pub const SHADER_ENTRY_POINT_DEFAULT: &str = "main";
+pub const GLSL_BUILTIN_TYPE_COUNT: usize = 40;
+pub const GLSL_KEYWORD_COUNT: usize = 31;
+pub const GLSL_MAX_FRAGMENT_OUTPUTS: u32 = 8;
+pub const GLSL_MAX_VERTEX_ATTRIBS: u32 = 32;
+
+pub fn build_standard_shader_workspace() -> ShaderWorkspace { ShaderWorkspace::new() }
+pub fn shader_workspace_summary(ws: &ShaderWorkspace) -> String {
+    format!("ShaderWorkspace: {} programs, {} materials, {} textures, {} buffers, {} render passes", ws.program_count(), ws.material_count(), ws.texture_count(), ws.buffer_count(), ws.pipeline.pass_count())
+}
+pub fn shader_system_version() -> &'static str { "1.0.0" }
+pub fn is_shader_system_ready() -> bool { true }
