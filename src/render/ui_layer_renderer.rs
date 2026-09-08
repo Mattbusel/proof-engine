@@ -66,11 +66,7 @@ impl UiLayerRenderer {
                 }
                 UiDrawCommand::Rect { x, y, w, h, color, filled } => {
                     if *filled {
-                        self.rect_instances.push(RectInstance {
-                            position: [*x, *y],
-                            size: [*w, *h],
-                            color: color.to_array(),
-                        });
+                        self.push_filled_rect(*x, *y, *w, *h, *color, atlas);
                     } else {
                         self.build_rect_outline(*x, *y, *w, *h, *color, ui, atlas);
                     }
@@ -165,6 +161,39 @@ impl UiLayerRenderer {
         }
     }
 
+
+    /// Emit a filled rectangle as a single stretched block glyph.
+    ///
+    /// The UI pass draws one instanced glyph batch, so rectangles have to go
+    /// through the same path. Pushing them to a separate buffer meant filled
+    /// rects and panel fills were built every frame and never drawn, because
+    /// nothing uploaded that buffer.
+    fn push_filled_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Vec4, atlas: &FontAtlas) {
+        if w <= 0.0 || h <= 0.0 || color.w <= 0.0 {
+            return;
+        }
+        // Sample a single texel from deep inside the full block rather than
+        // stretching the whole glyph. A distance field stretched across a
+        // panel-sized quad turns its edge falloff into a wide gradient, which
+        // reads as a blurry smear; a zero-area UV at the centre is uniformly
+        // "inside" and therefore solid at any size.
+        let uv = atlas.uv_for('\u{2588}'); // FULL BLOCK
+        let cu = (uv.u0 + uv.u1) * 0.5;
+        let cv = (uv.v0 + uv.v1) * 0.5;
+        self.instances.push(GlyphInstance {
+            position: [x + w * 0.5, y + h * 0.5, 0.0],
+            scale: [w, h],
+            rotation: 0.0,
+            color: color.to_array(),
+            emission: 0.0,
+            glow_color: [color.x, color.y, color.z],
+            glow_radius: 0.0,
+            uv_offset: [cu, cv],
+            uv_size: [0.0, 0.0],
+            _pad: [0.0; 2],
+        });
+    }
+
     fn build_rect_outline(
         &mut self,
         x: f32,
@@ -234,11 +263,14 @@ impl UiLayerRenderer {
 
         // Fill background
         if fill_color.w > 0.0 {
-            self.rect_instances.push(RectInstance {
-                position: [x + char_w, y + char_h],
-                size: [w - char_w * 2.0, h - char_h * 2.0],
-                color: fill_color.to_array(),
-            });
+            self.push_filled_rect(
+                x + char_w,
+                y + char_h,
+                w - char_w * 2.0,
+                h - char_h * 2.0,
+                fill_color,
+                atlas,
+            );
         }
 
         let chars = border.chars();

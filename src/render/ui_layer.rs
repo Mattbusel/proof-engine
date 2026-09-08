@@ -152,11 +152,20 @@ impl UiLayer {
     /// Get the orthographic projection matrix for this UI layer.
     /// Maps (0,0) at top-left to (screen_width, screen_height) at bottom-right.
     pub fn projection(&self) -> Mat4 {
+        // Screen-space UI is authored with y=0 at the top, but this pass draws
+        // straight to the default framebuffer *after* post-processing has
+        // composited, and that content arrives already flipped relative to the
+        // FBO passes. Projecting y=0 to the bottom therefore lands it at the
+        // top on screen.
+        //
+        // Verified against the window decorations: get this backwards and the
+        // entire interface renders upside down while the title bar stays
+        // upright.
         Mat4::orthographic_rh_gl(
             0.0,
             self.screen_width,
-            self.screen_height,
             0.0,
+            self.screen_height,
             -1.0,
             1.0,
         )
