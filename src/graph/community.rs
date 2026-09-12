@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_label_propagation_disconnected() {
-        let mut g = Graph::new(GraphKind::Undirected);
+        let mut g = Graph::<(), ()>::new(GraphKind::Undirected);
         let a = g.add_node(());
         let b = g.add_node(());
         let c = g.add_node(());

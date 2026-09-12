@@ -760,7 +760,7 @@ mod tests {
     fn test_lz4_empty() {
         let compressed = Lz4Encoder::compress(&[]);
         let decompressed = Lz4Decoder::decompress(&compressed).expect("lz4 decompress failed");
-        assert_eq!(decompressed, &[]);
+        assert!(decompressed.is_empty());
     }
 
     #[test]

@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn colour_hex_parse() {
-        use super::super::material_painter::ColorPicker;
+        use crate::editor::kit_panel::ColorPicker;
         let c = ColorPicker::new("t", glam::Vec4::new(1.0, 0.0, 0.0, 1.0));
         let hex = c.to_hex();
         let back = ColorPicker::from_hex(&hex).unwrap();

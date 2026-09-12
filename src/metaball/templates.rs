@@ -244,17 +244,15 @@ mod tests {
     #[test]
     fn slime_extracts_mesh() {
         let e = EntityTemplate::slime();
-        let extractor = MarchingCubesExtractor::new();
-        let mesh = extractor.extract(&e);
+        let mesh = MarchingCubesExtractor::extract_entity(&e);
         assert!(!mesh.is_empty(), "Slime should produce a mesh");
     }
 
     #[test]
     fn humanoid_extracts_mesh() {
         let e = EntityTemplate::humanoid();
-        let extractor = MarchingCubesExtractor::new();
-        let mesh = extractor.extract(&e);
-        assert!(!mesh.is_empty(), "Humanoid should produce mesh, got {} verts", mesh.vertex_count);
+        let mesh = MarchingCubesExtractor::extract_entity(&e);
+        assert!(!mesh.is_empty(), "Humanoid should produce mesh, got {} verts", mesh.vertex_count());
     }
 
     #[test]

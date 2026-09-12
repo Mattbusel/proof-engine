@@ -166,7 +166,7 @@ mod tests {
         // d/dx(x * sin(x)) = sin(x) + x*cos(x)
         let expr = Expr::var("x").mul(Expr::var("x").sin());
         let d = diff(&expr, "x");
-        let x = 1.0;
+        let x: f64 = 1.0;
         let expected = x.sin() + x * x.cos();
         let result = eval_at(&d, x);
         assert!((result - expected).abs() < 0.01, "got {result}, expected {expected}");

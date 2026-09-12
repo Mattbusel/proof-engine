@@ -123,6 +123,10 @@ pub struct ProofEngine {
     /// Transient screen effects: shockwaves, flashes, light shafts. Fire and
     /// forget; ticked and uploaded by `run_ui` every frame.
     pub fx: render::screen_fx::ScreenFx,
+    /// GPU density entities queued for this frame. Drained after the render.
+    density_queue: Vec<particle::gpu_density::GpuDensityEntityData>,
+    /// The particle budget per density entity, set by `init_gpu_density`.
+    density_budget: u32,
     /// Optional audio engine — None if no output device is available.
     pub audio: Option<audio::AudioEngine>,
     // Internal render pipeline (initialized lazily when run() is called)
@@ -145,10 +149,32 @@ impl ProofEngine {
                 config.window_height as f32,
             ),
             fx: render::screen_fx::ScreenFx::new(),
+            density_queue: Vec::new(),
+            density_budget: 0,
             audio,
             config,
             pipeline: None,
         }
+    }
+
+    /// Turn on GPU density entities with a per-entity particle budget.
+    ///
+    /// The budget is capped at
+    /// [`MAX_PARTICLES_PER_ENTITY`](particle::gpu_density::MAX_PARTICLES_PER_ENTITY):
+    /// past that there are more particles than pixels and the picture stops
+    /// improving while the frame time keeps climbing. Asking for more is
+    /// fine; you get the cap and a log line.
+    pub fn init_gpu_density(&mut self, particles: u32) {
+        let cap = particle::gpu_density::MAX_PARTICLES_PER_ENTITY;
+        if particles > cap {
+            log::info!("gpu density: {particles} particles requested, drawing {cap} per entity");
+        }
+        self.density_budget = particles.min(cap);
+    }
+
+    /// Draw a density entity this frame. Call every frame it should show.
+    pub fn queue_gpu_density_entity(&mut self, entity: particle::gpu_density::GpuDensityEntityData) {
+        self.density_queue.push(entity);
     }
 
     /// Send an audio event. No-op if audio is unavailable.
@@ -208,8 +234,10 @@ impl ProofEngine {
 
             // Render scene first
             if let Some(ref mut p) = self.pipeline {
+                p.set_density_entities(&self.density_queue, self.density_budget);
                 p.render(&self.scene, &self.camera);
             }
+            self.density_queue.clear();
 
             // NOW paint the overlay (egui) on top of the rendered scene
             if let Some(ptr) = gl_ptr {
@@ -291,12 +319,14 @@ impl ProofEngine {
 
             if let Some(ref mut p) = self.pipeline {
                 p.update_render_config(&self.config.render);
+                p.set_density_entities(&self.density_queue, self.density_budget);
                 // The scene, then the UI's world pass into the same buffer,
                 // then post-processing over both.
                 p.render_frame(&self.scene, &self.camera, Some(&self.ui), &self.fx);
                 // The HUD, painted after post-processing so it stays sharp.
                 p.render_ui(&self.ui);
             }
+            self.density_queue.clear();
 
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {

@@ -46,6 +46,7 @@ use crate::glyph::atlas::FontAtlas;
 use crate::glyph::batch::GlyphInstance;
 use crate::render::ui_layer::UiLayer;
 use crate::render::screen_fx::ScreenFx;
+use crate::particle::gpu_density::{GpuDensityEntityData, GpuDensityRenderer};
 
 // ── Glyph vertex shader ────────────────────────────────────────────────────────
 
@@ -307,6 +308,12 @@ pub struct Pipeline {
     /// `render_ui` need not build them again.
     ui_prepared: bool,
 
+    // ── GPU density entities ──────────────────────────────────────────────────
+    /// Created the first time an entity is queued.
+    density: Option<GpuDensityRenderer>,
+    density_entities: Vec<GpuDensityEntityData>,
+    density_budget: u32,
+
     // ── SVOGI Global Illumination ───────────────────────────────────────────
     pub svogi: crate::svogi::integration::CascadedSvogi,
 
@@ -467,6 +474,9 @@ impl Pipeline {
             atlas,
             ui_renderer: super::ui_layer_renderer::UiLayerRenderer::new(),
             ui_prepared: false,
+            density: None,
+            density_entities: Vec::new(),
+            density_budget: 0,
             instances: Vec::with_capacity(8192),
             fps_counter: FpsCounter::new(),
             frame_start: Instant::now(),
@@ -479,6 +489,18 @@ impl Pipeline {
             fog: crate::volumetric_fog::VolumetricFogPipeline::new(
                 crate::volumetric_fog::FogPresets::combat()
             ),
+        }
+    }
+
+    /// Hand over this frame's GPU density entities and the particle budget
+    /// each is drawn with. They are drawn into the scene after the glyph
+    /// pass, so they bloom and grade with everything else.
+    pub fn set_density_entities(&mut self, entities: &[GpuDensityEntityData], budget: u32) {
+        self.density_entities.clear();
+        self.density_entities.extend_from_slice(entities);
+        self.density_budget = budget;
+        if !self.density_entities.is_empty() && self.density.is_none() {
+            self.density = Some(unsafe { GpuDensityRenderer::new(&self.gl) });
         }
     }
 
@@ -988,6 +1010,26 @@ impl Pipeline {
                 (self.instances.len() as u32 * n_copies) as i32,
             );
             self.stats.draw_calls += 1;
+        }
+
+        // ── Pass 1a: GPU density entities ──────────────────────────────────────
+        //
+        // Millions of particles derived on the GPU from a few bones. Into
+        // the same HDR targets, before the world pass so screen-space matter
+        // can stand in front of them.
+        if let Some(ref mut density) = self.density {
+            if !self.density_entities.is_empty() {
+                let draws = density.draw(
+                    gl,
+                    &self.density_entities,
+                    self.density_budget,
+                    &view_proj,
+                    (sw, sh),
+                    self.scene_time,
+                );
+                self.stats.draw_calls += draws;
+                self.stats.particle_count += density.drawn as usize;
+            }
         }
 
         // ── Pass 1b: the UI layer's world pass ─────────────────────────────────

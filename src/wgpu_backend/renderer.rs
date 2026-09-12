@@ -582,9 +582,11 @@ mod tests {
     fn draw_call_builder() {
         let mut r = make_renderer();
         let vbuf = r.create_vertex_buffer(&[0u8; 64]);
+        let vs = r.backend.create_shader("v", ShaderStage::Vertex);
+        let fs = r.backend.create_shader("f", ShaderStage::Fragment);
         let pipe = r.backend.create_pipeline(
-            r.backend.create_shader("v", ShaderStage::Vertex),
-            r.backend.create_shader("f", ShaderStage::Fragment),
+            vs,
+            fs,
             &PipelineLayout::default(),
         );
         let call = DrawCall::new(pipe, vbuf, 3)
@@ -608,9 +610,11 @@ mod tests {
     fn draw_within_pass() {
         let mut r = make_renderer();
         let vbuf = r.create_vertex_buffer(&[0u8; 48]);
+        let vs = r.backend.create_shader("v", ShaderStage::Vertex);
+        let fs = r.backend.create_shader("f", ShaderStage::Fragment);
         let pipe = r.backend.create_pipeline(
-            r.backend.create_shader("v", ShaderStage::Vertex),
-            r.backend.create_shader("f", ShaderStage::Fragment),
+            vs,
+            fs,
             &PipelineLayout::default(),
         );
         let pass = RenderPass::new();
@@ -684,9 +688,11 @@ mod tests {
     fn render_queue_sorting() {
         let mut r = make_renderer();
         let vbuf = r.create_vertex_buffer(&[0u8; 12]);
+        let vs = r.backend.create_shader("v", ShaderStage::Vertex);
+        let fs = r.backend.create_shader("f", ShaderStage::Fragment);
         let pipe = r.backend.create_pipeline(
-            r.backend.create_shader("v", ShaderStage::Vertex),
-            r.backend.create_shader("f", ShaderStage::Fragment),
+            vs,
+            fs,
             &PipelineLayout::default(),
         );
 
@@ -728,9 +734,11 @@ mod tests {
         let mut r = make_renderer();
         let vbuf = r.create_vertex_buffer(&[0u8; 48]);
         let ibuf = r.create_index_buffer(&[0u8; 12]);
+        let vs = r.backend.create_shader("v", ShaderStage::Vertex);
+        let fs = r.backend.create_shader("f", ShaderStage::Fragment);
         let pipe = r.backend.create_pipeline(
-            r.backend.create_shader("v", ShaderStage::Vertex),
-            r.backend.create_shader("f", ShaderStage::Fragment),
+            vs,
+            fs,
             &PipelineLayout::default(),
         );
         let call = DrawCall::new(pipe, vbuf, 3)

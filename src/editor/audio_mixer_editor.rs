@@ -4443,15 +4443,21 @@ mod tests {
 
     #[test]
     fn test_fft_magnitude_impulse() {
-        let mut analyzer = SpectrumAnalyzer::new(SPECTRUM_FFT_SIZE);
-        // Push an impulse then silence
+        let mut analyzer = SpectrumAnalyzer::new(32);
+        // An impulse in the middle of the window, where the Hann window is
+        // not zero, then silence; the spectrum updates every hop.
         for i in 0..SPECTRUM_FFT_SIZE {
-            analyzer.push_sample(if i == 0 { 1.0 } else { 0.0 });
+            let s = if i == SPECTRUM_FFT_SIZE / 2 { 1.0 } else { 0.0 };
+            analyzer.push_samples(s, s);
         }
-        analyzer.compute_fft_magnitude();
-        // Impulse has flat spectrum — all bins should have similar magnitude
-        let sum: f32 = analyzer.output_magnitudes.iter().sum();
-        assert!(sum > 0.0, "FFT of impulse should have nonzero output");
+        // Impulse has a flat spectrum: every band is above the silence floor.
+        // Magnitudes are in dB, with -120 meaning nothing at all.
+        let floor = -119.0;
+        assert!(
+            analyzer.magnitude_l.iter().all(|m| *m > floor),
+            "FFT of impulse should have energy in every band: {:?}",
+            analyzer.magnitude_l
+        );
     }
 
     #[test]

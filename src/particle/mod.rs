@@ -9,6 +9,7 @@ pub mod flock;
 pub mod gpu_particles;
 pub mod particle_render;
 pub mod density_entity;
+pub mod gpu_density;
 pub mod shape_templates;
 
 use crate::glyph::{Glyph, RenderLayer};

@@ -7898,13 +7898,14 @@ mod ext3_tests {
         let m0 = ParticleModel::new(1, "v0");
         let m1 = ParticleModel::new(2, "v1");
         let m2 = ParticleModel::new(3, "v2");
-        hist.push(ModelSnapshot { particles: m0.particles.clone(), name: "v0".into() }, "initial");
-        hist.push(ModelSnapshot { particles: m1.particles.clone(), name: "v1".into() }, "step1");
+        hist.push(ModelSnapshot::capture(&m0, "v0"), "initial");
+        hist.push(ModelSnapshot::capture(&m1, "v1"), "step1");
         let _snap = hist.undo();
-        hist.push(ModelSnapshot { particles: m2.particles.clone(), name: "v2".into() }, "branch");
+        hist.push(ModelSnapshot::capture(&m2, "v2"), "branch");
         assert_eq!(hist.branch_count(), 1, "should have one branching point");
+        // Current is the branch, whose parent is the root: two nodes.
         let path = hist.path_to_root();
-        assert_eq!(path.len(), 3);
+        assert_eq!(path.len(), 2);
     }
 
     #[test]
