@@ -621,7 +621,7 @@ impl Pipeline {
         let view_proj = proj * view;
 
         // ── Update SVOGI (voxelize scene, inject light, propagate) ───────────
-        {
+        if self.render_config.global_illumination {
             use crate::svogi::inject::{LightSource, DirectionalLight, PointLight};
             let sun = LightSource::Directional(DirectionalLight {
                 direction: Vec3::new(-0.5, 1.0, 0.8).normalize(),
@@ -646,7 +646,7 @@ impl Pipeline {
         }
 
         // ── Update volumetric fog ─────────────────────────────────────────────
-        {
+        if self.render_config.volumetric_fog {
             use crate::volumetric_fog::FogLight;
             let inv_vp = view_proj.inverse();
             let fog_lights = vec![
@@ -831,6 +831,32 @@ impl Pipeline {
     /// against the wrong one magnifies the whole UI.
     pub fn render_size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Read the frame that is currently on screen back off the GPU.
+    ///
+    /// Returns `(width, height, rgba)` with the bottom row first, which is how
+    /// OpenGL stores it. Call this after everything for the frame has been
+    /// drawn and before the buffers are swapped, or the read comes back empty.
+    pub fn read_frame(&self) -> (u32, u32, Vec<u8>) {
+        let (w, h) = (self.width, self.height);
+        let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
+        unsafe {
+            let gl = &self.gl;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.read_buffer(glow::BACK);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            gl.read_pixels(
+                0,
+                0,
+                w as i32,
+                h as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut buf)),
+            );
+        }
+        (w, h, buf)
     }
 
     /// Get the current window size.

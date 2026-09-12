@@ -9,7 +9,7 @@
 
 use glam::{Vec2, Vec3, Vec4, Mat4};
 
-use super::ui_layer::{UiLayer, UiDrawCommand, TextAlign, BorderStyle};
+use super::ui_layer::{UiLayer, UiDrawCommand, UiParticle, TextAlign, BorderStyle};
 use crate::glyph::batch::GlyphInstance;
 use crate::glyph::atlas::FontAtlas;
 
@@ -79,6 +79,12 @@ impl UiLayerRenderer {
                 }
                 UiDrawCommand::Sprite { lines, x, y, color } => {
                     self.build_sprite(lines, *x, *y, *color, ui, atlas);
+                }
+                UiDrawCommand::Particles(particles) => {
+                    self.build_particle_instances(particles, 0.0, 0.0, atlas);
+                }
+                UiDrawCommand::SharedParticles { particles, dx, dy } => {
+                    self.build_particle_instances(particles, *dx, *dy, atlas);
                 }
             }
         }
@@ -161,6 +167,41 @@ impl UiLayerRenderer {
         }
     }
 
+
+    /// Emit one glyph instance per particle in a cloud.
+    ///
+    /// Particles are placed by their centre and carry their own rotation and
+    /// glow, which is what separates a cloud of matter from a run of text.
+    fn build_particle_instances(
+        &mut self,
+        particles: &[UiParticle],
+        dx: f32,
+        dy: f32,
+        atlas: &FontAtlas,
+    ) {
+        self.instances.reserve(particles.len());
+        for p in particles {
+            if p.color.w <= 0.0 || p.w <= 0.0 || p.h <= 0.0 {
+                continue;
+            }
+            if !(p.x.is_finite() && p.y.is_finite() && p.rotation.is_finite()) {
+                continue;
+            }
+            let uv = atlas.uv_for(p.ch);
+            self.instances.push(GlyphInstance {
+                position: [p.x + dx, p.y + dy, 0.0],
+                scale: [p.w, p.h],
+                rotation: p.rotation,
+                color: p.color.to_array(),
+                emission: p.emission,
+                glow_color: [p.color.x, p.color.y, p.color.z],
+                glow_radius: p.glow,
+                uv_offset: uv.offset(),
+                uv_size: uv.size(),
+                _pad: [0.0; 2],
+            });
+        }
+    }
 
     /// Emit a filled rectangle as a single stretched block glyph.
     ///

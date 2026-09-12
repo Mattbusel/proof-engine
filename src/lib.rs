@@ -269,6 +269,17 @@ impl ProofEngine {
             self.ui.begin_frame();
             update(self, dt);
 
+            // Honour a quit asked for during the update.
+            //
+            // `request_quit` used to set a flag that nothing read, so a game's
+            // own Quit menu did nothing at all and the only way out was the
+            // window's close button. The check goes here, after the update and
+            // before the render, so the frame that asked to quit is the last
+            // one and nothing half-drawn reaches the screen.
+            if self.input.quit_requested {
+                break;
+            }
+
             if let Some(ref mut p) = self.pipeline {
                 p.update_render_config(&self.config.render);
                 p.render(&self.scene, &self.camera);
@@ -375,6 +386,67 @@ impl ProofEngine {
     pub fn render_size(&self) -> (u32, u32) {
         self.pipeline.as_ref().map(|p| p.render_size()).unwrap_or((1600, 1000))
     }
+
+    /// Write the frame currently on screen to an uncompressed 24-bit BMP.
+    ///
+    /// The point of this is being able to see what the engine actually drew.
+    /// Asking the window manager for a picture of a hardware-accelerated window
+    /// is unreliable — it hands back whatever it last cached, which can be a
+    /// stale frame or a blank one — so the only trustworthy answer comes from
+    /// reading the framebuffer back off the GPU.
+    ///
+    /// BMP because it needs no compression and therefore no dependency; the
+    /// row order matches OpenGL's, so no flip is needed either.
+    pub fn save_frame(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let Some(p) = self.pipeline.as_ref() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no pipeline to read from",
+            ));
+        };
+        let (w, h, rgba) = p.read_frame();
+        if w == 0 || h == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "empty framebuffer",
+            ));
+        }
+
+        // Each BMP row is padded to a multiple of four bytes.
+        let stride = ((w as usize * 3) + 3) & !3;
+        let pixels = stride * h as usize;
+        let mut out = Vec::with_capacity(54 + pixels);
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&((54 + pixels) as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(w as i32).to_le_bytes());
+        out.extend_from_slice(&(h as i32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24u16.to_le_bytes());
+        for _ in 0..6 {
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        for y in 0..h as usize {
+            let row = y * w as usize * 4;
+            for x in 0..w as usize {
+                let i = row + x * 4;
+                // BMP stores blue first.
+                out.push(rgba[i + 2]);
+                out.push(rgba[i + 1]);
+                out.push(rgba[i]);
+            }
+            for _ in 0..(stride - w as usize * 3) {
+                out.push(0);
+            }
+        }
+
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(&out)
+    }
 }
 
 /// Common imports for using Proof Engine.
@@ -398,5 +470,8 @@ pub mod prelude {
         debug::DebugOverlay,
         render::pipeline::FrameStats,
     };
-    pub use glam::{Vec2, Vec3, Vec4};
+    // Quat and Mat4 belong here too: the skeleton and animation APIs hand out
+    // transforms built from them, so a caller who only has the prelude cannot
+    // pose a figure without reaching past it into glam.
+    pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 }

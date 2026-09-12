@@ -21,6 +21,23 @@ use std::collections::VecDeque;
 /// A single UI draw command, queued and executed in order.
 #[derive(Clone, Debug)]
 pub enum UiDrawCommand {
+    /// A cloud somebody else owns, drawn at an offset.
+    ///
+    /// The ordinary `Particles` command takes a `Vec`, which means a caller
+    /// with a *cached* cloud has to clone it every frame to hand it over. A
+    /// static background of a hundred and forty thousand particles is seven
+    /// megabytes of allocation and copy per frame producing an identical
+    /// result — which is not a rendering cost, it is a memcpy the renderer
+    /// never asked for.
+    ///
+    /// This takes a shared handle instead, so the caller keeps its cloud and
+    /// passing it costs a reference count. The offset is applied while the
+    /// instances are built, which is a pass the renderer was making anyway.
+    SharedParticles {
+        particles: std::sync::Arc<Vec<UiParticle>>,
+        dx: f32,
+        dy: f32,
+    },
     Text {
         text: String,
         x: f32,
@@ -64,6 +81,49 @@ pub enum UiDrawCommand {
         y: f32,
         color: Vec4,
     },
+    /// A cloud of independently placed glyphs.
+    ///
+    /// Text is the wrong shape for this: a figure built out of particles has no
+    /// baseline, no advance width and no string, and routing it through
+    /// `Text` costs one `String` allocation per particle per frame. This is one
+    /// command for the whole cloud, and it exposes the per-instance rotation
+    /// and glow the glyph pipeline already supports.
+    Particles(Vec<UiParticle>),
+}
+
+/// One glyph in a particle cloud, placed by its centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiParticle {
+    /// Centre of the glyph, in screen pixels.
+    pub x: f32,
+    pub y: f32,
+    /// Width and height of the glyph, in screen pixels.
+    pub w: f32,
+    pub h: f32,
+    pub ch: char,
+    /// Radians. Tumbling debris is the main use.
+    pub rotation: f32,
+    pub color: Vec4,
+    pub emission: f32,
+    /// Bloom radius for this particle alone.
+    pub glow: f32,
+}
+
+impl UiParticle {
+    /// A particle with no rotation and no glow.
+    pub fn new(x: f32, y: f32, w: f32, h: f32, ch: char, color: Vec4) -> UiParticle {
+        UiParticle {
+            x,
+            y,
+            w,
+            h,
+            ch,
+            rotation: 0.0,
+            color,
+            emission: 0.0,
+            glow: 0.0,
+        }
+    }
 }
 
 /// Text alignment.
@@ -192,6 +252,34 @@ impl UiLayer {
             emission: 0.0,
             alignment: TextAlign::Left,
         });
+    }
+
+    /// Draw a cloud of glyphs as one command.
+    ///
+    /// Empty clouds are dropped rather than queued, so a figure that is fully
+    /// clipped or faded costs nothing downstream.
+    /// Draw a cloud the caller keeps, shifted by `dx`, `dy`.
+    ///
+    /// For anything cached across frames. See
+    /// [`UiDrawCommand::SharedParticles`].
+    pub fn draw_particles_shared(
+        &mut self,
+        particles: std::sync::Arc<Vec<UiParticle>>,
+        dx: f32,
+        dy: f32,
+    ) {
+        if particles.is_empty() {
+            return;
+        }
+        self.draw_queue
+            .push(UiDrawCommand::SharedParticles { particles, dx, dy });
+    }
+
+    pub fn draw_particles(&mut self, particles: Vec<UiParticle>) {
+        if particles.is_empty() {
+            return;
+        }
+        self.draw_queue.push(UiDrawCommand::Particles(particles));
     }
 
     /// Draw text with emission (for bloom-capable UI text).

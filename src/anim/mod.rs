@@ -11,6 +11,7 @@
 
 pub mod skeleton;
 pub mod clips;
+pub mod particle_skin;
 
 use std::collections::HashMap;
 

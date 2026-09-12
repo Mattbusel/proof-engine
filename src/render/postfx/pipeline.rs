@@ -8,7 +8,7 @@
 //!   5. Composite: scene_color + bloom + chromatic aberration + grain + vignette → screen
 
 use glow::HasContext;
-use crate::render::shaders::{FULLSCREEN_VERT, BLOOM_FRAG, COMPOSITE_FRAG};
+use crate::render::shaders::{FULLSCREEN_VERT, BLOOM_FRAG, COMPOSITE_FRAG, UPSAMPLE_FRAG};
 use crate::config::RenderConfig;
 
 pub struct PostFxPipeline {
@@ -20,6 +20,27 @@ pub struct PostFxPipeline {
     // Bloom ping-pong (half-res)
     bloom_fbo: [glow::Framebuffer; 2],
     bloom_tex: [glow::Texture; 2],
+
+    /// A pyramid of successively halved targets, and their sizes.
+    ///
+    /// Two blur widths at half resolution is a small glow and a slightly
+    /// larger one. Real bloom is scale-invariant: a bright point puts light
+    /// into a tight core, a wider halo, and a very broad veil across the
+    /// frame, and no amount of widening one Gaussian produces that — the
+    /// kernel would need hundreds of taps and would still band.
+    ///
+    /// A pyramid gets it for almost nothing. Each level is half the last, so
+    /// the whole chain costs about a third of one full-resolution pass, and
+    /// blurring a sixteenth-size image by three pixels *is* a forty-eight
+    /// pixel blur of the original.
+    mip_fbo: Vec<glow::Framebuffer>,
+    mip_tex: Vec<glow::Texture>,
+    mip_size: Vec<(i32, i32)>,
+    /// Second chain, for the upward pass that combines them.
+    up_fbo: Vec<glow::Framebuffer>,
+    up_tex: Vec<glow::Texture>,
+    /// Combines a blurred level with the level above it.
+    upsample_prog: glow::Program,
 
     // Programs
     bloom_prog:     glow::Program,
@@ -47,6 +68,13 @@ impl PostFxPipeline {
             create_scene_fbo(gl, width, height);
         let (bloom_fbo, bloom_tex) =
             create_bloom_fbos(gl, (width / 2).max(1), (height / 2).max(1));
+        let (mip_fbo, mip_tex, mip_size) = create_pyramid(gl, width, height);
+        let (up_fbo, up_tex, _) = create_pyramid(gl, width, height);
+
+        let upsample_prog = compile_postfx_program(gl, FULLSCREEN_VERT, UPSAMPLE_FRAG);
+        gl.use_program(Some(upsample_prog));
+        set_u_i32(gl, upsample_prog, "u_lower", 0);
+        set_u_i32(gl, upsample_prog, "u_higher", 1);
 
         Self {
             scene_fbo,
@@ -54,6 +82,12 @@ impl PostFxPipeline {
             scene_emission_tex,
             bloom_fbo,
             bloom_tex,
+            mip_fbo,
+            mip_tex,
+            mip_size,
+            up_fbo,
+            up_tex,
+            upsample_prog,
             bloom_prog,
             composite_prog,
             fullscreen_vao,
@@ -70,6 +104,25 @@ impl PostFxPipeline {
             gl.delete_framebuffer(self.bloom_fbo[i]);
             gl.delete_texture(self.bloom_tex[i]);
         }
+        for f in self.mip_fbo.drain(..) {
+            gl.delete_framebuffer(f);
+        }
+        for t in self.mip_tex.drain(..) {
+            gl.delete_texture(t);
+        }
+        for f in self.up_fbo.drain(..) {
+            gl.delete_framebuffer(f);
+        }
+        for t in self.up_tex.drain(..) {
+            gl.delete_texture(t);
+        }
+        let (mip_fbo, mip_tex, mip_size) = create_pyramid(gl, width, height);
+        let (up_fbo, up_tex, _) = create_pyramid(gl, width, height);
+        self.mip_fbo = mip_fbo;
+        self.mip_tex = mip_tex;
+        self.mip_size = mip_size;
+        self.up_fbo = up_fbo;
+        self.up_tex = up_tex;
 
         let (scene_fbo, scene_color_tex, scene_emission_tex) =
             create_scene_fbo(gl, width, height);
@@ -99,41 +152,119 @@ impl PostFxPipeline {
 
         gl.bind_vertex_array(Some(self.fullscreen_vao));
 
-        // ── Bloom passes ─────────────────────────────────────────────────────
-        if config.bloom_enabled {
+        // ── Bloom ────────────────────────────────────────────────────────────
+        //
+        // Down the pyramid blurring as it goes, then back up adding each level
+        // into the one above it. The result contains a tight core, a wide
+        // halo and a broad veil at once, which is what light actually does and
+        // what no single Gaussian can produce.
+        if config.bloom_enabled && !self.mip_fbo.is_empty() {
+            let radius = config.bloom_radius.max(0.5);
             gl.use_program(Some(self.bloom_prog));
             gl.active_texture(glow::TEXTURE0);
+            set_u_f32(gl, self.bloom_prog, "u_threshold", config.bloom_threshold);
+            set_u_f32(gl, self.bloom_prog, "u_knee", config.bloom_knee.max(1e-3));
+            set_u_f32(gl, self.bloom_prog, "u_stretch", 1.0);
 
-            // Pass A: horizontal blur — emission_tex → bloom_tex[0]
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
-            gl.viewport(0, 0, bw, bh);
+            // ── Down ─────────────────────────────────────────────────────────
+            //
+            // Each level takes the one above it, blurs horizontally into the
+            // scratch pair and vertically into itself. Only the first level
+            // thresholds; doing it again at every level would eat the blur
+            // just produced.
+            for level in 0..self.mip_fbo.len() {
+                let (w, h) = self.mip_size[level];
+                let source = if level == 0 {
+                    self.scene_emission_tex
+                } else {
+                    self.mip_tex[level - 1]
+                };
+
+                // Horizontal, into the half-res scratch buffer.
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
+                gl.viewport(0, 0, w, h);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.bind_texture(glow::TEXTURE_2D, Some(source));
+                set_u_bool(gl, self.bloom_prog, "u_prefilter", level == 0);
+                set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
+                set_u_f32(gl,  self.bloom_prog, "u_radius", radius);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+
+                // Vertical, into this level.
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mip_fbo[level]));
+                gl.viewport(0, 0, w, h);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
+                set_u_bool(gl, self.bloom_prog, "u_prefilter", false);
+                set_u_bool(gl, self.bloom_prog, "u_horizontal", false);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
+
+            // ── The streak ───────────────────────────────────────────────────
+            //
+            // Applied to one middle level rather than to all of them, so it is
+            // a flare off bright things rather than a horizontal smear over
+            // the whole frame.
+            if config.anamorphic > 0.0 && self.mip_fbo.len() > 2 {
+                let level = self.mip_fbo.len() / 2;
+                let (w, h) = self.mip_size[level];
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
+                gl.viewport(0, 0, w, h);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.mip_tex[level]));
+                set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
+                set_u_f32(gl,  self.bloom_prog, "u_stretch", 9.0 * config.anamorphic);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mip_fbo[level]));
+                gl.viewport(0, 0, w, h);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
+                set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
+                set_u_f32(gl,  self.bloom_prog, "u_stretch", 16.0 * config.anamorphic);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                set_u_f32(gl,  self.bloom_prog, "u_stretch", 1.0);
+            }
+
+            // ── Up ───────────────────────────────────────────────────────────
+            //
+            // From the smallest level back to the largest, each one added into
+            // the level above through a tent filter. The strength falls off as
+            // it climbs, so the broadest scales are a veil rather than a wash.
+            gl.use_program(Some(self.upsample_prog));
+            let top = self.mip_fbo.len() - 1;
+            // The smallest level starts the chain unchanged.
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.up_fbo[top]));
+            let (w, h) = self.mip_size[top];
+            gl.viewport(0, 0, w, h);
             gl.clear(glow::COLOR_BUFFER_BIT);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_emission_tex));
-            set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
-            set_u_f32(gl,  self.bloom_prog, "u_radius", 1.5);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.mip_tex[top]));
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.mip_tex[top]));
+            set_u_f32(gl, self.upsample_prog, "u_radius", 1.0);
+            set_u_f32(gl, self.upsample_prog, "u_strength", 0.0);
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
 
-            // Pass B: vertical blur — bloom_tex[0] → bloom_tex[1]
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[1]));
-            gl.clear(glow::COLOR_BUFFER_BIT);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
-            set_u_bool(gl, self.bloom_prog, "u_horizontal", false);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-
-            // Pass C: second horizontal (wider) — bloom_tex[1] → bloom_tex[0]
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
-            gl.clear(glow::COLOR_BUFFER_BIT);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[1]));
-            set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
-            set_u_f32(gl,  self.bloom_prog, "u_radius", 2.5);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-
-            // Pass D: second vertical — bloom_tex[0] → bloom_tex[1]
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[1]));
-            gl.clear(glow::COLOR_BUFFER_BIT);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
-            set_u_bool(gl, self.bloom_prog, "u_horizontal", false);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            for level in (0..top).rev() {
+                let (w, h) = self.mip_size[level];
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.up_fbo[level]));
+                gl.viewport(0, 0, w, h);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.up_tex[level + 1]));
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.mip_tex[level]));
+                set_u_f32(gl, self.upsample_prog, "u_radius", radius);
+                // Falls off as the chain climbs, which the comment above
+                // claimed and a constant 0.82 did not do: the broadest levels
+                // cover the whole frame, and at full strength they lift the
+                // black of the picture into a general wash.
+                let up = (level + 1) as f32 / top as f32;
+                set_u_f32(gl, self.upsample_prog, "u_strength", 0.55 + up * 0.30);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
+            gl.active_texture(glow::TEXTURE0);
         }
 
         // ── Composite to screen ───────────────────────────────────────────────
@@ -148,24 +279,35 @@ impl PostFxPipeline {
 
         // Texture unit 1: bloom result (or scene color at zero intensity if disabled)
         gl.active_texture(glow::TEXTURE1);
-        if config.bloom_enabled {
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[1]));
+        if config.bloom_enabled && !self.up_tex.is_empty() {
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.up_tex[0]));
         } else {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_color_tex));
         }
 
         let bloom_intensity = if config.bloom_enabled { config.bloom_intensity } else { 0.0 };
         set_u_f32(gl,  self.composite_prog, "u_bloom_intensity",    bloom_intensity);
-        set_u_vec3(gl, self.composite_prog, "u_tint",               [1.0, 1.0, 1.0]);
-        set_u_f32(gl,  self.composite_prog, "u_saturation",         1.0);
-        set_u_f32(gl,  self.composite_prog, "u_contrast",           1.05);
-        set_u_f32(gl,  self.composite_prog, "u_brightness",         0.0);
-        set_u_f32(gl,  self.composite_prog, "u_vignette",           0.25);
+        // The grade, from the config rather than from four numbers written
+        // here where nothing could reach them.
+        set_u_f32(gl,  self.composite_prog, "u_exposure",           config.exposure);
+        set_u_f32(gl,  self.composite_prog, "u_tonemap",            config.tonemap);
+        set_u_f32(gl,  self.composite_prog, "u_halation",           config.halation);
+        set_u_vec3(gl, self.composite_prog, "u_tint",               config.tint);
+        set_u_vec3(gl, self.composite_prog, "u_lift",               config.lift);
+        set_u_vec3(gl, self.composite_prog, "u_gain",               config.gain);
+        set_u_f32(gl,  self.composite_prog, "u_saturation",         config.saturation);
+        set_u_f32(gl,  self.composite_prog, "u_contrast",           config.contrast);
+        set_u_f32(gl,  self.composite_prog, "u_brightness",         config.brightness);
+        set_u_f32(gl,  self.composite_prog, "u_vignette",           config.vignette);
+        set_u_f32(gl,  self.composite_prog, "u_vignette_softness",  config.vignette_softness);
+        set_u_f32(gl,  self.composite_prog, "u_sharpen",            config.sharpen);
+        set_u_f32(gl,  self.composite_prog, "u_dither",             config.dither);
+        set_u_f32(gl,  self.composite_prog, "u_barrel",             config.barrel);
         set_u_f32(gl,  self.composite_prog, "u_grain_intensity",    config.film_grain);
         set_u_f32(gl,  self.composite_prog, "u_grain_seed",         time);
         set_u_f32(gl,  self.composite_prog, "u_chromatic",          config.chromatic_aberration);
         set_u_f32(gl,  self.composite_prog, "u_scanline_intensity",
-            if config.scanlines_enabled { 0.15 } else { 0.0 });
+            if config.scanlines_enabled { config.scanline_intensity } else { 0.0 });
         set_u_bool(gl, self.composite_prog, "u_scanlines_enabled",  config.scanlines_enabled);
 
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -213,6 +355,44 @@ unsafe fn create_scene_fbo(
     }
     gl.bind_framebuffer(glow::FRAMEBUFFER, None);
     (fbo, color_tex, emission_tex)
+}
+
+/// Build a chain of halving render targets, largest first.
+///
+/// Stops at eight pixels: below that a level is a colour rather than an image,
+/// and blurring it only spreads the frame's average brightness over the frame.
+unsafe fn create_pyramid(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+) -> (Vec<glow::Framebuffer>, Vec<glow::Texture>, Vec<(i32, i32)>) {
+    let mut fbos = Vec::new();
+    let mut texs = Vec::new();
+    let mut sizes = Vec::new();
+    let (mut w, mut h) = ((width / 2).max(1), (height / 2).max(1));
+    for _ in 0..6 {
+        if w < 8 || h < 8 {
+            break;
+        }
+        let tex = make_rgba_tex(gl, w, h);
+        let fbo = gl.create_framebuffer().expect("bloom mip fbo");
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(tex),
+            0,
+        );
+        gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
+        fbos.push(fbo);
+        texs.push(tex);
+        sizes.push((w as i32, h as i32));
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+    (fbos, texs, sizes)
 }
 
 unsafe fn create_bloom_fbos(
