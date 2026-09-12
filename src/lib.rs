@@ -238,6 +238,7 @@ impl ProofEngine {
                 p.render(&self.scene, &self.camera);
             }
             self.density_queue.clear();
+            self.fx.lights.clear();
 
             // NOW paint the overlay (egui) on top of the rendered scene
             if let Some(ptr) = gl_ptr {
@@ -327,6 +328,7 @@ impl ProofEngine {
                 p.render_ui(&self.ui);
             }
             self.density_queue.clear();
+            self.fx.lights.clear();
 
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {
@@ -508,7 +510,7 @@ pub mod prelude {
         tween::sequence::{TweenSequence, TweenTimeline, SequenceBuilder},
         debug::DebugOverlay,
         render::pipeline::FrameStats,
-        render::screen_fx::{ScreenFx, Shockwave},
+        render::screen_fx::{ScreenFx, ScreenLight, Shockwave},
         render::ui_layer::UiPass,
     };
     // Quat and Mat4 belong here too: the skeleton and animation APIs hand out

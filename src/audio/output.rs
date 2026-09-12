@@ -1,8 +1,21 @@
-//! cpal audio output — device enumeration, stream creation, math-driven synthesis.
+//! cpal audio output: device enumeration, stream creation, synthesis.
 //!
 //! The audio callback runs on a dedicated real-time thread. It receives
-//! AudioEvents via an mpsc channel and synthesizes samples by evaluating
-//! each active MathAudioSource's function every sample.
+//! AudioEvents over an mpsc channel and synthesises every active
+//! [`MathAudioSource`] sample by sample.
+//!
+//! What a source is now: an oscillator whose pitch comes from its
+//! MathFunction through a logarithmic range, detuned, with a pitch envelope
+//! that can fall from a multiple of the note down to it (the shape of every
+//! drum and impact there is), an optional second partial, a share of white
+//! noise, up to two biquad filters or a comb, soft drive, and the fade-in and
+//! fade-out the source asked for. Before this the thread ignored all of it:
+//! every sound in the world had the same fixed envelope and no filter, which
+//! is why a sword and a menu blip were the same click at different pitches.
+//!
+//! What the bus does now: sound effects and music are summed separately,
+//! music ducks under effects, a share of everything goes to one reverb, and
+//! a soft limiter keeps the sum from clipping.
 
 use std::sync::mpsc::Receiver;
 
@@ -11,9 +24,10 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use glam::Vec3;
 
 use crate::audio::{AudioEvent, MusicVibe};
-use crate::audio::math_source::{MathAudioSource, Waveform as MsWaveform};
+use crate::audio::effects::{AudioEffect, Reverb};
+use crate::audio::math_source::{AudioFilter, MathAudioSource, Waveform as MsWaveform};
 use crate::audio::mixer::{spatial_weight, stereo_pan};
-use crate::audio::synth::{oscillator, Adsr, Waveform as SynthWaveform};
+use crate::audio::synth::{oscillator, BiquadFilter, DelayLine, Waveform as SynthWaveform};
 
 fn ms_to_synth_waveform(w: MsWaveform) -> SynthWaveform {
     match w {
@@ -27,29 +41,118 @@ fn ms_to_synth_waveform(w: MsWaveform) -> SynthWaveform {
     }
 }
 
+/// A filter stage built from a source's [`AudioFilter`] description.
+enum Stage {
+    Biquad(BiquadFilter),
+    /// A feedback comb: the metallic ring of a struck thing.
+    Comb { delay: DelayLine, feedback: f32, last: f32 },
+}
+
+impl Stage {
+    fn from_filter(f: &AudioFilter) -> Stage {
+        match *f {
+            AudioFilter::LowPass { cutoff_hz, resonance } =>
+                Stage::Biquad(BiquadFilter::low_pass(cutoff_hz.max(20.0), resonance.max(0.5))),
+            AudioFilter::HighPass { cutoff_hz, resonance } =>
+                Stage::Biquad(BiquadFilter::high_pass(cutoff_hz.max(20.0), resonance.max(0.5))),
+            AudioFilter::BandPass { center_hz, bandwidth } =>
+                Stage::Biquad(BiquadFilter::band_pass(center_hz.max(20.0), (center_hz / bandwidth.max(1.0)).clamp(0.3, 20.0))),
+            AudioFilter::Notch { center_hz, bandwidth } =>
+                Stage::Biquad(BiquadFilter::notch(center_hz.max(20.0), (center_hz / bandwidth.max(1.0)).clamp(0.3, 20.0))),
+            AudioFilter::Formant { f1_hz, .. } =>
+                Stage::Biquad(BiquadFilter::band_pass(f1_hz.max(20.0), 4.0)),
+            AudioFilter::Comb { delay_ms, feedback } => {
+                let mut delay = DelayLine::new(delay_ms.max(0.2) + 1.0);
+                delay.set_delay_ms(delay_ms.max(0.2));
+                Stage::Comb { delay, feedback: feedback.clamp(-0.98, 0.98), last: 0.0 }
+            }
+        }
+    }
+
+    fn tick(&mut self, x: f32) -> f32 {
+        match self {
+            Stage::Biquad(b) => b.tick(x),
+            Stage::Comb { delay, feedback, last } => {
+                let y = x + *feedback * *last;
+                *last = delay.tick(y);
+                y
+            }
+        }
+    }
+}
+
+/// A cheap white noise generator with its own state, so two sources never
+/// share a sequence.
+struct Noise(u32);
+
+impl Noise {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        (self.0 as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
 /// An active synthesized source on the audio thread.
 struct ActiveSource {
     src:      MathAudioSource,
-    phase:    f32,   // oscillator phase [0, 1)
-    age:      f32,   // seconds since spawn
+    phase:    f32,
+    phase2:   f32,
+    age:      f32,
     note_off: Option<f32>,
-    adsr:     Adsr,
+    stage1:   Option<Stage>,
+    stage2:   Option<Stage>,
+    noise:    Noise,
+    music:    bool,
 }
 
+impl ActiveSource {
+    fn new(src: MathAudioSource, seed: u32) -> Self {
+        let stage1 = src.filter.as_ref().map(Stage::from_filter);
+        let stage2 = src.filter2.as_ref().map(Stage::from_filter);
+        let music = src.tag.as_deref() == Some("music");
+        Self {
+            src,
+            phase: 0.0,
+            phase2: 0.0,
+            age: 0.0,
+            note_off: None,
+            stage1,
+            stage2,
+            noise: Noise(seed | 1),
+            music,
+        }
+    }
+}
+
+/// How long a stopped source takes to fall silent.
+const RELEASE_SECS: f32 = 0.25;
+/// Fade applied to every start with no fade-in of its own, against clicks.
+const DECLICK_SECS: f32 = 0.003;
+/// How hard effects push the music down, and how fast it comes back.
+const DUCK_DEPTH: f32 = 0.45;
+const DUCK_RELEASE_PER_SEC: f32 = 4.0;
+
 /// State owned by the audio callback closure.
-#[allow(dead_code)]
 struct AudioState {
     sources:       Vec<ActiveSource>,
     rx:            Receiver<AudioEvent>,
     master_volume: f32,
     music_volume:  f32,
+    #[allow(dead_code)]
     music_vibe:    MusicVibe,
     sample_rate:   f32,
-    channels:      usize,
-    /// Listener position for spatial audio (updated via AudioEvent).
     listener:      Vec3,
-    /// Seconds counter (for sustained sources driven by time).
     time:          f32,
+    seed:          u32,
+    reverb:        Reverb,
+    /// The sound-effects level the music ducks under.
+    duck:          f32,
+    /// One-sample scratch for the reverb, which processes blocks.
+    scratch:       [f32; 1],
+    /// When something last went to the reverb, so its tail is let out.
+    last_send:     f32,
 }
 
 impl AudioState {
@@ -58,25 +161,16 @@ impl AudioState {
             match event {
                 AudioEvent::SpawnSource { source, position } => {
                     let mut src = source;
-                    src.position = position;
-                    self.sources.push(ActiveSource {
-                        src,
-                        phase: 0.0,
-                        age: 0.0,
-                        note_off: None,
-                        adsr: Adsr {
-                            attack:  0.02,
-                            decay:   0.1,
-                            sustain: 0.8,
-                            release: 0.3,
-                        },
-                    });
+                    if position != Vec3::ZERO {
+                        src.position = position;
+                    }
+                    self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    self.sources.push(ActiveSource::new(src, self.seed));
                 }
                 AudioEvent::StopTag(tag) => {
-                    let now = self.time;
                     for s in &mut self.sources {
-                        if s.src.tag.as_deref() == Some(&tag) {
-                            s.note_off = Some(now);
+                        if s.src.tag.as_deref() == Some(&tag) && s.note_off.is_none() {
+                            s.note_off = Some(s.age);
                         }
                     }
                 }
@@ -87,30 +181,33 @@ impl AudioState {
                     self.music_volume = v.clamp(0.0, 1.0);
                 }
                 AudioEvent::PlaySfx { name: _, position, volume } => {
-                    // Spawn a short sine click as placeholder for named SFX
+                    // A named effect with no library behind it: a short
+                    // struck tone, so the call is at least audible.
                     use crate::math::MathFunction;
-                    self.sources.push(ActiveSource {
-                        src: MathAudioSource {
-                            function: MathFunction::Sine { amplitude: 1.0, frequency: 1.0, phase: 0.0 },
-                            frequency_range: (440.0, 880.0),
-                            amplitude: volume,
-                            waveform: MsWaveform::Sine,
-                            filter: None,
-                            position,
-                            tag: Some("sfx".to_string()),
-                            lifetime: 0.15,
-                            ..Default::default()
-                        },
-                        phase: 0.0,
-                        age: 0.0,
-                        note_off: None,
-                        adsr: Adsr { attack: 0.01, decay: 0.05, sustain: 0.0, release: 0.05 },
-                    });
+                    let src = MathAudioSource {
+                        function: MathFunction::Constant(0.0),
+                        frequency_range: (520.0, 520.0),
+                        amplitude: volume.clamp(0.0, 1.0) * 0.5,
+                        waveform: MsWaveform::Triangle,
+                        position,
+                        tag: Some("sfx".to_string()),
+                        lifetime: 0.14,
+                        fade_out: 0.12,
+                        pitch_env: (2.5, 0.05),
+                        ..Default::default()
+                    };
+                    self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    self.sources.push(ActiveSource::new(src, self.seed));
                 }
                 AudioEvent::SetMusicVibe(vibe) => {
                     self.music_vibe = vibe;
                 }
             }
+        }
+        // Never let the voice count run away: the quietest go first.
+        if self.sources.len() > 96 {
+            self.sources.sort_by(|a, b| b.src.amplitude.total_cmp(&a.src.amplitude));
+            self.sources.truncate(96);
         }
     }
 
@@ -119,58 +216,154 @@ impl AudioState {
         let dt = 1.0 / self.sample_rate;
         self.time += dt;
 
-        let mut left  = 0.0f32;
-        let mut right = 0.0f32;
-        let mut to_remove = Vec::new();
+        let mut sfx_l = 0.0f32;
+        let mut sfx_r = 0.0f32;
+        let mut mus_l = 0.0f32;
+        let mut mus_r = 0.0f32;
+        let mut send = 0.0f32;
+        let mut sfx_peak = 0.0f32;
+        let listener = self.listener;
 
-        for (i, active) in self.sources.iter_mut().enumerate() {
-            // Expire check
-            if active.src.lifetime >= 0.0 && active.age >= active.src.lifetime {
-                to_remove.push(i);
+        let mut i = 0;
+        while i < self.sources.len() {
+            let a = &mut self.sources[i];
+            let src = &a.src;
+
+            // Not started yet.
+            let t = a.age - src.start_delay;
+            if t < 0.0 {
+                a.age += dt;
+                i += 1;
                 continue;
             }
-            // Release envelope expired
-            if let Some(off) = active.note_off {
-                if active.age - off > active.adsr.release + 0.05 {
-                    to_remove.push(i);
-                    continue;
+            // Over.
+            if src.lifetime >= 0.0 && t >= src.lifetime {
+                self.sources.swap_remove(i);
+                continue;
+            }
+            let release = match a.note_off {
+                Some(off) => {
+                    let gone = (a.age - off) / RELEASE_SECS;
+                    if gone >= 1.0 {
+                        self.sources.swap_remove(i);
+                        continue;
+                    }
+                    1.0 - gone
                 }
+                None => 1.0,
+            };
+
+            // Pitch: the function through the log range, detuned, with the
+            // pitch envelope falling onto the note.
+            let fn_out = src.function.evaluate(t, 0.0);
+            let mut freq = src.map_to_frequency(fn_out);
+            if src.detune_cents != 0.0 {
+                freq *= (2.0f32).powf(src.detune_cents / 1200.0);
+            }
+            let (env_mult, env_secs) = src.pitch_env;
+            if env_secs > 0.0 && env_mult != 1.0 {
+                freq *= 1.0 + (env_mult - 1.0) * (-t / (env_secs * 0.25)).exp();
+            }
+            freq = freq.clamp(1.0, self.sample_rate * 0.45);
+
+            a.phase = (a.phase + freq * dt).fract();
+            let mut raw = oscillator(ms_to_synth_waveform(src.waveform), a.phase);
+
+            let (ratio, mix) = src.partial;
+            if mix > 0.0 && ratio > 0.0 {
+                a.phase2 = (a.phase2 + freq * ratio * dt).fract();
+                raw = raw * (1.0 - mix) + oscillator(SynthWaveform::Sine, a.phase2) * mix;
+            }
+            if src.noise_mix > 0.0 {
+                let n = a.noise.next();
+                raw = raw * (1.0 - src.noise_mix) + n * src.noise_mix;
+            }
+            if let Some(s) = a.stage1.as_mut() {
+                raw = s.tick(raw);
+            }
+            if let Some(s) = a.stage2.as_mut() {
+                raw = s.tick(raw);
+            }
+            if src.drive > 0.0 {
+                let g = 1.0 + src.drive * 4.0;
+                raw = (raw * g).tanh() / g.tanh();
             }
 
-            // Evaluate MathFunction to get normalized output in approx [-1, 1]
-            let fn_out = active.src.function.evaluate(active.age, 0.0);
+            // Envelope: the source's own fades, the release if stopped, and
+            // a few milliseconds of declick on anything that starts hard.
+            let mut env = src.envelope(t) * release;
+            if src.fade_in <= 0.0 && t < DECLICK_SECS {
+                env *= t / DECLICK_SECS;
+            }
+            let sample = raw * env;
+            if !sample.is_finite() {
+                self.sources.swap_remove(i);
+                continue;
+            }
 
-            // Map to frequency range
-            let (f_min, f_max) = active.src.frequency_range;
-            let t_freq = (fn_out * 0.5 + 0.5).clamp(0.0, 1.0); // [0, 1]
-            let freq = f_min + t_freq * (f_max - f_min);
+            let (pan_l, pan_r, weight) = if src.spatial && src.position != Vec3::ZERO {
+                let w = spatial_weight(listener, src.position, src.max_distance.max(1.0));
+                let (l, r) = stereo_pan(listener, src.position);
+                (l, r, w)
+            } else {
+                (0.7071, 0.7071, 1.0)
+            };
+            let l = sample * pan_l * weight;
+            let r = sample * pan_r * weight;
+            if a.music {
+                mus_l += l;
+                mus_r += r;
+            } else {
+                sfx_l += l;
+                sfx_r += r;
+                sfx_peak = sfx_peak.max(sample.abs() * weight);
+            }
+            send += sample * weight * src.reverb_send;
 
-            // Advance oscillator phase
-            active.phase = (active.phase + freq * dt).fract();
-
-            // Synthesize sample
-            let raw = oscillator(ms_to_synth_waveform(active.src.waveform), active.phase);
-            let env = active.adsr.level(active.age, active.note_off);
-            let vol = active.src.amplitude * env;
-
-            // Spatial weight
-            let weight = spatial_weight(self.listener, active.src.position, 30.0);
-            let (pan_l, pan_r) = stereo_pan(self.listener, active.src.position);
-            let sample = raw * vol * weight;
-
-            left  += sample * pan_l;
-            right += sample * pan_r;
-
-            active.age += dt;
+            a.age += dt;
+            i += 1;
         }
 
-        // Remove expired sources in reverse order to preserve indices
-        for &i in to_remove.iter().rev() {
-            self.sources.swap_remove(i);
+        // Music ducks under effects: fast down, slow back.
+        let target = (sfx_peak * 2.0).clamp(0.0, 1.0) * DUCK_DEPTH;
+        if target > self.duck {
+            self.duck = target;
+        } else {
+            self.duck -= (self.duck - target) * (DUCK_RELEASE_PER_SEC * dt).min(1.0);
+        }
+        let music_gain = self.music_volume * (1.0 - self.duck);
+
+        let mut left = sfx_l + mus_l * music_gain;
+        let mut right = sfx_r + mus_r * music_gain;
+
+        if send.abs() > 1e-6 {
+            self.last_send = self.time;
+        }
+        if self.time - self.last_send < 3.0 {
+            self.scratch[0] = send;
+            self.reverb.process_block(&mut self.scratch, self.sample_rate);
+            let wet = self.scratch[0];
+            left += wet;
+            right += wet;
         }
 
         let mv = self.master_volume;
-        (left * mv, right * mv)
+        (soft_limit(left * mv), soft_limit(right * mv))
+    }
+
+}
+
+/// A soft ceiling. Linear until it starts to matter, then rolls off so a
+/// dozen simultaneous hits get loud rather than harsh.
+#[inline]
+fn soft_limit(x: f32) -> f32 {
+    const CEIL: f32 = 0.98;
+    if x.abs() < 0.6 {
+        x
+    } else {
+        let s = x.signum();
+        let e = (x.abs() - 0.6) / (CEIL - 0.6);
+        s * (0.6 + (CEIL - 0.6) * (1.0 - (-e).exp()))
     }
 }
 
@@ -201,22 +394,27 @@ impl AudioOutput {
         };
 
         let state = AudioState {
-            sources:       Vec::new(),
+            sources:       Vec::with_capacity(128),
             rx,
             master_volume: 1.0,
-            music_volume:  0.6,
+            music_volume:  1.0,
             music_vibe:    MusicVibe::Silence,
             sample_rate:   rate as f32,
-            channels:      channels as usize,
             listener:      Vec3::ZERO,
             time:          0.0,
+            seed:          0x9E37_79B9,
+            // A stone room: mid-sized, fairly damped, all wet since the dry
+            // signal is mixed separately.
+            reverb:        Reverb::new(0.62, 0.45, 1.0, 0.0, 12.0, 0.8),
+            duck:          0.0,
+            scratch:       [0.0],
+            last_send:     -10.0,
         };
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_stream_f32(&device, &config, state),
             fmt => {
                 log::warn!("AudioOutput: unsupported sample format {:?}, defaulting to f32", fmt);
-                // Try f32 anyway
                 build_stream_f32(&device, &config, state)
             }
         }?;
@@ -252,4 +450,29 @@ fn build_stream_f32(
         )
         .ok()?;
     Some(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_limiter_is_linear_low_and_never_exceeds_the_ceiling() {
+        assert_eq!(soft_limit(0.3), 0.3);
+        assert_eq!(soft_limit(-0.3), -0.3);
+        for x in [0.7f32, 1.0, 2.0, 10.0, 100.0] {
+            assert!(soft_limit(x) < 0.99, "{x} -> {}", soft_limit(x));
+            assert!(soft_limit(-x) > -0.99);
+            assert!(soft_limit(x) > soft_limit(x * 0.9), "should keep rising");
+        }
+    }
+
+    #[test]
+    fn noise_is_not_constant() {
+        let mut n = Noise(7);
+        let a = n.next();
+        let b = n.next();
+        assert_ne!(a, b);
+        assert!(a.abs() <= 1.0 && b.abs() <= 1.0);
+    }
 }

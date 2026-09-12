@@ -70,9 +70,42 @@ pub struct Reflection {
     pub blur: f32,
 }
 
+/// A light in screen space, for the light map.
+///
+/// Pixels within `radius` of it are lit in its colour, falling off with
+/// distance; with `shadows` on, matter between the light and a pixel takes
+/// the light away, so figures are lit on the side that faces it and cast
+/// their shape across the floor behind them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenLight {
+    /// Centre, in screen pixels from the top left.
+    pub x: f32,
+    pub y: f32,
+    /// How far it reaches, in pixels.
+    pub radius: f32,
+    /// Linear RGB.
+    pub color: Vec3,
+    /// 1.0 lights its surroundings fully at its centre; 0.3 is a candle.
+    pub intensity: f32,
+    /// Whether matter shadows it.
+    pub shadows: bool,
+}
+
+/// The most lights the light map takes in one frame.
+pub const MAX_LIGHTS: usize = 32;
+
 /// Transient screen effects. Lives on the engine as `engine.fx`.
 #[derive(Clone, Debug)]
 pub struct ScreenFx {
+    /// This frame's lights. Cleared by the engine after every render, so a
+    /// game pushes the lights it wants every frame.
+    pub lights: Vec<ScreenLight>,
+    /// The light every pixel gets with no light on it. White is unlit: the
+    /// scene as drawn. Anything darker turns the light map on.
+    pub ambient: Vec3,
+    /// How much light one fully covered shadow sample removes. Higher is
+    /// harder-edged, denser shadow.
+    pub shadow_density: f32,
     pub shockwaves: Vec<Shockwave>,
     /// A floor reflection, if the scene has a floor worth reflecting in.
     /// Set every frame it should show; cleared with [`clear_reflection`](Self::clear_reflection).
@@ -107,6 +140,9 @@ impl Default for ScreenFx {
     fn default() -> Self {
         Self {
             shockwaves: Vec::with_capacity(MAX_SHOCKWAVES),
+            lights: Vec::with_capacity(MAX_LIGHTS),
+            ambient: Vec3::ONE,
+            shadow_density: 5.0,
             reflection: None,
             haze: 0.0,
             auto_shafts: false,
@@ -178,6 +214,43 @@ impl ScreenFx {
         self.shaft_target = 0.0;
     }
 
+    /// Add a shadow-casting light for this frame.
+    pub fn light(&mut self, x: f32, y: f32, radius: f32, color: Vec3, intensity: f32) {
+        self.push_light(ScreenLight { x, y, radius, color, intensity, shadows: true });
+    }
+
+    /// Add a light nothing shadows, for a glow rather than a lamp.
+    pub fn light_unshadowed(&mut self, x: f32, y: f32, radius: f32, color: Vec3, intensity: f32) {
+        self.push_light(ScreenLight { x, y, radius, color, intensity, shadows: false });
+    }
+
+    pub fn push_light(&mut self, light: ScreenLight) {
+        if self.lights.len() < MAX_LIGHTS && light.intensity > 0.0 && light.radius > 0.0 {
+            self.lights.push(light);
+        }
+    }
+
+    /// Whether the light map has anything to do this frame.
+    pub fn lighting_active(&self) -> bool {
+        !self.lights.is_empty() || self.ambient != Vec3::ONE
+    }
+
+    /// Pack the lights for the shader: `(u, v, radius_px, shadows)` and
+    /// `(r, g, b, intensity)`, `v` flipped to texture space.
+    pub fn pack_lights(&self, screen_w: f32, screen_h: f32) -> (Vec<f32>, Vec<f32>, usize) {
+        let w = screen_w.max(1.0);
+        let h = screen_h.max(1.0);
+        let mut pos = Vec::with_capacity(MAX_LIGHTS * 4);
+        let mut col = Vec::with_capacity(MAX_LIGHTS * 4);
+        let mut n = 0;
+        for l in self.lights.iter().take(MAX_LIGHTS) {
+            pos.extend_from_slice(&[l.x / w, 1.0 - l.y / h, l.radius, if l.shadows { 1.0 } else { 0.0 }]);
+            col.extend_from_slice(&[l.color.x, l.color.y, l.color.z, l.intensity]);
+            n += 1;
+        }
+        (pos, col, n)
+    }
+
     /// Reflect the picture about the line `y` pixels from the top, for
     /// `fade` pixels below it, at the given strength. A still, lightly
     /// blurred mirror; set the fields on [`Reflection`] for a wet one.
@@ -239,6 +312,7 @@ impl ScreenFx {
             && self.shaft_strength <= 0.0
             && self.reflection.is_none()
             && self.haze <= 0.0
+            && !self.lighting_active()
     }
 
     /// Pack the shockwaves for the composite shader.

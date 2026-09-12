@@ -105,6 +105,27 @@ pub struct MathAudioSource {
     pub fade_in:          f32,
     /// Fade-out duration in seconds before lifetime ends (0.0 = instant).
     pub fade_out:         f32,
+
+    // ── Character ─────────────────────────────────────────────────────────
+    //
+    // What separates a drum from a beep. All default to nothing, so a source
+    // that does not set them sounds as it always did.
+    /// `(start_multiplier, seconds)`: the pitch starts at the multiple and
+    /// falls onto the note over the seconds. `(3.0, 0.08)` is a drum;
+    /// `(0.5, 0.3)` is a rising whoop. `(1.0, 0.0)` is off.
+    pub pitch_env:        (f32, f32),
+    /// `(ratio, mix)`: a second sine at `ratio` times the pitch, mixed in
+    /// at `mix`. Inharmonic ratios (2.76, 5.4) ring like metal.
+    pub partial:          (f32, f32),
+    /// Share of white noise mixed into the oscillator, 0.0 to 1.0.
+    pub noise_mix:        f32,
+    /// Soft saturation, 0.0 clean to about 1.0 crushed.
+    pub drive:            f32,
+    /// How much of this source goes to the master reverb, 0.0 to 1.0.
+    pub reverb_send:      f32,
+    /// Seconds of silence before the source starts. Lifetime and fades
+    /// count from the start, not from the spawn.
+    pub start_delay:      f32,
 }
 
 impl Default for MathAudioSource {
@@ -124,6 +145,12 @@ impl Default for MathAudioSource {
             max_distance:    50.0,
             fade_in:         0.0,
             fade_out:        0.0,
+            pitch_env:       (1.0, 0.0),
+            partial:         (0.0, 0.0),
+            noise_mix:       0.0,
+            drive:           0.0,
+            reverb_send:     0.0,
+            start_delay:     0.0,
         }
     }
 }

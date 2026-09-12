@@ -275,7 +275,9 @@ impl UiLayerRenderer {
             glow_radius: 0.0,
             uv_offset: [cu, cv],
             uv_size: [0.0, 0.0],
-            _pad: [0.0; 2],
+            // A fill is ground or a panel, not matter: it casts no shadow.
+            // The glyph shader reads this as the instance's flags.
+            _pad: [1.0, 0.0],
         });
     }
 

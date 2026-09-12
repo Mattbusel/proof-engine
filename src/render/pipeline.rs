@@ -65,6 +65,8 @@ layout(location = 7)  in vec3  i_glow_color;
 layout(location = 8)  in float i_glow_radius;
 layout(location = 9)  in vec2  i_uv_offset;
 layout(location = 10) in vec2  i_uv_size;
+// x: 1.0 for a fill (ground, panel) that must not cast shadow.
+layout(location = 11) in vec2  i_flags;
 
 uniform mat4 u_view_proj;
 // Oversampling: each base instance is rendered u_n_copies times.
@@ -78,6 +80,7 @@ out vec4  f_color;
 out float f_emission;
 out vec3  f_glow_color;
 out float f_glow_radius;
+out float f_fill;
 
 // Hash matching the CPU hf(seed, v) function — same constants, same bit ops.
 float hf(uint seed, uint v) {
@@ -121,6 +124,7 @@ void main() {
     f_emission   = i_emission * inv_n;
     f_glow_color = i_glow_color;
     f_glow_radius = i_glow_radius;
+    f_fill        = i_flags.x;
 }
 "#;
 
@@ -139,11 +143,15 @@ in vec4  f_color;
 in float f_emission;
 in vec3  f_glow_color;
 in float f_glow_radius;
+in float f_fill;
 
 uniform sampler2D u_atlas;
 
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_emission;
+// Coverage of matter, for the light map's shadows. Fills write none, and
+// cover whatever was under them.
+layout(location = 2) out vec4 o_occluder;
 
 void main() {
     float dist = texture(u_atlas, f_uv).r;
@@ -202,6 +210,7 @@ void main() {
     float glow_boost = clamp(f_glow_radius * 0.15, 0.0, 0.8);
     float em_alpha = max(alpha, glow_alpha * 0.5) * f_color.a;
     o_emission = vec4(f_glow_color * (bloom_strength + glow_boost), em_alpha);
+    o_occluder = vec4(alpha * f_color.a * (1.0 - f_fill), 0.0, 0.0, a);
 }
 "#;
 
@@ -877,7 +886,7 @@ impl Pipeline {
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
         gl.bind_vertex_array(Some(self.vao));
-        for loc in 2u32..=10 {
+        for loc in 2u32..=11 {
             gl.vertex_attrib_divisor(loc, 1);
         }
         gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, count as i32);
@@ -969,6 +978,8 @@ impl Pipeline {
         gl.viewport(0, 0, sw as i32, sh as i32);
         gl.clear_color(0.02, 0.025, 0.04, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
+        // The occluder buffer starts empty rather than at the ground colour.
+        gl.clear_buffer_f32_slice(glow::COLOR, 2, &[0.0, 0.0, 0.0, 0.0]);
         gl.enable(glow::BLEND);
         gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
@@ -1002,7 +1013,7 @@ impl Pipeline {
             gl.bind_vertex_array(Some(self.vao));
             // Set attribute divisor to n_copies so each base instance repeats
             // n_copies times before advancing to the next instance in the VBO.
-            for loc in 2u32..=10 {
+            for loc in 2u32..=11 {
                 gl.vertex_attrib_divisor(loc, n_copies);
             }
             gl.draw_arrays_instanced(
@@ -1058,7 +1069,7 @@ impl Pipeline {
                 gl.active_texture(glow::TEXTURE0);
                 gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
                 gl.bind_vertex_array(Some(self.vao));
-                for loc in 2u32..=10 {
+                for loc in 2u32..=11 {
                     gl.vertex_attrib_divisor(loc, 1);
                 }
                 gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, count as i32);
@@ -1150,7 +1161,7 @@ unsafe fn setup_vao(gl: &glow::Context) -> (glow::VertexArray, glow::Buffer, glo
     inst_attr!(8,  1, 56);  // i_glow_radius float @ byte 56
     inst_attr!(9,  2, 60);  // i_uv_offset  vec2   @ byte 60
     inst_attr!(10, 2, 68);  // i_uv_size    vec2   @ byte 68
-    // bytes 76-83: _pad (2× f32, needed to keep GlyphInstance 84-byte aligned)
+    inst_attr!(11, 2, 76);  // i_flags      vec2   @ byte 76 (the former padding)
 
     (vao, quad_vbo, instance_vbo)
 }

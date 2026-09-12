@@ -20,7 +20,7 @@
 
 use std::cell::Cell;
 use glow::HasContext;
-use crate::render::shaders::{FULLSCREEN_VERT, BLOOM_FRAG, COMPOSITE_FRAG, UPSAMPLE_FRAG, FXAA_FRAG};
+use crate::render::shaders::{FULLSCREEN_VERT, BLOOM_FRAG, COMPOSITE_FRAG, UPSAMPLE_FRAG, FXAA_FRAG, LIGHT_FRAG, PERSIST_FRAG};
 use crate::render::screen_fx::{ScreenFx, MAX_SHOCKWAVES};
 use crate::config::RenderConfig;
 
@@ -29,6 +29,7 @@ pub struct PostFxPipeline {
     pub scene_fbo:          glow::Framebuffer,
     pub scene_color_tex:    glow::Texture,    // attachment 0: rendered scene
     pub scene_emission_tex: glow::Texture,    // attachment 1: emission → bloom input
+    pub scene_occluder_tex: glow::Texture,    // attachment 2: matter coverage → shadows
     /// The scene targets' size. `render_scale` times the window, so a 4K
     /// display can render at 1440p and be upsampled by the composite.
     scene_w: u32,
@@ -50,6 +51,20 @@ pub struct PostFxPipeline {
     up_fbo: Vec<glow::Framebuffer>,
     up_tex: Vec<glow::Texture>,
     upsample_prog: glow::Program,
+
+    /// The light map, at half the scene size.
+    light_fbo: glow::Framebuffer,
+    light_tex: glow::Texture,
+    light_size: (i32, i32),
+    light_prog: glow::Program,
+
+    /// Motion trails: last frame's scene, two of them so one can be read
+    /// while the other is written.
+    history_fbo: [glow::Framebuffer; 2],
+    history_tex: [glow::Texture; 2],
+    history_idx: usize,
+    history_valid: bool,
+    persist_prog: glow::Program,
 
     /// Where the composite lands when anti-aliasing runs after it.
     ldr_fbo: glow::Framebuffer,
@@ -86,6 +101,8 @@ impl PostFxPipeline {
         let composite_prog = compile_postfx_program(gl, FULLSCREEN_VERT, COMPOSITE_FRAG);
         let upsample_prog  = compile_postfx_program(gl, FULLSCREEN_VERT, UPSAMPLE_FRAG);
         let fxaa_prog      = compile_postfx_program(gl, FULLSCREEN_VERT, FXAA_FRAG);
+        let light_prog     = compile_postfx_program(gl, FULLSCREEN_VERT, LIGHT_FRAG);
+        let persist_prog   = compile_postfx_program(gl, FULLSCREEN_VERT, PERSIST_FRAG);
         let fullscreen_vao = gl.create_vertex_array().expect("postfx fullscreen_vao");
 
         // Pre-bind sampler units (never changes)
@@ -95,6 +112,15 @@ impl PostFxPipeline {
         gl.use_program(Some(composite_prog));
         set_u_i32(gl, composite_prog, "u_scene", 0);
         set_u_i32(gl, composite_prog, "u_bloom", 1);
+        set_u_i32(gl, composite_prog, "u_light", 2);
+        set_u_i32(gl, composite_prog, "u_emission", 3);
+
+        gl.use_program(Some(light_prog));
+        set_u_i32(gl, light_prog, "u_occluder", 0);
+
+        gl.use_program(Some(persist_prog));
+        set_u_i32(gl, persist_prog, "u_scene", 0);
+        set_u_i32(gl, persist_prog, "u_history", 1);
 
         gl.use_program(Some(upsample_prog));
         set_u_i32(gl, upsample_prog, "u_lower", 0);
@@ -104,20 +130,34 @@ impl PostFxPipeline {
         set_u_i32(gl, fxaa_prog, "u_image", 0);
 
         let (scene_w, scene_h) = scaled(width, height, render_scale);
-        let (scene_fbo, scene_color_tex, scene_emission_tex) =
+        let (scene_fbo, scene_color_tex, scene_emission_tex, scene_occluder_tex) =
             create_scene_fbo(gl, scene_w, scene_h);
         let (bloom_fbo, bloom_tex) =
             create_bloom_fbos(gl, (scene_w / 2).max(1), (scene_h / 2).max(1));
         let (mip_fbo, mip_tex, mip_size) = create_pyramid(gl, scene_w, scene_h);
         let (up_fbo, up_tex, _) = create_pyramid(gl, scene_w, scene_h);
         let (ldr_fbo, ldr_tex) = create_ldr_fbo(gl, width, height);
+        let (lw, lh) = ((scene_w / 2).max(1), (scene_h / 2).max(1));
+        let (light_fbo, light_tex) = create_hdr_fbo(gl, lw, lh, "light");
+        let (h0, t0) = create_hdr_fbo(gl, scene_w, scene_h, "history 0");
+        let (h1, t1) = create_hdr_fbo(gl, scene_w, scene_h, "history 1");
 
         Self {
             scene_fbo,
             scene_color_tex,
             scene_emission_tex,
+            scene_occluder_tex,
             scene_w,
             scene_h,
+            light_fbo,
+            light_tex,
+            light_size: (lw as i32, lh as i32),
+            light_prog,
+            history_fbo: [h0, h1],
+            history_tex: [t0, t1],
+            history_idx: 0,
+            history_valid: false,
+            persist_prog,
             bloom_fbo,
             bloom_tex,
             mip_fbo,
@@ -194,6 +234,13 @@ impl PostFxPipeline {
         gl.delete_framebuffer(self.scene_fbo);
         gl.delete_texture(self.scene_color_tex);
         gl.delete_texture(self.scene_emission_tex);
+        gl.delete_texture(self.scene_occluder_tex);
+        gl.delete_framebuffer(self.light_fbo);
+        gl.delete_texture(self.light_tex);
+        for i in 0..2 {
+            gl.delete_framebuffer(self.history_fbo[i]);
+            gl.delete_texture(self.history_tex[i]);
+        }
         for i in 0..2 {
             gl.delete_framebuffer(self.bloom_fbo[i]);
             gl.delete_texture(self.bloom_tex[i]);
@@ -225,15 +272,26 @@ impl PostFxPipeline {
         self.up_fbo = up_fbo;
         self.up_tex = up_tex;
 
-        let (scene_fbo, scene_color_tex, scene_emission_tex) =
+        let (scene_fbo, scene_color_tex, scene_emission_tex, scene_occluder_tex) =
             create_scene_fbo(gl, scene_w, scene_h);
         let (bloom_fbo, bloom_tex) =
             create_bloom_fbos(gl, (scene_w / 2).max(1), (scene_h / 2).max(1));
         let (ldr_fbo, ldr_tex) = create_ldr_fbo(gl, width, height);
+        let (lw, lh) = ((scene_w / 2).max(1), (scene_h / 2).max(1));
+        let (light_fbo, light_tex) = create_hdr_fbo(gl, lw, lh, "light");
+        let (h0, t0) = create_hdr_fbo(gl, scene_w, scene_h, "history 0");
+        let (h1, t1) = create_hdr_fbo(gl, scene_w, scene_h, "history 1");
+        self.light_fbo = light_fbo;
+        self.light_tex = light_tex;
+        self.light_size = (lw as i32, lh as i32);
+        self.history_fbo = [h0, h1];
+        self.history_tex = [t0, t1];
+        self.history_valid = false;
 
         self.scene_fbo          = scene_fbo;
         self.scene_color_tex    = scene_color_tex;
         self.scene_emission_tex = scene_emission_tex;
+        self.scene_occluder_tex = scene_occluder_tex;
         self.bloom_fbo          = bloom_fbo;
         self.bloom_tex          = bloom_tex;
         self.ldr_fbo            = ldr_fbo;
@@ -243,7 +301,7 @@ impl PostFxPipeline {
     /// Run bloom, composite, and anti-aliasing, ending on the default
     /// (screen) framebuffer. Returns how many draws it made.
     pub unsafe fn run(
-        &self,
+        &mut self,
         gl:     &glow::Context,
         config: &RenderConfig,
         fx:     &ScreenFx,
@@ -254,6 +312,59 @@ impl PostFxPipeline {
         let mut draws = 0u32;
         gl.bind_vertex_array(Some(self.fullscreen_vao));
         gl.disable(glow::BLEND);
+
+        // ── Persistence ──────────────────────────────────────────────────────
+        //
+        // The scene the composite reads is either the raw one or the one
+        // with last frame's trails folded in.
+        let mut scene_tex = self.scene_color_tex;
+        if config.persistence > 0.0 {
+            let next = self.history_idx ^ 1;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.history_fbo[next]));
+            gl.viewport(0, 0, self.scene_w as i32, self.scene_h as i32);
+            gl.use_program(Some(self.persist_prog));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_color_tex));
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.history_tex[self.history_idx]));
+            let keep = if self.history_valid { config.persistence } else { 0.0 };
+            set_u_f32(gl, self.persist_prog, "u_persistence", keep);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.active_texture(glow::TEXTURE0);
+            self.history_idx = next;
+            self.history_valid = true;
+            scene_tex = self.history_tex[next];
+            draws += 1;
+        } else {
+            self.history_valid = false;
+        }
+
+        // ── The light map ────────────────────────────────────────────────────
+        let lighting = fx.lighting_active();
+        if lighting {
+            let (lw, lh) = self.light_size;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.light_fbo));
+            gl.viewport(0, 0, lw, lh);
+            gl.use_program(Some(self.light_prog));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_occluder_tex));
+            let p = self.light_prog;
+            set_u_vec2(gl, p, "u_screen", [full_w as f32, full_h as f32]);
+            set_u_vec3(gl, p, "u_ambient", fx.ambient.to_array());
+            set_u_f32(gl, p, "u_shadow_density", fx.shadow_density.max(0.0));
+            let (pos, col, n) = fx.pack_lights(full_w as f32, full_h as f32);
+            set_u_i32(gl, p, "u_count", n as i32);
+            if n > 0 {
+                if let Some(loc) = gl.get_uniform_location(p, "u_light_pos[0]") {
+                    gl.uniform_4_f32_slice(Some(&loc), &pos);
+                }
+                if let Some(loc) = gl.get_uniform_location(p, "u_light_color[0]") {
+                    gl.uniform_4_f32_slice(Some(&loc), &col);
+                }
+            }
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            draws += 1;
+        }
 
         // ── Bloom ────────────────────────────────────────────────────────────
         //
@@ -369,7 +480,11 @@ impl PostFxPipeline {
         gl.use_program(Some(self.composite_prog));
 
         gl.active_texture(glow::TEXTURE0);
-        gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_color_tex));
+        gl.bind_texture(glow::TEXTURE_2D, Some(scene_tex));
+        gl.active_texture(glow::TEXTURE2);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.light_tex));
+        gl.active_texture(glow::TEXTURE3);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.scene_emission_tex));
 
         // Unit 1: the bloom result. With bloom off the shader still samples
         // it for indirect light, shafts and flare, so hand it the emission
@@ -427,6 +542,7 @@ impl PostFxPipeline {
         set_u_f32(gl,  p, "u_reflection_blur",    blur);
         set_u_f32(gl,  p, "u_haze",               fx.haze.max(0.0));
         set_u_f32(gl,  p, "u_time",               fx.time);
+        set_u_bool(gl, p, "u_lighting",           lighting);
         set_u_f32(gl,  p, "u_lens_flare",         config.lens_flare);
         set_u_vec3(gl, p, "u_flash",              fx.flash.to_array());
         let (shock, strength, count) = fx.pack_shockwaves(fw, fh);
@@ -498,9 +614,10 @@ unsafe fn check_complete(gl: &glow::Context, what: &str) {
 
 unsafe fn create_scene_fbo(
     gl: &glow::Context, w: u32, h: u32,
-) -> (glow::Framebuffer, glow::Texture, glow::Texture) {
+) -> (glow::Framebuffer, glow::Texture, glow::Texture, glow::Texture) {
     let color_tex    = make_tex(gl, w, h, true);
     let emission_tex = make_tex(gl, w, h, true);
+    let occluder_tex = make_tex(gl, w, h, true);
 
     let fbo = gl.create_framebuffer().expect("scene fbo");
     gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -510,10 +627,30 @@ unsafe fn create_scene_fbo(
     gl.framebuffer_texture_2d(
         glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT1, glow::TEXTURE_2D, Some(emission_tex), 0,
     );
-    gl.draw_buffers(&[glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1]);
+    gl.framebuffer_texture_2d(
+        glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT2, glow::TEXTURE_2D, Some(occluder_tex), 0,
+    );
+    gl.draw_buffers(&[glow::COLOR_ATTACHMENT0, glow::COLOR_ATTACHMENT1, glow::COLOR_ATTACHMENT2]);
     check_complete(gl, "scene");
     gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-    (fbo, color_tex, emission_tex)
+    (fbo, color_tex, emission_tex, occluder_tex)
+}
+
+/// One half-float colour target of any size.
+unsafe fn create_hdr_fbo(gl: &glow::Context, w: u32, h: u32, what: &str) -> (glow::Framebuffer, glow::Texture) {
+    let tex = make_tex(gl, w.max(1), h.max(1), true);
+    let fbo = gl.create_framebuffer().expect("hdr fbo");
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+    gl.framebuffer_texture_2d(
+        glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0,
+    );
+    gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
+    check_complete(gl, what);
+    // Trails and light start from nothing, not from uninitialised memory.
+    gl.clear_color(0.0, 0.0, 0.0, 0.0);
+    gl.clear(glow::COLOR_BUFFER_BIT);
+    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+    (fbo, tex)
 }
 
 unsafe fn create_ldr_fbo(gl: &glow::Context, w: u32, h: u32) -> (glow::Framebuffer, glow::Texture) {

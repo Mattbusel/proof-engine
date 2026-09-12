@@ -409,6 +409,10 @@ pub struct RenderConfig {
     /// HUD. A real FXAA pass, not the terminal approximation `antialiasing`
     /// names.
     pub fxaa:                 bool,
+    /// Motion trails. The fraction of the previous frame's scene that
+    /// survives into this one, 0.0 to about 0.9. Applies to the scene and
+    /// the UI world pass, never to the HUD.
+    pub persistence:          f32,
     /// Wait for the display's vertical refresh before presenting. Off, the
     /// loop runs as fast as the GPU allows, which burns power and makes
     /// every time-based effect run at whatever rate the machine happens to.
@@ -468,6 +472,7 @@ impl Default for RenderConfig {
             lens_flare:           0.0,
             shake_pixels:         0.0,
             fxaa:                 false,
+            persistence:          0.0,
             vsync:                true,
             world_ui_in_scene:    true,
         }
@@ -489,6 +494,7 @@ impl RenderConfig {
         self.light_shafts         = self.light_shafts.clamp(0.0, 8.0);
         self.lens_flare           = self.lens_flare.clamp(0.0, 4.0);
         self.shake_pixels         = self.shake_pixels.clamp(0.0, 200.0);
+        self.persistence          = self.persistence.clamp(0.0, 0.98);
     }
 }
 

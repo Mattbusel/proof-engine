@@ -54,6 +54,10 @@ uniform float u_reflection_blur;
 // Heat shimmer, 0 to about 1, and a clock for it.
 uniform float u_haze;
 uniform float u_time;
+// The light map, and the emission buffer that says what lights itself.
+uniform sampler2D u_light;
+uniform sampler2D u_emission;
+uniform bool  u_lighting;
 // Expanding rings of refraction: (u, v, radius_px, width_px) and strength_px.
 const int MAX_SHOCK = 12;
 uniform vec4  u_shock[MAX_SHOCK];
@@ -172,6 +176,17 @@ void main() {
             // and adding on top of a lit floor blows it out.
             color = color + refl * weight * (1.0 - clamp(color, 0.0, 1.0) * 0.5);
         }
+    }
+
+    // ── The light map ──────────────────────────────────────────────────────
+    //
+    // Ambient plus every light, shadowed. Emissive matter lights itself:
+    // a brazier is not dimmed by the dark it is standing in.
+    if (u_lighting) {
+        vec3 light = texture(u_light, uv).rgb;
+        vec3 em = texture(u_emission, uv).rgb;
+        float self_lit = clamp(max(em.r, max(em.g, em.b)) * 1.6, 0.0, 1.0);
+        color *= max(light, vec3(self_lit));
     }
 
     // ── Exposure, then light ───────────────────────────────────────────────
