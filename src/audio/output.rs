@@ -463,8 +463,143 @@ mod tests {
         for x in [0.7f32, 1.0, 2.0, 10.0, 100.0] {
             assert!(soft_limit(x) < 0.99, "{x} -> {}", soft_limit(x));
             assert!(soft_limit(-x) > -0.99);
-            assert!(soft_limit(x) > soft_limit(x * 0.9), "should keep rising");
+            assert!(soft_limit(x) >= soft_limit(x * 0.9), "should never fall");
         }
+        // Rising through the knee, until it saturates.
+        assert!(soft_limit(1.0) > soft_limit(0.7));
+        assert!(soft_limit(2.0) > soft_limit(1.0));
+    }
+
+    /// An AudioState with no device behind it, fed by hand.
+    fn offline_state() -> (AudioState, std::sync::mpsc::SyncSender<AudioEvent>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(64);
+        let state = AudioState {
+            sources: Vec::new(),
+            rx,
+            master_volume: 1.0,
+            music_volume: 1.0,
+            music_vibe: MusicVibe::Silence,
+            sample_rate: 44100.0,
+            listener: Vec3::ZERO,
+            time: 0.0,
+            seed: 12345,
+            reverb: Reverb::new(0.62, 0.45, 1.0, 0.0, 12.0, 0.8),
+            duck: 0.0,
+            scratch: [0.0],
+            last_send: -10.0,
+        };
+        (state, tx)
+    }
+
+    fn render(state: &mut AudioState, secs: f32) -> Vec<(f32, f32)> {
+        state.process_events();
+        (0..(secs * 44100.0) as usize).map(|_| state.next_sample()).collect()
+    }
+
+    #[test]
+    fn a_layered_blow_renders_finite_bounded_and_audible() {
+        use crate::math::MathFunction;
+        let (mut state, tx) = offline_state();
+        // Contact, weight, ring: the shape of a sword hit.
+        let crack = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (2600.0, 2600.0),
+            amplitude: 0.5,
+            waveform: MsWaveform::Noise,
+            filter: Some(AudioFilter::HighPass { cutoff_hz: 2600.0, resonance: 0.8 }),
+            lifetime: 0.035,
+            fade_out: 0.02,
+            spatial: false,
+            ..Default::default()
+        };
+        let thud = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (170.0, 170.0),
+            amplitude: 0.5,
+            waveform: MsWaveform::Sine,
+            pitch_env: (3.4, 0.07),
+            drive: 0.45,
+            noise_mix: 0.05,
+            filter: Some(AudioFilter::LowPass { cutoff_hz: 700.0, resonance: 0.8 }),
+            lifetime: 0.15,
+            fade_out: 0.12,
+            reverb_send: 0.15,
+            spatial: true,
+            position: Vec3::new(-0.3, 0.0, 0.85),
+            ..Default::default()
+        };
+        let ring = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (1900.0, 1900.0),
+            amplitude: 0.2,
+            waveform: MsWaveform::Triangle,
+            partial: (2.76, 0.45),
+            filter: Some(AudioFilter::Comb { delay_ms: 1000.0 / 1900.0, feedback: 0.55 }),
+            lifetime: 0.24,
+            fade_in: 0.002,
+            fade_out: 0.2,
+            start_delay: 0.012,
+            reverb_send: 0.3,
+            spatial: false,
+            ..Default::default()
+        };
+        for s in [crack, thud, ring] {
+            tx.send(AudioEvent::SpawnSource { source: s, position: Vec3::ZERO }).unwrap();
+        }
+        let out = render(&mut state, 0.6);
+        let mut peak = 0.0f32;
+        let mut energy = 0.0f32;
+        for (l, r) in &out {
+            assert!(l.is_finite() && r.is_finite(), "NaN in the output");
+            assert!(l.abs() <= 1.0 && r.abs() <= 1.0, "clipped: {l} {r}");
+            peak = peak.max(l.abs()).max(r.abs());
+            energy += l * l + r * r;
+        }
+        assert!(peak > 0.05, "the blow is inaudible: peak {peak}");
+        assert!(energy > 1.0, "the blow has no body: energy {energy}");
+        // Panned left: more energy on the left.
+        let left: f32 = out.iter().map(|(l, _)| l * l).sum();
+        let right: f32 = out.iter().map(|(_, r)| r * r).sum();
+        assert!(left > right, "a left-panned blow should favour the left: {left} vs {right}");
+        // And it ends: the last tenth of a second is quiet apart from the
+        // reverb tail.
+        let tail: f32 = out[out.len() - 4410..].iter().map(|(l, r)| l.abs().max(r.abs())).fold(0.0, f32::max);
+        assert!(tail < 0.2, "the blow never ends: tail peak {tail}");
+        assert!(state.sources.is_empty(), "sources were not retired");
+    }
+
+    #[test]
+    fn music_ducks_under_effects_and_comes_back() {
+        use crate::math::MathFunction;
+        let (mut state, tx) = offline_state();
+        let music = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (220.0, 220.0),
+            amplitude: 0.3,
+            waveform: MsWaveform::Sine,
+            tag: Some("music".to_string()),
+            lifetime: 2.0,
+            spatial: false,
+            ..Default::default()
+        };
+        tx.send(AudioEvent::SpawnSource { source: music, position: Vec3::ZERO }).unwrap();
+        let before = render(&mut state, 0.3);
+        let hit = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (100.0, 100.0),
+            amplitude: 0.8,
+            waveform: MsWaveform::Sine,
+            lifetime: 0.1,
+            spatial: false,
+            ..Default::default()
+        };
+        tx.send(AudioEvent::SpawnSource { source: hit, position: Vec3::ZERO }).unwrap();
+        let _during = render(&mut state, 0.12);
+        assert!(state.duck > 0.1, "the hit did not duck the music: {}", state.duck);
+        let _after = render(&mut state, 1.0);
+        assert!(state.duck < 0.05, "the duck never released: {}", state.duck);
+        let rms = |v: &[(f32, f32)]| (v.iter().map(|(l, _)| l * l).sum::<f32>() / v.len() as f32).sqrt();
+        assert!(rms(&before) > 0.1, "music is inaudible");
     }
 
     #[test]

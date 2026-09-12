@@ -241,6 +241,25 @@ are on `engine.fx`.
 whatever is brightest on screen, `reflect_at(y, strength, fade)` for a glossy
 floor, and `haze` for heat shimmer. Coordinates are UI pixels.
 
+**Lights and shadows.** `engine.fx.light(x, y, radius, color, intensity)`
+and `engine.fx.ambient`. The glyph pass writes an occluder buffer (matter,
+never floors or panel fills); the light pass marches shadows through it
+from every light and the composite multiplies the scene by the result.
+Emissive matter lights itself. `config.persistence` keeps a decaying copy
+of last frame's scene under this one, for motion trails.
+
+**GPU density entities.** `engine.init_gpu_density(n)` and
+`engine.queue_gpu_density_entity(data)`: sixteen bones become millions of
+particles derived in the vertex shader from the instance index, with
+breathing, jitter and matter that comes loose as `hp` falls. Nothing per
+particle ever leaves the GPU. See `examples/colossus.rs`.
+
+**Sound.** A `MathAudioSource` now carries a pitch envelope, a second
+partial, a noise mix, biquad or comb filters, drive, a reverb send, and a
+start delay, and the output thread honours all of it, with separate music
+and effects buses, ducking, a master reverb and a soft limiter. A blow is a
+crack, a thud and a ring; before, it was a sine.
+
 **Also:** `render_scale` renders the scene at a fraction of the window and
 upsamples; `fxaa` runs a real FXAA 3.11 pass between the composite and the
 HUD; `shake_pixels` moves the world pass with camera trauma while the HUD
