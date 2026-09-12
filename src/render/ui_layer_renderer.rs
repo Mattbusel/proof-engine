@@ -9,7 +9,7 @@
 
 use glam::{Vec2, Vec3, Vec4, Mat4};
 
-use super::ui_layer::{UiLayer, UiDrawCommand, UiParticle, TextAlign, BorderStyle};
+use super::ui_layer::{UiLayer, UiDrawCommand, UiParticle, UiPass, TextAlign, BorderStyle};
 use crate::glyph::batch::GlyphInstance;
 use crate::glyph::atlas::FontAtlas;
 
@@ -20,8 +20,14 @@ use crate::glyph::atlas::FontAtlas;
 /// Holds CPU-side instance buffers and converts `UiDrawCommand`s into
 /// `GlyphInstance`s positioned in screen-pixel coordinates.
 pub struct UiLayerRenderer {
-    /// Accumulated glyph instances for the current frame.
+    /// Scratch: the instances of the command currently being built. Moved
+    /// into `hud` or `world` as each command finishes.
     instances: Vec<GlyphInstance>,
+    /// Instances for the HUD pass, painted after post-processing.
+    hud: Vec<GlyphInstance>,
+    /// Instances for the world pass, painted into the scene buffer before
+    /// post-processing. See [`UiPass`].
+    world: Vec<GlyphInstance>,
     /// Rect instances (quads without texture — solid color).
     rect_instances: Vec<RectInstance>,
 }
@@ -39,6 +45,8 @@ impl UiLayerRenderer {
     pub fn new() -> Self {
         Self {
             instances: Vec::with_capacity(2048),
+            hud: Vec::with_capacity(2048),
+            world: Vec::with_capacity(1 << 16),
             rect_instances: Vec::with_capacity(256),
         }
     }
@@ -46,6 +54,8 @@ impl UiLayerRenderer {
     /// Clear instance buffers. Call at the start of each frame.
     pub fn begin(&mut self) {
         self.instances.clear();
+        self.hud.clear();
+        self.world.clear();
         self.rect_instances.clear();
     }
 
@@ -57,7 +67,7 @@ impl UiLayerRenderer {
             return;
         }
 
-        for cmd in ui.draw_queue() {
+        for (i, cmd) in ui.draw_queue().iter().enumerate() {
             match cmd {
                 UiDrawCommand::Text { text, x, y, scale, color, emission, alignment } => {
                     self.build_text_instances(
@@ -72,7 +82,21 @@ impl UiLayerRenderer {
                     }
                 }
                 UiDrawCommand::Panel { x, y, w, h, border, fill_color, border_color } => {
-                    self.build_panel(*x, *y, *w, *h, *border, *fill_color, *border_color, ui, atlas);
+                    // A defaulted panel is split: the fill is ground and goes
+                    // under the matter in the world pass, the border is
+                    // interface and stays sharp in the HUD. A forced panel
+                    // goes whole wherever it was sent.
+                    let split = !ui.pass_forced(i);
+                    let fill = if split {
+                        Vec4::new(fill_color.x, fill_color.y, fill_color.z, 0.0)
+                    } else {
+                        *fill_color
+                    };
+                    if split && fill_color.w > 0.0 {
+                        self.build_panel(*x, *y, *w, *h, *border, *fill_color, Vec4::ZERO, ui, atlas);
+                        self.world.extend(self.instances.drain(..));
+                    }
+                    self.build_panel(*x, *y, *w, *h, *border, fill, *border_color, ui, atlas);
                 }
                 UiDrawCommand::Bar { x, y, w, h, fill_pct, fill_color, bg_color, ghost_pct, ghost_color } => {
                     self.build_bar(*x, *y, *w, *h, *fill_pct, *fill_color, *bg_color, *ghost_pct, *ghost_color, ui, atlas);
@@ -87,17 +111,37 @@ impl UiLayerRenderer {
                     self.build_particle_instances(particles, *dx, *dy, atlas);
                 }
             }
+            // Each command lands whole in one pass or the other.
+            match ui.pass_of(i) {
+                UiPass::World => self.world.extend(self.instances.drain(..)),
+                UiPass::Hud => self.hud.extend(self.instances.drain(..)),
+            }
         }
     }
 
-    /// Get the glyph instances for GPU upload.
+    /// The HUD-pass glyph instances for GPU upload.
     pub fn glyph_instances(&self) -> &[GlyphInstance] {
-        &self.instances
+        &self.hud
     }
 
-    /// Get glyph instance data as raw bytes for GPU upload.
+    /// HUD-pass instance data as raw bytes for GPU upload.
     pub fn glyph_bytes(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.instances)
+        bytemuck::cast_slice(&self.hud)
+    }
+
+    /// The world-pass glyph instances for GPU upload.
+    pub fn world_instances(&self) -> &[GlyphInstance] {
+        &self.world
+    }
+
+    /// World-pass instance data as raw bytes for GPU upload.
+    pub fn world_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.world)
+    }
+
+    /// World-pass glyph count.
+    pub fn world_count(&self) -> usize {
+        self.world.len()
     }
 
     /// Get rect instances for GPU upload.
@@ -110,9 +154,9 @@ impl UiLayerRenderer {
         bytemuck::cast_slice(&self.rect_instances)
     }
 
-    /// Total glyph count.
+    /// HUD-pass glyph count.
     pub fn glyph_count(&self) -> usize {
-        self.instances.len()
+        self.hud.len()
     }
 
     /// Total rect count.

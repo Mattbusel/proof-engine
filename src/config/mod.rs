@@ -388,6 +388,35 @@ pub struct RenderConfig {
     /// Volumetric fog. Same story: a real effect, and a real cost, that a
     /// scene with nothing in it cannot benefit from.
     pub volumetric_fog:       bool,
+
+    // ── Light ────────────────────────────────────────────────────────────────
+    //
+    // Everything above shapes the picture. These add light to it.
+    /// Screen-space indirect light: how strongly matter near something
+    /// bright is lit by it, in that thing's colour. 0.0 off; 0.5 to 1.5 is
+    /// a lit room.
+    pub indirect_light:       f32,
+    /// Radial light shafts from the source the game sets on `engine.fx`.
+    /// 0.0 off; the source's own strength scales it further.
+    pub light_shafts:         f32,
+    /// Lens flare ghosts and halo off anything that blooms. 0.0 off; 0.1 to
+    /// 0.4 is a visible lens without being a screensaver.
+    pub lens_flare:           f32,
+    /// How far, in pixels, the world pass moves at full camera trauma. The
+    /// HUD does not move. 0.0 turns screen shake off for the world pass.
+    pub shake_pixels:         f32,
+    /// Anti-aliasing on the finished frame, between the composite and the
+    /// HUD. A real FXAA pass, not the terminal approximation `antialiasing`
+    /// names.
+    pub fxaa:                 bool,
+    /// Wait for the display's vertical refresh before presenting. Off, the
+    /// loop runs as fast as the GPU allows, which burns power and makes
+    /// every time-based effect run at whatever rate the machine happens to.
+    pub vsync:                bool,
+    /// Whether the UI layer's world pass is painted into the scene buffer.
+    /// Off, every UI command paints in the HUD pass after post-processing,
+    /// which is how the layer behaved before the world pass existed.
+    pub world_ui_in_scene:    bool,
 }
 
 impl Default for RenderConfig {
@@ -434,6 +463,13 @@ impl Default for RenderConfig {
             // layer should turn them off deliberately.
             global_illumination:  true,
             volumetric_fog:       true,
+            indirect_light:       0.0,
+            light_shafts:         0.0,
+            lens_flare:           0.0,
+            shake_pixels:         0.0,
+            fxaa:                 false,
+            vsync:                true,
+            world_ui_in_scene:    true,
         }
     }
 }
@@ -449,6 +485,10 @@ impl RenderConfig {
         self.render_scale         = self.render_scale.clamp(0.25, 8.0);
         self.particle_multiplier  = self.particle_multiplier.max(0.0);
         self.motion_blur_samples  = self.motion_blur_samples.clamp(1, 16);
+        self.indirect_light       = self.indirect_light.clamp(0.0, 8.0);
+        self.light_shafts         = self.light_shafts.clamp(0.0, 8.0);
+        self.lens_flare           = self.lens_flare.clamp(0.0, 4.0);
+        self.shake_pixels         = self.shake_pixels.clamp(0.0, 200.0);
     }
 }
 

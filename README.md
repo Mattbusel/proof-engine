@@ -201,6 +201,51 @@ The engine uses signed distance fields (SDF) as its geometry representation inst
 
 **Importance sampling (near-100% acceptance):** Rather than rejecting uniform box samples that miss the surface (typically 92%+ rejection), each candidate particle is placed directly on the expected ellipse/capsule surface and perturbed ±SHELL in the outward radial direction. The SDF then verifies shell placement — acceptance rate is ~100% with zero wasted evaluations.
 
+## The Screen Pipeline
+
+What actually runs on the GPU every frame, in order:
+
+```text
+scene FBO (RGBA16F x2: colour, emission) at render_scale
+  3D glyph pass ─┐
+  UI world pass ─┤  (UiPass::World: particle clouds, filled rects, panel fills)
+                 ├─ emission ─► bloom pyramid: soft-knee threshold, blur down, tent up
+                 └─ colour ────► composite ─► [FXAA] ─► screen ─► UI HUD pass
+                                   (UiPass::Hud: text, borders, bars, sprites)
+```
+
+The scene buffers are half-float, so a few hundred thousand overlapping
+emissive particles accumulate real light instead of clipping at white. The
+composite is the one place the range comes down, through ACES.
+
+**Two UI passes.** `engine.ui` routes every command to a pass. Particle
+clouds and filled rectangles default to the world pass, which is painted into
+the HDR buffer before post-processing; text, outlines, bars and sprites
+default to the HUD pass, painted sharp on top afterwards. A panel splits: fill
+to the world, border to the HUD. `ui.begin_world()`, `ui.begin_hud()` and
+`ui.end_pass()` override the default for a run of commands. A game that draws
+its whole picture as screen-space matter gets bloom, grade, lens and grain on
+all of it, and a readable interface over that.
+
+**What the composite does, in order:** shockwave refraction, heat haze, barrel
+lens, chromatic aberration, unsharp mask, floor reflection, exposure,
+screen-space indirect light (matter near a lit thing is lit by it), bloom,
+halation, light shafts, lens flare, flash, ACES tonemap, lift/gain grade,
+tint, contrast, saturation, vignette, shadow-weighted grain, ordered dither,
+scanlines. Every standing parameter is a field on `RenderConfig`; the moments
+are on `engine.fx`.
+
+**`engine.fx` (ScreenFx).** Fire-and-forget effects that decay on their own:
+`shockwave(x, y, strength)`, `flash(color, strength)`,
+`light_shaft_at(x, y, strength)` or `auto_shafts = true` to stream from
+whatever is brightest on screen, `reflect_at(y, strength, fade)` for a glossy
+floor, and `haze` for heat shimmer. Coordinates are UI pixels.
+
+**Also:** `render_scale` renders the scene at a fraction of the window and
+upsamples; `fxaa` runs a real FXAA 3.11 pass between the composite and the
+HUD; `shake_pixels` moves the world pass with camera trauma while the HUD
+stays put; `vsync` waits for the display.
+
 ## Post-Processing Pipeline
 
 23 post-processing techniques are applied across three stages: CPU particle shading, GPU compute shader, and the billboard fragment shader.

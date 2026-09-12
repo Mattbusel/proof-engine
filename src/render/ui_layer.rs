@@ -163,6 +163,50 @@ impl BorderStyle {
     }
 }
 
+// ── UiPass ──────────────────────────────────────────────────────────────────
+
+/// Which of the two screen-space passes a command is painted in.
+///
+/// Everything in this layer used to be painted after post-processing, straight
+/// onto the finished frame. That is right for a HUD, which has to stay sharp,
+/// and wrong for everything else: a game that draws its figures, rooms and
+/// effects as clouds of screen-space particles was getting no bloom, no
+/// tonemap, no halation and no grade on any of them. The whole picture went
+/// to the screen raw, and the only things the post-processing ever touched
+/// were a few background glyphs in the 3D scene.
+///
+/// So there are two passes now. `World` is painted into the HDR scene buffer
+/// before post-processing, in the same space as the 3D scene, and everything
+/// downstream (bloom, light shafts, flare, tonemap, grade, grain) applies to
+/// it. `Hud` is painted after, straight to the screen, and stays crisp.
+///
+/// By default particle clouds and filled rectangles go to `World`, since a
+/// filled rectangle is what a game lays down as the ground under its matter
+/// and it has to stay under it; text, outlines, bars and sprites go to
+/// `Hud`. A panel is split: its fill goes to `World` and its border to
+/// `Hud`. [`UiLayer::begin_world`], [`UiLayer::begin_hud`] and
+/// [`UiLayer::end_pass`] override all of that for a run of commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiPass {
+    /// Into the scene buffer, before post-processing. Blooms, grades, shakes.
+    World,
+    /// Onto the finished frame, after post-processing. Sharp and stable.
+    Hud,
+}
+
+impl UiDrawCommand {
+    /// The pass a command lands in when nothing overrides it.
+    pub fn default_pass(&self) -> UiPass {
+        match self {
+            UiDrawCommand::Particles(_) | UiDrawCommand::SharedParticles { .. } => UiPass::World,
+            UiDrawCommand::Rect { filled: true, .. } => UiPass::World,
+            // A panel's fill is routed to the world by the renderer; the
+            // command's own pass is where its border goes.
+            _ => UiPass::Hud,
+        }
+    }
+}
+
 // ── UiLayer ─────────────────────────────────────────────────────────────────
 
 /// The screen-space UI layer.  Collects draw commands each frame, then renders
@@ -176,6 +220,14 @@ pub struct UiLayer {
     pub char_height: f32,
     /// Queued draw commands for this frame.
     draw_queue: Vec<UiDrawCommand>,
+    /// The pass each queued command paints in, parallel to `draw_queue`.
+    passes: Vec<UiPass>,
+    /// Whether that pass was forced by the caller rather than defaulted,
+    /// parallel to `draw_queue`. A forced pass is honoured whole; a defaulted
+    /// one lets the renderer split a panel between the two.
+    forced: Vec<bool>,
+    /// An override for every command pushed while it is set.
+    forced_pass: Option<UiPass>,
     /// Whether the UI layer is enabled.
     pub enabled: bool,
 }
@@ -188,8 +240,75 @@ impl UiLayer {
             char_width: 10.0,
             char_height: 18.0,
             draw_queue: Vec::with_capacity(256),
+            passes: Vec::with_capacity(256),
+            forced: Vec::with_capacity(256),
+            forced_pass: None,
             enabled: true,
         }
+    }
+
+    /// Queue a command in the forced pass if one is set, else its default.
+    fn push(&mut self, cmd: UiDrawCommand) {
+        let pass = self.forced_pass.unwrap_or_else(|| cmd.default_pass());
+        self.draw_queue.push(cmd);
+        self.passes.push(pass);
+        self.forced.push(self.forced_pass.is_some());
+    }
+
+    /// Route everything pushed from here to [`UiPass::World`], until
+    /// [`end_pass`](Self::end_pass). Text drawn this way blooms and grades
+    /// with the scene, which is what a title or a floating damage number
+    /// wants.
+    pub fn begin_world(&mut self) {
+        self.forced_pass = Some(UiPass::World);
+    }
+
+    /// Route everything pushed from here to [`UiPass::Hud`], until
+    /// [`end_pass`](Self::end_pass). A particle cloud drawn this way stays
+    /// sharp and unshaken, which is what a health bar built of matter wants.
+    pub fn begin_hud(&mut self) {
+        self.forced_pass = Some(UiPass::Hud);
+    }
+
+    /// Back to routing each command by its default pass.
+    pub fn end_pass(&mut self) {
+        self.forced_pass = None;
+    }
+
+    /// The pass currently forced, if any.
+    pub fn forced_pass(&self) -> Option<UiPass> {
+        self.forced_pass
+    }
+
+    /// The pass of the `i`th queued command.
+    pub fn pass_of(&self, i: usize) -> UiPass {
+        self.passes.get(i).copied().unwrap_or(UiPass::Hud)
+    }
+
+    /// Whether the `i`th command's pass was forced by the caller.
+    pub fn pass_forced(&self, i: usize) -> bool {
+        self.forced.get(i).copied().unwrap_or(false)
+    }
+
+    /// The pass of every queued command, parallel to [`draw_queue`](Self::draw_queue).
+    pub fn passes(&self) -> &[UiPass] {
+        &self.passes
+    }
+
+    /// How many queued commands paint in `pass`.
+    pub fn count_in(&self, pass: UiPass) -> usize {
+        self.passes.iter().filter(|p| **p == pass).count()
+    }
+
+    /// The projection for the world pass.
+    ///
+    /// The same as the HUD's. The world pass is drawn into the scene
+    /// framebuffer and the composite copies that to the screen without a
+    /// flip, so the glyph shader's own flip is the only one on either path.
+    /// Verified by capturing a frame with the mirror of this: the whole
+    /// arena came out upside down.
+    pub fn world_projection(&self) -> Mat4 {
+        self.projection()
     }
 
     /// Update screen dimensions (call on resize).
@@ -207,6 +326,9 @@ impl UiLayer {
     /// Clear all queued commands. Call at the start of each frame.
     pub fn begin_frame(&mut self) {
         self.draw_queue.clear();
+        self.passes.clear();
+        self.forced.clear();
+        self.forced_pass = None;
     }
 
     /// Get the orthographic projection matrix for this UI layer.
@@ -245,7 +367,7 @@ impl UiLayer {
 
     /// Draw text at screen coordinates.
     pub fn draw_text(&mut self, x: f32, y: f32, text: &str, scale: f32, color: Vec4) {
-        self.draw_queue.push(UiDrawCommand::Text {
+        self.push(UiDrawCommand::Text {
             text: text.to_string(),
             x, y, scale,
             color,
@@ -279,12 +401,12 @@ impl UiLayer {
         if particles.is_empty() {
             return;
         }
-        self.draw_queue.push(UiDrawCommand::Particles(particles));
+        self.push(UiDrawCommand::Particles(particles));
     }
 
     /// Draw text with emission (for bloom-capable UI text).
     pub fn draw_text_glowing(&mut self, x: f32, y: f32, text: &str, scale: f32, color: Vec4, emission: f32) {
-        self.draw_queue.push(UiDrawCommand::Text {
+        self.push(UiDrawCommand::Text {
             text: text.to_string(),
             x, y, scale,
             color,
@@ -295,7 +417,7 @@ impl UiLayer {
 
     /// Draw text with alignment.
     pub fn draw_text_aligned(&mut self, x: f32, y: f32, text: &str, scale: f32, color: Vec4, align: TextAlign) {
-        self.draw_queue.push(UiDrawCommand::Text {
+        self.push(UiDrawCommand::Text {
             text: text.to_string(),
             x, y, scale,
             color,
@@ -331,7 +453,7 @@ impl UiLayer {
 
     /// Draw a filled or outlined rectangle.
     pub fn draw_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Vec4, filled: bool) {
-        self.draw_queue.push(UiDrawCommand::Rect {
+        self.push(UiDrawCommand::Rect {
             x, y, w, h, color, filled,
         });
     }
@@ -347,7 +469,7 @@ impl UiLayer {
         fill_color: Vec4,
         border_color: Vec4,
     ) {
-        self.draw_queue.push(UiDrawCommand::Panel {
+        self.push(UiDrawCommand::Panel {
             x, y, w, h, border, fill_color, border_color,
         });
     }
@@ -363,7 +485,7 @@ impl UiLayer {
         fill_color: Vec4,
         bg_color: Vec4,
     ) {
-        self.draw_queue.push(UiDrawCommand::Bar {
+        self.push(UiDrawCommand::Bar {
             x, y, w, h,
             fill_pct: fill_pct.clamp(0.0, 1.0),
             fill_color,
@@ -386,7 +508,7 @@ impl UiLayer {
         ghost_pct: f32,
         ghost_color: Vec4,
     ) {
-        self.draw_queue.push(UiDrawCommand::Bar {
+        self.push(UiDrawCommand::Bar {
             x, y, w, h,
             fill_pct: fill_pct.clamp(0.0, 1.0),
             fill_color,
@@ -398,7 +520,7 @@ impl UiLayer {
 
     /// Draw multi-line ASCII art sprite.
     pub fn draw_sprite(&mut self, x: f32, y: f32, lines: &[&str], color: Vec4) {
-        self.draw_queue.push(UiDrawCommand::Sprite {
+        self.push(UiDrawCommand::Sprite {
             lines: lines.iter().map(|s| s.to_string()).collect(),
             x, y, color,
         });

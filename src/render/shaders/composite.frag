@@ -1,13 +1,13 @@
-// composite.frag — scene + bloom + grade, in the order a film pipeline uses.
+// composite.frag — scene + light + grade, in the order a film pipeline uses.
 //
-// Everything used to happen in low dynamic range on a clamped buffer: bloom
-// added, then contrast and saturation applied to an already-clipped image,
-// then clamped again. A scene made almost entirely of overlapping emissive
-// particles came out looking untouched, because the highlights had nowhere to
-// go and there was no roll-off for a grade to work on.
+// The scene arrives in linear HDR: a sixteen-bit float buffer that a few
+// hundred thousand overlapping emissive particles can push well past white
+// without clipping. Everything here works on those real values, and the
+// tonemap is the one place the range is brought down.
 //
-// Now: distort, sample, sharpen, expose, add light, tonemap, grade, vignette,
-// grain, dither.
+// Order: shockwave refraction, lens shape, chromatic sample, sharpen,
+// exposure, indirect light, bloom, halation, light shafts, lens flare,
+// flash, tonemap, grade, vignette, grain, dither, scanlines.
 #version 330 core
 
 in vec2 f_uv;
@@ -34,6 +34,32 @@ uniform float u_sharpen;
 uniform float u_dither;
 uniform float u_barrel;
 
+// ── New: light and moments ──────────────────────────────────────────────────
+// The finished frame's size in pixels. Shockwave geometry is in pixels so a
+// blow looks the same at any resolution.
+uniform vec2  u_screen;
+// Screen-space indirect light: matter near something bright is lit by it.
+uniform float u_indirect;
+// Radial light shafts streaming from a point.
+uniform float u_light_shafts;
+uniform vec3  u_shaft;        // (u, v, strength)
+uniform vec3  u_shaft_tint;
+// Lens flare ghosts and halo off anything that blooms.
+uniform float u_lens_flare;
+// A colour added to the whole frame, already scaled. Decays on the CPU.
+uniform vec3  u_flash;
+// A glossy floor: (line_v, strength, fade_v, ripple_px), and its blur in px.
+uniform vec4  u_reflection;
+uniform float u_reflection_blur;
+// Heat shimmer, 0 to about 1, and a clock for it.
+uniform float u_haze;
+uniform float u_time;
+// Expanding rings of refraction: (u, v, radius_px, width_px) and strength_px.
+const int MAX_SHOCK = 12;
+uniform vec4  u_shock[MAX_SHOCK];
+uniform float u_shock_strength[MAX_SHOCK];
+uniform int   u_shock_count;
+
 out vec4 o_color;
 
 float rand(vec2 co) {
@@ -53,18 +79,55 @@ vec3 aces(vec3 x) {
 }
 
 void main() {
-    // Lens shape. A very slight barrel, applied before anything is sampled so
-    // everything downstream inherits it. Enough that the frame is not a
-    // perfect rectangle; not enough that anyone would call it a fisheye.
-    vec2 centred = f_uv - 0.5;
+    vec2 uv0 = f_uv;
+
+    // ── Shockwaves ─────────────────────────────────────────────────────────
+    //
+    // Each one is a Gaussian ring in pixel space. Inside the ring the image
+    // is pulled toward the origin, outside it is pushed away, which is what
+    // a pressure front does to the air in front of a lens. The ring also
+    // brightens a little, because compressed air refracts more light into
+    // the eye than the calm air either side of it.
+    float shock_light = 0.0;
+    for (int i = 0; i < MAX_SHOCK; ++i) {
+        if (i >= u_shock_count) break;
+        vec4 s = u_shock[i];
+        vec2 d_px = (uv0 - s.xy) * u_screen;
+        float dist = length(d_px);
+        float ring = exp(-pow((dist - s.z) / s.w, 2.0));
+        // Signed: the leading edge pushes out, the trailing edge pulls in.
+        float side = clamp((dist - s.z) / s.w, -1.0, 1.0);
+        vec2 dir = dist > 0.5 ? d_px / dist : vec2(0.0);
+        uv0 -= dir * ring * side * u_shock_strength[i] / u_screen;
+        shock_light += ring * u_shock_strength[i] * 0.012;
+    }
+
+    // ── Heat haze ──────────────────────────────────────────────────────────
+    //
+    // Two sine fields at different scales, rising, strongest at the bottom
+    // of the frame where the hot air is. A fraction of a pixel is enough:
+    // real shimmer is seen as things wavering, not as things moving.
+    if (u_haze > 0.0) {
+        float rise = u_time * 0.9;
+        float band = 1.0 - smoothstep(0.0, 0.9, uv0.y);
+        vec2 wobble = vec2(
+            sin(uv0.y * 61.0 + rise * 7.0 + sin(uv0.x * 23.0 + rise * 3.0)),
+            sin(uv0.x * 47.0 - rise * 5.0 + cos(uv0.y * 31.0 + rise * 2.0)) * 0.5
+        );
+        uv0 += wobble * (0.9 / u_screen) * u_haze * 2.2 * band;
+    }
+
+    // ── Lens shape ─────────────────────────────────────────────────────────
+    // A very slight barrel, applied before anything is sampled so
+    // everything downstream inherits it.
+    vec2 centred = uv0 - 0.5;
     if (u_barrel != 0.0) {
         centred *= 1.0 + u_barrel * dot(centred, centred);
     }
     vec2 uv = centred + 0.5;
 
     // Chromatic aberration, scaled by distance from the centre rather than
-    // applied flat, because a real lens is sharp in the middle. A uniform
-    // split reads as a broken screen; this reads as glass.
+    // applied flat, because a real lens is sharp in the middle.
     float radial = dot(centred, centred);
     vec2 offset = centred * u_chromatic * (0.35 + radial * 2.4);
     float r = texture(u_scene, uv + offset).r;
@@ -84,15 +147,107 @@ void main() {
         color += (color - blur * 0.25) * u_sharpen;
     }
 
-    // Exposure, then light.
+    // ── Floor reflection ───────────────────────────────────────────────────
+    //
+    // Below the line, the picture above it, mirrored, blurred a little and
+    // laid over the floor, fading out with distance from the line. What is
+    // standing on the floor is what shows in it, because the whole scene is
+    // in the buffer by now. Sampled after the lens so the mirror inherits
+    // the same glass.
+    if (u_reflection.y > 0.0 && uv.y < u_reflection.x) {
+        float below = (u_reflection.x - uv.y) / max(u_reflection.z, 1e-4);
+        float weight = u_reflection.y * (1.0 - smoothstep(0.0, 1.0, below));
+        if (weight > 0.001) {
+            vec2 t = 1.0 / vec2(textureSize(u_scene, 0));
+            float ripple = sin(uv.y * 380.0 + u_time * 2.4) * u_reflection.w * t.x;
+            vec2 m = vec2(uv.x + ripple, 2.0 * u_reflection.x - uv.y);
+            float b = u_reflection_blur * (1.0 + below * 2.0);
+            vec3 refl = texture(u_scene, m).rgb * 2.0
+                      + texture(u_scene, m + vec2( t.x * b, 0.0)).rgb
+                      + texture(u_scene, m + vec2(-t.x * b, 0.0)).rgb
+                      + texture(u_scene, m + vec2(0.0,  t.y * b)).rgb
+                      + texture(u_scene, m + vec2(0.0, -t.y * b)).rgb;
+            refl /= 6.0;
+            // Screen rather than add: a mirror never makes a floor darker,
+            // and adding on top of a lit floor blows it out.
+            color = color + refl * weight * (1.0 - clamp(color, 0.0, 1.0) * 0.5);
+        }
+    }
+
+    // ── Exposure, then light ───────────────────────────────────────────────
     color *= u_exposure;
     vec3 bloom = texture(u_bloom, uv).rgb;
+
+    // Indirect light. The bloom pyramid is, among other things, a blurred
+    // map of where the light in the frame is. Multiplying the scene by it
+    // lights the matter standing near a lit thing in that thing's colour,
+    // by that matter's own albedo, which is what bounce light does and what
+    // adding bloom on top never does: bloom brightens the air, this
+    // brightens the surfaces.
+    color += color * bloom * u_indirect;
+
     color += bloom * u_bloom_intensity;
 
-    // Halation: the warm bleed real film gets around a bright edge. The red
-    // channel of the bloom, added back wide and warm. It costs one multiply
-    // and it is most of why a lit thing looks lit rather than bright.
+    // Halation: the warm bleed real film gets around a bright edge.
     color += vec3(bloom.r, bloom.r * 0.42, bloom.r * 0.22) * u_halation;
+
+    // ── Light shafts ───────────────────────────────────────────────────────
+    //
+    // A radial blur of the light toward its source. Twenty-four samples
+    // stepping from this pixel toward the origin, each weighted a little
+    // less than the last, so the light streams out from the source and
+    // fades along its length. Sampled from the bloom, which is half the
+    // resolution and already thresholded, so only the lit things cast.
+    if (u_light_shafts > 0.0 && u_shaft.z > 0.0) {
+        const int STEPS = 24;
+        vec2 to_src = (u_shaft.xy - uv) / float(STEPS) * 0.85;
+        float decay = 0.94;
+        float weight = 1.0;
+        vec3 shaft = vec3(0.0);
+        vec2 p = uv;
+        for (int i = 0; i < STEPS; ++i) {
+            p += to_src;
+            shaft += texture(u_bloom, p).rgb * weight;
+            weight *= decay;
+        }
+        shaft /= float(STEPS) * 0.55;
+        // Fade with distance from the source, so the far side of the frame
+        // is not lit by a brazier on the near side.
+        float reach = 1.0 - smoothstep(0.0, 1.1, length((uv - u_shaft.xy) * vec2(1.0, u_screen.y / u_screen.x)));
+        color += shaft * u_shaft_tint * u_light_shafts * u_shaft.z * reach;
+    }
+
+    // ── Lens flare ─────────────────────────────────────────────────────────
+    //
+    // Ghosts are the bloom mirrored through the centre of the lens, at a few
+    // spacings, each with a slight spectral tint; the halo is a ring at a
+    // fixed radius from the centre. Both are weighted toward the centre so
+    // a light at the edge of frame puts its ghosts across the middle, the
+    // way real glass does, and nothing flares out of a dark frame because
+    // the bloom is already thresholded.
+    if (u_lens_flare > 0.0) {
+        vec2 ghost_vec = (0.5 - uv) * 0.44;
+        vec3 flare = vec3(0.0);
+        for (int i = 1; i <= 3; ++i) {
+            vec2 g = uv + ghost_vec * float(i);
+            float w = 1.0 - smoothstep(0.0, 0.75, length(g - 0.5));
+            w = w * w;
+            vec3 tint = (i == 1) ? vec3(1.0, 0.85, 0.7)
+                      : (i == 2) ? vec3(0.7, 0.9, 1.0)
+                                 : vec3(0.9, 0.7, 1.0);
+            flare += texture(u_bloom, g).rgb * w * tint * (0.5 / float(i));
+        }
+        vec2 halo_dir = normalize(ghost_vec + vec2(1e-5));
+        vec2 halo_uv = uv + halo_dir * 0.38;
+        float halo_w = 1.0 - smoothstep(0.0, 0.6, length(halo_uv - 0.5));
+        flare += texture(u_bloom, halo_uv).rgb * halo_w * halo_w * vec3(0.8, 0.9, 1.0) * 0.25;
+        color += flare * u_lens_flare;
+    }
+
+    // Shockwave brightening and any flash, before the roll-off so a strong
+    // one goes to white through the highlights rather than by clipping.
+    color += vec3(shock_light);
+    color += u_flash;
 
     // Tonemap, blended rather than switched so a caller can dial it back
     // without a hard change of look at some threshold.
@@ -109,21 +264,17 @@ void main() {
     color = mix(vec3(lum), color, u_saturation);
 
     // Vignette, smoothstepped from an adjustable edge rather than a raw
-    // quadratic. The old one darkened from the centre outward, so it dimmed
-    // the middle of the picture as well as the corners.
+    // quadratic, so it frames the picture rather than dimming the middle.
     float d = length(centred) * 1.41421356;
     color *= 1.0 - u_vignette * smoothstep(u_vignette_softness, 1.0, d);
 
     // Grain, weighted toward the shadows where film grain actually lives.
-    // Flat grain over a whole frame reads as video noise.
     float grain = rand(uv + vec2(u_grain_seed)) * 2.0 - 1.0;
     float shadow_weight = 1.0 - smoothstep(0.0, 0.7, lum);
     color += grain * u_grain_intensity * (0.35 + shadow_weight);
 
-    // A 4x4 ordered dither, under one quantisation step. This game is very
-    // dark, and a dark gradient in eight bits per channel bands visibly: every
-    // soft shadow and every vignette edge had rings in it. A fraction of a
-    // step of structured noise breaks them up and is invisible on its own.
+    // A 4x4 ordered dither, under one quantisation step, against banding in
+    // the dark gradients this game is made of.
     if (u_dither > 0.0) {
         const float bayer[16] = float[](
              0.0,  8.0,  2.0, 10.0,
@@ -136,7 +287,7 @@ void main() {
     }
 
     if (u_scanlines_enabled) {
-        float scanline = sin(uv.y * float(textureSize(u_scene, 0).y) * 3.14159) * 0.5 + 0.5;
+        float scanline = sin(uv.y * u_screen.y * 3.14159) * 0.5 + 0.5;
         color *= 1.0 - u_scanline_intensity * (1.0 - scanline);
     }
 

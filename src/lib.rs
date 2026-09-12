@@ -120,6 +120,9 @@ pub struct ProofEngine {
     /// Screen-space UI, in pixel coordinates. Cleared at the start of every
     /// frame by `run_ui`, so games redraw it immediate-mode style.
     pub ui: render::ui_layer::UiLayer,
+    /// Transient screen effects: shockwaves, flashes, light shafts. Fire and
+    /// forget; ticked and uploaded by `run_ui` every frame.
+    pub fx: render::screen_fx::ScreenFx,
     /// Optional audio engine — None if no output device is available.
     pub audio: Option<audio::AudioEngine>,
     // Internal render pipeline (initialized lazily when run() is called)
@@ -141,6 +144,7 @@ impl ProofEngine {
                 config.window_width as f32,
                 config.window_height as f32,
             ),
+            fx: render::screen_fx::ScreenFx::new(),
             audio,
             config,
             pipeline: None,
@@ -280,12 +284,17 @@ impl ProofEngine {
                 break;
             }
 
+            // Trauma decays here. It used to be added and never ticked in
+            // this loop, so the first hit left the camera shaking forever.
+            self.camera.shake.tick(dt);
+            self.fx.tick(dt);
+
             if let Some(ref mut p) = self.pipeline {
                 p.update_render_config(&self.config.render);
-                p.render(&self.scene, &self.camera);
-            }
-            // Painted after post-processing so the HUD stays sharp.
-            if let Some(ref mut p) = self.pipeline {
+                // The scene, then the UI's world pass into the same buffer,
+                // then post-processing over both.
+                p.render_frame(&self.scene, &self.camera, Some(&self.ui), &self.fx);
+                // The HUD, painted after post-processing so it stays sharp.
                 p.render_ui(&self.ui);
             }
 
@@ -469,6 +478,8 @@ pub mod prelude {
         tween::sequence::{TweenSequence, TweenTimeline, SequenceBuilder},
         debug::DebugOverlay,
         render::pipeline::FrameStats,
+        render::screen_fx::{ScreenFx, Shockwave},
+        render::ui_layer::UiPass,
     };
     // Quat and Mat4 belong here too: the skeleton and animation APIs hand out
     // transforms built from them, so a caller who only has the prelude cannot

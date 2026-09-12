@@ -44,6 +44,8 @@ use crate::render::postfx::PostFxPipeline;
 use crate::input::{InputState, Key};
 use crate::glyph::atlas::FontAtlas;
 use crate::glyph::batch::GlyphInstance;
+use crate::render::ui_layer::UiLayer;
+use crate::render::screen_fx::ScreenFx;
 
 // ── Glyph vertex shader ────────────────────────────────────────────────────────
 
@@ -301,6 +303,9 @@ pub struct Pipeline {
     // Builds instances from a UiLayer's draw queue and paints them in pixel
     // coordinates after post-processing, so panels and text stay crisp.
     ui_renderer: super::ui_layer_renderer::UiLayerRenderer,
+    /// Whether `render_frame` already built this frame's UI instances, so
+    /// `render_ui` need not build them again.
+    ui_prepared: bool,
 
     // ── SVOGI Global Illumination ───────────────────────────────────────────
     pub svogi: crate::svogi::integration::CascadedSvogi,
@@ -390,6 +395,15 @@ impl Pipeline {
         // ── 6. Make current ───────────────────────────────────────────────────
         let context = not_current.make_current(&surface)
                                  .expect("make_current failed");
+        if config.render.vsync {
+            use glutin::surface::SwapInterval;
+            if let Err(e) = surface.set_swap_interval(
+                &context,
+                SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+            ) {
+                log::warn!("vsync unavailable: {e}");
+            }
+        }
 
         // ── 7. glow context from proc address ─────────────────────────────────
         let gl = unsafe {
@@ -427,7 +441,7 @@ impl Pipeline {
         let atlas_tex = unsafe { upload_atlas(&gl, &atlas) };
 
         // ── 11. PostFxPipeline — dual-attachment FBOs + bloom shaders ────────
-        let postfx = unsafe { PostFxPipeline::new(&gl, w, h) };
+        let postfx = unsafe { PostFxPipeline::new(&gl, w, h, config.render.render_scale) };
 
         // ── 12. Global GL state ───────────────────────────────────────────────
         unsafe {
@@ -452,6 +466,7 @@ impl Pipeline {
             postfx,
             atlas,
             ui_renderer: super::ui_layer_renderer::UiLayerRenderer::new(),
+            ui_prepared: false,
             instances: Vec::with_capacity(8192),
             fps_counter: FpsCounter::new(),
             frame_start: Instant::now(),
@@ -470,7 +485,12 @@ impl Pipeline {
     /// Update the render config used by the PostFx pipeline this frame.
     /// Call from `ProofEngine::run()` whenever the config changes.
     pub fn update_render_config(&mut self, config: &RenderConfig) {
+        let old_scale = self.render_config.render_scale;
         self.render_config = config.clone();
+        // A change of render scale is a change of target size.
+        if (config.render_scale - old_scale).abs() > 1e-4 {
+            unsafe { self.postfx.resize(&self.gl, self.width, self.height, config.render_scale); }
+        }
     }
 
     /// Poll window events and update `InputState`. Returns false on quit.
@@ -535,7 +555,7 @@ impl Pipeline {
                 self.width  = w;
                 self.height = h;
                 input.window_resized = Some((w, h));
-                unsafe { self.postfx.resize(&self.gl, w, h); }
+                unsafe { self.postfx.resize(&self.gl, w, h, self.render_config.render_scale); }
             }
         }
 
@@ -600,6 +620,24 @@ impl Pipeline {
     /// Collect all visible glyphs + particles from the scene, upload to the GPU,
     /// and execute the full multi-pass rendering pipeline.
     pub fn render(&mut self, scene: &Scene, camera: &ProofCamera) {
+        let fx = ScreenFx::default();
+        self.render_frame(scene, camera, None, &fx);
+    }
+
+    /// Render the scene, the UI layer's world pass, and post-processing.
+    ///
+    /// With `ui` given, its world-pass commands are painted into the HDR
+    /// scene buffer after the 3D glyphs and before post-processing, so they
+    /// bloom, grade and shake with the scene; its HUD-pass commands are
+    /// built here and painted by [`render_ui`](Self::render_ui) afterwards.
+    /// `fx` supplies the frame's shockwaves, flash and light-shaft source.
+    pub fn render_frame(
+        &mut self,
+        scene: &Scene,
+        camera: &ProofCamera,
+        ui: Option<&UiLayer>,
+        fx: &ScreenFx,
+    ) {
         // ── Frame timing ───────────────────────────────────────────────────────
         let now = Instant::now();
         let dt  = now.duration_since(self.frame_start).as_secs_f32().min(0.1);
@@ -734,8 +772,26 @@ impl Pipeline {
         self.stats.particle_count = particle_count;
         self.stats.draw_calls     = 0;
 
+        // ── World-pass UI ──────────────────────────────────────────────────────
+        //
+        // Built once here for both passes. The world pass is projected in
+        // screen pixels like the HUD, then shifted by the camera's trauma so
+        // a blow moves the world and not the interface.
+        let mut world_proj = None;
+        if let Some(ui) = ui {
+            self.ui_renderer.build_instances(ui, &self.atlas);
+            self.ui_prepared = true;
+            if self.render_config.world_ui_in_scene && self.ui_renderer.world_count() > 0 {
+                let trauma = camera.shake.trauma.clamp(0.0, 1.0);
+                let amp = trauma * trauma * self.render_config.shake_pixels;
+                let t = self.scene_time;
+                let shake = Vec3::new((t * 47.3).sin() * amp, (t * 31.7).cos() * amp, 0.0);
+                world_proj = Some(ui.world_projection() * Mat4::from_translation(shake));
+            }
+        }
+
         // ── Execute render passes ──────────────────────────────────────────────
-        unsafe { self.execute_render_passes(view_proj); }
+        unsafe { self.execute_render_passes(view_proj, world_proj, fx); }
     }
 
     /// Paint a screen-space UI layer on top of the finished frame.
@@ -746,22 +802,37 @@ impl Pipeline {
     ///
     /// Call once per frame, after `render`, before `swap`.
     pub fn render_ui(&mut self, ui: &super::ui_layer::UiLayer) {
+        let prepared = std::mem::replace(&mut self.ui_prepared, false);
         if ui.command_count() == 0 {
             return;
         }
-        self.ui_renderer.begin();
-        self.ui_renderer.build_instances(ui, &self.atlas);
+        if !prepared {
+            self.ui_renderer.build_instances(ui, &self.atlas);
+        }
+        let proj = ui.projection();
+        // With the world pass switched off, its commands paint here instead,
+        // under the HUD, which is how the layer behaved before it existed.
+        if !self.render_config.world_ui_in_scene && self.ui_renderer.world_count() > 0 {
+            unsafe { self.draw_ui_pass(proj, true) };
+            self.stats.draw_calls += 1;
+        }
         if self.ui_renderer.glyph_count() == 0 {
             return;
         }
-        let proj = ui.projection();
-        unsafe { self.draw_ui_pass(proj) };
+        unsafe { self.draw_ui_pass(proj, false) };
         self.stats.draw_calls += 1;
     }
 
-    /// Upload and draw the UI instance buffer with an orthographic projection.
-    unsafe fn draw_ui_pass(&mut self, proj: Mat4) {
+    /// Upload and draw one of the UI instance buffers, straight to the
+    /// screen, with an orthographic projection. `world` picks the world-pass
+    /// buffer; otherwise the HUD buffer.
+    unsafe fn draw_ui_pass(&mut self, proj: Mat4, world: bool) {
         let gl = &self.gl;
+        let (bytes, count) = if world {
+            (self.ui_renderer.world_bytes(), self.ui_renderer.world_count())
+        } else {
+            (self.ui_renderer.glyph_bytes(), self.ui_renderer.glyph_count())
+        };
 
         // Straight to the screen: post-processing has already composited.
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -774,11 +845,7 @@ impl Pipeline {
         gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
-        gl.buffer_data_u8_slice(
-            glow::ARRAY_BUFFER,
-            self.ui_renderer.glyph_bytes(),
-            glow::DYNAMIC_DRAW,
-        );
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
 
         gl.use_program(Some(self.program));
         gl.uniform_matrix_4_f32_slice(Some(&self.loc_view_proj), false, &proj.to_cols_array());
@@ -791,12 +858,7 @@ impl Pipeline {
         for loc in 2u32..=10 {
             gl.vertex_attrib_divisor(loc, 1);
         }
-        gl.draw_arrays_instanced(
-            glow::TRIANGLES,
-            0,
-            6,
-            self.ui_renderer.glyph_count() as i32,
-        );
+        gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, count as i32);
 
         // Restore state the 3D pass expects on the next frame.
         gl.enable(glow::DEPTH_TEST);
@@ -867,20 +929,26 @@ impl Pipeline {
 
     // ── Private render pass execution ─────────────────────────────────────────
 
-    unsafe fn execute_render_passes(&mut self, view_proj: Mat4) {
+    unsafe fn execute_render_passes(
+        &mut self,
+        view_proj: Mat4,
+        world_proj: Option<Mat4>,
+        fx: &ScreenFx,
+    ) {
         let gl = &self.gl;
 
-        // ── Pass 0: Sky background gradient ────────────────────────────────────
+        // ── Pass 0: clear the HDR scene targets ────────────────────────────────
         //
-        // Render a Nishita atmospheric sky as the scene background.
-        // This clears the FBO with a physically-based sky gradient instead of black.
+        // At render scale, which may differ from the window. A dark
+        // blue-black ground rather than pure black, so the vignette and the
+        // dither have something to work against.
+        let (sw, sh) = self.postfx.scene_size();
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.postfx.scene_fbo));
-        gl.viewport(0, 0, self.width as i32, self.height as i32);
-        gl.clear(glow::COLOR_BUFFER_BIT);
-
-        // Fixed sky background color (dark blue-black, no per-frame computation)
+        gl.viewport(0, 0, sw as i32, sh as i32);
         gl.clear_color(0.02, 0.025, 0.04, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
+        gl.enable(glow::BLEND);
+        gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
         // ── Pass 1: Render glyphs ────────────────────────────────────────────
 
@@ -922,12 +990,45 @@ impl Pipeline {
             self.stats.draw_calls += 1;
         }
 
-        // ── Passes 2-5: PostFxPipeline handles bloom + compositing ────────────
+        // ── Pass 1b: the UI layer's world pass ─────────────────────────────────
         //
-        // PostFxPipeline reads render_config.bloom_enabled, bloom_intensity,
-        // chromatic_aberration, film_grain, scanlines_enabled, etc.
-        self.postfx.run(gl, &self.render_config, self.width, self.height, self.scene_time);
-        self.stats.draw_calls += 4; // bloom H, bloom V, bloom H2, bloom V2, composite
+        // Same program, same instance layout, projected in screen pixels
+        // rather than through the camera, into the same HDR targets. From
+        // here on the post-processing cannot tell it from the 3D scene.
+        if let Some(wp) = world_proj {
+            let count = self.ui_renderer.world_count();
+            if count > 0 {
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+                gl.buffer_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    self.ui_renderer.world_bytes(),
+                    glow::DYNAMIC_DRAW,
+                );
+                gl.use_program(Some(self.program));
+                gl.uniform_matrix_4_f32_slice(
+                    Some(&self.loc_view_proj),
+                    false,
+                    &wp.to_cols_array(),
+                );
+                // One copy per instance: the oversampling jitter is sized for
+                // the 3D scene and would smear pixel-placed matter.
+                gl.uniform_1_u32(self.loc_n_copies.as_ref(), 1);
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
+                gl.bind_vertex_array(Some(self.vao));
+                for loc in 2u32..=10 {
+                    gl.vertex_attrib_divisor(loc, 1);
+                }
+                gl.draw_arrays_instanced(glow::TRIANGLES, 0, 6, count as i32);
+                self.stats.draw_calls += 1;
+            }
+        }
+
+        // ── Passes 2+: bloom, composite, anti-aliasing ─────────────────────────
+        let draws = self.postfx.run(
+            gl, &self.render_config, fx, self.width, self.height, self.scene_time,
+        );
+        self.stats.draw_calls += draws;
     }
 }
 
