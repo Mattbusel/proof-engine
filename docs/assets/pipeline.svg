@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img" aria-labelledby="t d">
+  <title id="t">The Proof Engine screen pipeline</title>
+  <desc id="d">The 3D glyph pass and the UI world pass draw into a half-float scene buffer with colour and emission targets. Emission feeds a bloom pyramid. Colour and bloom meet in the composite, then an optional FXAA pass, then the screen, and finally the UI HUD pass is painted sharp on top.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8a949c"/></marker>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#ff9a4a"/></marker>
+    <marker id="ac" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6cc9d8"/></marker>
+    <linearGradient id="hdr" x1="0" x2="1"><stop offset="0" stop-color="#ff9a4a" stop-opacity=".16"/><stop offset="1" stop-color="#ff9a4a" stop-opacity=".04"/></linearGradient>
+  </defs>
+  <style>
+    text { font-family: Consolas, "Cascadia Mono", "SF Mono", Menlo, monospace; fill: #e8e2d6; }
+    .s { font-size: 13px; fill: #9aa5ab; }
+    .m { font-size: 16px; }
+    .k { font-size: 12px; fill: #ff9a4a; letter-spacing: 1.5px; }
+    .kc { font-size: 12px; fill: #6cc9d8; letter-spacing: 1.5px; }
+    .box { fill: #10151b; stroke: #2b353d; stroke-width: 1.2; }
+    .hot { fill: #1a130e; stroke: #7a4a26; stroke-width: 1.2; }
+    .cool { fill: #0e171a; stroke: #2f5f68; stroke-width: 1.2; }
+    .l { stroke: #8a949c; stroke-width: 1.6; fill: none; }
+    .lh { stroke: #ff9a4a; stroke-width: 1.8; fill: none; }
+    .lc { stroke: #6cc9d8; stroke-width: 1.8; fill: none; }
+  </style>
+  <rect x="0" y="0" width="1200" height="400" rx="14" fill="#07090d"/>
+
+  <!-- HDR scene buffer region -->
+  <rect x="24" y="24" width="660" height="352" rx="10" fill="url(#hdr)" stroke="#3a2a1e" stroke-dasharray="4 5"/>
+  <text x="44" y="52" class="k">HDR SCENE BUFFER / RGBA16F x2 / at render_scale</text>
+
+  <rect x="44" y="84" width="200" height="64" rx="6" class="box"/>
+  <text x="62" y="112" class="m">3D glyph pass</text>
+  <text x="62" y="132" class="s">glyphs, particles</text>
+
+  <rect x="44" y="176" width="200" height="64" rx="6" class="box"/>
+  <text x="62" y="204" class="m">UI world pass</text>
+  <text x="62" y="224" class="s">particle clouds, fills</text>
+
+  <rect x="300" y="84" width="150" height="64" rx="6" class="hot"/>
+  <text x="318" y="112" class="m">emission</text>
+  <text x="318" y="132" class="s">what glows</text>
+
+  <rect x="300" y="176" width="150" height="64" rx="6" class="box"/>
+  <text x="318" y="204" class="m">colour</text>
+  <text x="318" y="224" class="s">what is lit</text>
+
+  <rect x="496" y="84" width="170" height="64" rx="6" class="hot"/>
+  <text x="514" y="112" class="m">bloom pyramid</text>
+  <text x="514" y="132" class="s">knee, down, tent up</text>
+
+  <path class="l" d="M244 116 H272 V208 H296" marker-end="url(#a)"/>
+  <path class="l" d="M244 208 H296" marker-end="url(#a)"/>
+  <path class="lh" d="M272 116 H296" marker-end="url(#ah)"/>
+  <path class="lh" d="M450 116 H492" marker-end="url(#ah)"/>
+
+  <text x="44" y="300" class="s">Half-float targets: a few hundred thousand overlapping</text>
+  <text x="44" y="320" class="s">emissive particles add up to real light instead of</text>
+  <text x="44" y="340" class="s">clipping at white. The range comes down once, in ACES.</text>
+
+  <!-- composite -->
+  <rect x="720" y="130" width="170" height="110" rx="6" class="hot"/>
+  <text x="738" y="160" class="m">composite</text>
+  <text x="738" y="182" class="s">lens, light, bloom</text>
+  <text x="738" y="200" class="s">ACES, grade,</text>
+  <text x="738" y="218" class="s">grain, dither</text>
+  <path class="lh" d="M666 116 H694 V160 H716" marker-end="url(#ah)"/>
+  <path class="l" d="M450 208 H716" marker-end="url(#a)"/>
+
+  <rect x="920" y="152" width="90" height="64" rx="6" class="box"/>
+  <text x="940" y="180" class="m">FXAA</text>
+  <text x="940" y="200" class="s">optional</text>
+  <path class="l" d="M890 184 H916" marker-end="url(#a)"/>
+
+  <rect x="1040" y="152" width="136" height="64" rx="6" class="box"/>
+  <text x="1058" y="180" class="m">screen</text>
+  <text x="1058" y="200" class="s">back buffer</text>
+  <path class="l" d="M1010 184 H1036" marker-end="url(#a)"/>
+
+  <!-- HUD -->
+  <rect x="1040" y="282" width="136" height="64" rx="6" class="cool"/>
+  <text x="1058" y="310" class="m">UI HUD pass</text>
+  <text x="1058" y="330" class="s">text, bars</text>
+  <path class="lc" d="M1108 282 V220" marker-end="url(#ac)"/>
+  <text x="720" y="304" class="kc">PAINTED SHARP ON TOP</text>
+  <text x="720" y="326" class="s">after post-processing, so the</text>
+  <text x="720" y="344" class="s">interface never blooms or blurs</text>
+</svg>

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proof Engine</title>
+<meta name="description" content="A Rust rendering engine where every visual is the output of a mathematical function. Nishita sky scattering, strange attractors, HDR bloom, particle-built entities.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#05060a">
+<meta property="og:title" content="Proof Engine">
+<meta property="og:description" content="A Rust rendering engine where every visual is the output of a mathematical function.">
+<meta property="og:image" content="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/.github/social-preview.png">
+<meta property="og:url" content="https://mattbusel.github.io/proof-engine/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2305060a'/%3E%3Crect x='5' y='5' width='6' height='6' fill='%23ff9a4a'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ground: #05060a;
+    --panel: #0b0e13;
+    --panel-2: #10151b;
+    --rule: #1d252c;
+    --ink: #ece6da;
+    --ink-2: #c3cbc9;
+    --dim: #8d989e;
+    --hot: #ff9a4a;
+    --hot-2: #ffb070;
+    --cool: #6cc9d8;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace, Menlo, "DejaVu Sans Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --max: 1160px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 17px/1.6 var(--sans); }
+  a { color: var(--ink); text-decoration-color: rgba(255,154,74,.55); text-underline-offset: 3px; }
+  a:hover { color: var(--hot-2); }
+  :focus-visible { outline: 2px solid var(--hot); outline-offset: 3px; border-radius: 3px; }
+  code, pre, .mono { font-family: var(--mono); }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
+  .skip { position: absolute; left: -9999px; }
+  .skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--panel); padding: 8px 12px; }
+
+  /* ── top bar ─────────────────────────── */
+  .top { position: absolute; inset: 0 0 auto 0; z-index: 3; }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; height: 68px; }
+  .brand { font-family: var(--mono); font-size: 15px; letter-spacing: .3px; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+  .brand i { width: 10px; height: 10px; background: var(--hot); display: inline-block; }
+  .top nav { display: flex; gap: 22px; font-family: var(--mono); font-size: 14px; }
+  .top nav a { text-decoration: none; color: rgba(236,230,218,.85); }
+  .top nav a:hover { color: var(--hot-2); }
+
+  /* ── hero ────────────────────────────── */
+  .hero { position: relative; min-height: min(92vh, 860px); display: flex; align-items: flex-end; overflow: hidden; background: #0d1416; }
+  .hero video, .hero .poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 60% 60%; }
+  .hero::before { content: ""; position: absolute; inset: 0; z-index: 1; background:
+      linear-gradient(180deg, rgba(5,6,10,.55) 0%, rgba(5,6,10,0) 28%),
+      linear-gradient(0deg, rgba(5,6,10,.94) 0%, rgba(5,6,10,.55) 40%, rgba(5,6,10,0) 68%); }
+  .hero .wrap { position: relative; z-index: 2; width: 100%; padding-bottom: 56px; }
+  .hero h1 { font-family: var(--mono); font-weight: 400; font-size: clamp(46px, 8.4vw, 104px); line-height: .98; letter-spacing: -.02em; margin: 0; }
+  .qed { display: inline-block; width: .34em; height: .34em; background: var(--hot); margin-left: .18em; vertical-align: .12em; }
+  .hero p.lede { font-size: clamp(18px, 2.1vw, 23px); line-height: 1.45; max-width: 36em; color: #dfe4e1; margin: 20px 0 30px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .copy { display: inline-flex; align-items: center; gap: 14px; background: rgba(8,10,14,.78); border: 1px solid #2c363d; border-radius: 6px; padding: 10px 10px 10px 16px; font-family: var(--mono); font-size: 15px; color: var(--ink); backdrop-filter: blur(6px); max-width: 100%; }
+  .copy code { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .copy code::before { content: "$ "; color: var(--dim); }
+  .copy button { font: 13px var(--mono); color: var(--ink); background: #1a2127; border: 1px solid #2f3a42; border-radius: 4px; padding: 5px 10px; cursor: pointer; flex: none; }
+  .copy button:hover { border-color: var(--hot); }
+  .copy button.ok { color: var(--ground); background: var(--hot); border-color: var(--hot); }
+  .btn { font: 14px var(--mono); text-decoration: none; padding: 11px 16px; border-radius: 6px; border: 1px solid #2c363d; background: rgba(8,10,14,.55); }
+  .btn.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+  .btn.primary:hover { background: var(--hot-2); border-color: var(--hot-2); color: var(--ground); }
+  .figcap { font-family: var(--mono); font-size: 13px; color: var(--dim); line-height: 1.5; }
+  .figcap b { font-weight: 400; color: var(--hot-2); margin-right: 8px; letter-spacing: .5px; }
+  .hero .figcap { margin-top: 34px; color: rgba(236,230,218,.62); }
+
+  /* ── sections ────────────────────────── */
+  section { padding: 104px 0; border-top: 1px solid var(--rule); }
+  .kicker { font: 13px var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--hot); margin: 0 0 14px; }
+  .kicker.cool { color: var(--cool); }
+  h2 { font-family: var(--mono); font-weight: 400; font-size: clamp(30px, 4vw, 46px); line-height: 1.1; letter-spacing: -.01em; margin: 0 0 20px; }
+  h3 { font-family: var(--mono); font-weight: 400; font-size: 19px; margin: 0 0 8px; }
+  .prose { max-width: 40em; color: var(--ink-2); }
+  .prose p { margin: 0 0 16px; }
+  .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: center; }
+  .split.rev { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  .split.start { align-items: start; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  figure { margin: 0; }
+  .frame { position: relative; border-radius: 6px; overflow: hidden; background: #000; border: 1px solid var(--rule); }
+  .frame img, .frame video { display: block; width: 100%; height: auto; }
+  figure .figcap { margin-top: 12px; }
+
+  /* sun scrubber */
+  .scrub { margin-top: 18px; }
+  .scrub-read { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); margin-bottom: 10px; }
+  .scrub-read .t { font-size: 30px; }
+  .scrub-read .el { font-size: 15px; color: var(--ink-2); }
+  .scrub-read .el span { color: var(--hot-2); }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 34px; background: transparent; cursor: ew-resize; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, #6fb9e8, #e8d3a0 62%, #ff8a3d 82%, #3a1a10); }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, #6fb9e8, #e8d3a0 62%, #ff8a3d 82%, #3a1a10); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; margin-top: -9px; border-radius: 50%; background: #fff4df; border: 0; box-shadow: 0 0 0 5px rgba(255,176,112,.25), 0 0 18px rgba(255,176,112,.8); }
+  input[type=range]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #fff4df; border: 0; box-shadow: 0 0 0 5px rgba(255,176,112,.25), 0 0 18px rgba(255,176,112,.8); }
+  .scrub-ends { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--dim); }
+
+  /* equations */
+  .eq { font-family: var(--mono); font-size: 17px; line-height: 1.9; background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--cool); border-radius: 4px; padding: 16px 20px; margin: 22px 0; color: var(--ink); overflow-x: auto; }
+  .eq span { color: var(--dim); }
+
+  /* code */
+  .code { position: relative; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; margin: 0 0 18px; }
+  .code .bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px 8px 16px; border-bottom: 1px solid var(--rule); font: 12.5px var(--mono); color: var(--dim); }
+  .code .bar button { font: 12.5px var(--mono); color: var(--ink-2); background: transparent; border: 1px solid #2a343b; border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+  .code .bar button:hover { border-color: var(--hot); color: var(--ink); }
+  .code .bar button.ok { background: var(--hot); color: var(--ground); border-color: var(--hot); }
+  .code pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-size: 14px; line-height: 1.65; color: #dcd6ca; }
+  .k { color: #ff9a4a; } .s { color: #a9d7a0; } .c { color: #6f7b82; } .n { color: #6cc9d8; } .f { color: #f1dfb8; }
+
+  /* quick start steps */
+  .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 36px; }
+  .step h3 span { color: var(--hot); margin-right: 10px; }
+  .step p { color: var(--ink-2); margin: 0 0 14px; font-size: 16px; }
+  .note { font-size: 15px; color: var(--dim); margin-top: 8px; }
+  .note code { color: var(--ink-2); }
+
+  /* features */
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin-top: 40px; }
+  .cell { background: var(--ground); padding: 26px 24px 24px; }
+  .cell .mod { font: 12.5px var(--mono); color: var(--cool); margin-bottom: 10px; display: block; }
+  .cell p { margin: 0; color: var(--ink-2); font-size: 15.5px; line-height: 1.55; }
+
+  /* table */
+  .tbl { width: 100%; border-collapse: collapse; margin-top: 28px; font-size: 15.5px; }
+  .tbl th, .tbl td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .tbl th { font: 12.5px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--dim); font-weight: 400; }
+  .tbl td:first-child { font-family: var(--mono); color: var(--ink); white-space: nowrap; }
+  .tbl td { color: var(--ink-2); }
+  .tblwrap { overflow-x: auto; }
+
+  .pipe { margin-top: 36px; }
+  .pipe img { width: 100%; height: auto; display: block; }
+
+  footer { border-top: 1px solid var(--rule); padding: 44px 0 60px; font-size: 15px; color: var(--dim); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 18px 32px; justify-content: space-between; }
+  footer a { color: var(--ink-2); }
+
+  @media (max-width: 900px) {
+    .split, .split.rev, .split.start { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+    .split.rev > :first-child { order: 2; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .steps { grid-template-columns: minmax(0, 1fr); }
+    section { padding: 76px 0; }
+  }
+  @media (max-width: 600px) {
+    body { font-size: 16px; }
+    .wrap { padding: 0 16px; }
+    .top nav { gap: 14px; font-size: 13px; }
+    .top nav .hide-s { display: none; }
+    .hero { min-height: 88vh; }
+    .hero .wrap { padding-bottom: 36px; }
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .copy { font-size: 14px; }
+    .btn { padding: 10px 13px; }
+    .scrub-read .t { font-size: 24px; }
+    .eq { font-size: 14.5px; padding: 14px 14px; }
+    .code pre { font-size: 13px; }
+    .tbl td:first-child { white-space: normal; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero video { display: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#start">Skip to quick start</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><i aria-hidden="true"></i>proof-engine</a>
+    <nav aria-label="Primary">
+      <a href="#start">Start</a>
+      <a class="hide-s" href="#demos">Demos</a>
+      <a class="hide-s" href="https://docs.rs/proof-engine">Docs</a>
+      <a href="https://github.com/Mattbusel/proof-engine">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="hero">
+  <img class="poster" src="assets/sky-poster.jpg" alt="" aria-hidden="true">
+  <video autoplay muted loop playsinline preload="auto" poster="assets/sky-poster.jpg" aria-label="The sky demo: the sun lowers over a mountain range and the sky turns from blue to orange to dusk">
+    <source src="assets/sky.webm" type="video/webm">
+    <source src="assets/sky.mp4" type="video/mp4">
+  </video>
+  <div class="wrap">
+    <h1>Proof Engine<span class="qed" aria-hidden="true"></span></h1>
+    <p class="lede">A Rust rendering engine where every visual is the output of a mathematical function. Glyphs and particles are moved by differential equations and force fields, and drawn in HDR.</p>
+    <div class="cta">
+      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">Copy</button></div>
+      <a class="btn primary" href="#start">Run a demo</a>
+      <a class="btn" href="https://github.com/Mattbusel/proof-engine">Source</a>
+    </div>
+    <p class="figcap"><b>FIG. 1</b>The <code>sky</code> example from 16:20 to dusk, captured frame by frame with <code>PROOF_SHOT</code> and played forward and back. Every cell of that sky is a scattering integral.</p>
+  </div>
+</div>
+
+<section id="sky" aria-labelledby="sky-h">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">Nishita sky</p>
+      <h2 id="sky-h">Drag the sun.</h2>
+      <div class="prose">
+        <p>The sky is 120 by 56 cells. For each one, every frame, <code>nishita_sky::compute_sky_color</code> integrates Rayleigh and Mie single scattering along the view ray and along a second ray toward the sun.</p>
+        <p>No gradient is painted anywhere. The blue at three o'clock, the orange band at sunset and the dark teal after it are the same integral with the sun somewhere else. The mountains are sums of sines lit by the sky just above the horizon.</p>
+      </div>
+    </div>
+    <figure>
+      <div class="frame"><img id="sun-img" src="assets/sun/00.jpg" width="960" height="480" alt="The sky demo at 14:48, sun elevation 36.8 degrees" decoding="async"></div>
+      <div class="scrub">
+        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">sun elevation <span id="sun-el">+36.8&deg;</span></span></div>
+        <label class="skip" for="sun">Time of day</label>
+        <input id="sun" type="range" min="0" max="39" value="0" step="1">
+        <div class="scrub-ends"><span>afternoon</span><span>dusk</span></div>
+      </div>
+      <p class="figcap"><b>FIG. 2</b>Forty real frames from <code>cargo run --release --example sky</code>. Times and elevations are the ones the demo prints.</p>
+    </figure>
+  </div>
+</section>
+
+<section id="lorenz" aria-labelledby="lz-h">
+  <div class="wrap split rev">
+    <figure>
+      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/lorenz-poster.jpg" width="720" height="480" aria-label="Forty thousand points circling the two wings of the Lorenz attractor"><source src="assets/lorenz.mp4" type="video/mp4"></video></div>
+      <p class="figcap"><b>FIG. 3</b><code>cargo run --release --example lorenz</code>. Teal is slow, amber is fast.</p>
+    </figure>
+    <div>
+      <p class="kicker cool">Strange attractors</p>
+      <h2 id="lz-h">Forty thousand points, one equation.</h2>
+      <div class="eq" aria-label="The Lorenz equations">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
+      <div class="prose"><p>Each point is a state advanced every frame by the engine's own RK4 step. Nobody drew the two wings; that is where the equations send the points. The same module carries Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras and more, and any of them can drive a force field.</p></div>
+      <div class="code">
+        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">Copy</button></div>
+<pre id="lz-code"><span class="k">for</span> p <span class="k">in</span> points.<span class="f">iter_mut</span>() {
+    <span class="k">for</span> _ <span class="k">in</span> <span class="n">0</span>..SUBSTEPS {
+        *p = <span class="f">rk4_step</span>(lorenz, *p, h);
+    }
+}</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start" aria-labelledby="start-h">
+  <div class="wrap">
+    <p class="kicker">Quick start</p>
+    <h2 id="start-h">Running in two commands.</h2>
+    <div class="prose"><p>You need stable Rust and a GPU with OpenGL 3.3. Windows and macOS need nothing else. On Linux, install the ALSA headers first: <code>sudo apt install libasound2-dev pkg-config</code>.</p></div>
+    <div class="steps">
+      <div class="step">
+        <h3><span>01</span>Run the demos</h3>
+        <p>The first build compiles the whole engine and takes a few minutes. Use <code>--release</code>; the demos simulate tens of thousands of particles a frame.</p>
+        <div class="code">
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">Copy</button></div>
+<pre id="c1">git clone https://github.com/Mattbusel/proof-engine.git
+cd proof-engine
+cargo run --release --example sky
+cargo run --release --example lorenz</pre>
+        </div>
+      </div>
+      <div class="step">
+        <h3><span>02</span>Use it as a library</h3>
+        <p>One glyph that breathes, one strange attractor pulling on it.</p>
+        <div class="code">
+          <div class="bar"><span>Cargo.toml</span><button type="button" data-copy-from="c2">Copy</button></div>
+<pre id="c2">[dependencies]
+proof-engine = <span class="s">"0.2"</span></pre>
+        </div>
+        <div class="code">
+          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">Copy</button></div>
+<pre id="c3"><span class="k">use</span> proof_engine::prelude::*;
+
+<span class="k">fn</span> <span class="f">main</span>() {
+    <span class="k">let mut</span> engine = ProofEngine::<span class="f">new</span>(EngineConfig::<span class="f">default</span>());
+
+    engine.<span class="f">spawn_glyph</span>(Glyph {
+        character: <span class="s">'@'</span>,
+        position: Vec3::ZERO,
+        color: Vec4::<span class="f">new</span>(<span class="n">0.0</span>, <span class="n">1.0</span>, <span class="n">0.8</span>, <span class="n">1.0</span>),
+        emission: <span class="n">1.2</span>,
+        life_function: <span class="f">Some</span>(MathFunction::Breathing { rate: <span class="n">0.4</span>, depth: <span class="n">0.15</span> }),
+        ..Default::<span class="f">default</span>()
+    });
+
+    engine.<span class="f">add_field</span>(ForceField::StrangeAttractor {
+        attractor_type: AttractorType::Lorenz,
+        scale: <span class="n">0.2</span>,
+        strength: <span class="n">0.4</span>,
+        center: Vec3::ZERO,
+    });
+
+    engine.<span class="f">run</span>(|_engine, _dt| {});
+}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="inside" aria-labelledby="inside-h">
+  <div class="wrap">
+    <p class="kicker">What is inside</p>
+    <h2 id="inside-h">Math first, then light.</h2>
+    <div class="grid">
+      <div class="cell"><span class="mod">math</span><h3>Functions as animation</h3><p>Attractors, Perlin noise, logistic map, Collatz, Lissajous, Mandelbrot escape, springs. Any glyph can carry a <code>life_function</code> that drives its position or colour.</p></div>
+      <div class="cell"><span class="mod">math::fields</span><h3>Composable force fields</h3><p>Gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, dipole, with linear, inverse-square, exponential or Gaussian falloff.</p></div>
+      <div class="cell"><span class="mod">entity</span><h3>Particle-built bodies</h3><p>Entities are glyph clusters held by force cohesion. Binding strength follows HP, so a hit knocks matter loose instead of playing an animation.</p></div>
+      <div class="cell"><span class="mod">render</span><h3>An HDR pipeline</h3><p>Half-float scene buffers, a bloom pyramid, ACES, lens, light shafts, shadows from matter, grain and dither. Every standing parameter is a field on <code>RenderConfig</code>.</p></div>
+      <div class="cell"><span class="mod">physics &middot; audio</span><h3>Simulation and sound</h3><p>Rigid bodies with SAT, soft bodies, Eulerian fluid. 48 kHz synthesis with FM, filters, drive and reverb. Sound is synthesised, not sampled.</p></div>
+      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>Procedural everything</h3><p>Tectonics, erosion, climate, rivers, settlements and history; Lotka-Volterra and SIR ecology; a bytecode VM with closures.</p></div>
+    </div>
+    <div class="pipe">
+      <img src="assets/pipeline.svg" width="1200" height="400" alt="The screen pipeline: the 3D glyph pass and UI world pass draw into an HDR buffer, emission feeds a bloom pyramid, both meet in the composite, then FXAA, the screen, and the HUD painted sharp on top." loading="lazy">
+      <p class="figcap"><b>FIG. 4</b>What runs on the GPU every frame. A game drawn as screen-space matter gets bloom, grade and grain on all of it, with a readable HUD over the top.</p>
+    </div>
+  </div>
+</section>
+
+<section id="demos" aria-labelledby="demos-h">
+  <div class="wrap">
+    <p class="kicker">Demos</p>
+    <h2 id="demos-h">Twenty demos, one command each.</h2>
+    <div class="prose"><p>Every one is <code>cargo run --release --example &lt;name&gt;</code>. Close the window, or press Esc where the demo says so, to quit. These are the ones to start with.</p></div>
+    <div class="split start" style="margin-top:36px">
+      <figure>
+        <div class="frame"><img src="assets/convergence.jpg" width="1400" height="520" alt="Two particle-built fighters; the red one is coming apart after a hit" loading="lazy"></div>
+        <p class="figcap"><b>FIG. 5</b><code>convergence</code>: the red fighter has taken damage and its binding is failing.</p>
+      </figure>
+      <figure>
+        <div class="frame"><img src="assets/editor.jpg" width="1600" height="868" alt="The Proof Editor, an egui scene editor with a viewport, inspector and hierarchy" loading="lazy"></div>
+        <p class="figcap"><b>FIG. 6</b>Proof Editor: place glyphs, fields and entities; save scenes as JSON.</p>
+      </figure>
+    </div>
+    <div class="tblwrap">
+    <table class="tbl">
+      <thead><tr><th>Example</th><th>What you see</th></tr></thead>
+      <tbody>
+        <tr><td>sky</td><td>A day over a mountain range, every sky cell a Nishita scattering integral. Space pauses, Up/Down change speed.</td></tr>
+        <tr><td>lorenz</td><td>40,000 points on the Lorenz attractor, integrated with RK4 and drawn into the HDR world pass. Left/Right turn the view.</td></tr>
+        <tr><td>convergence</td><td>Two particle-built fighters in an arena with an orbiting camera; hits knock matter loose.</td></tr>
+        <tr><td>supernova</td><td>A star pulses, collapses, explodes and settles into a Lorenz nebula.</td></tr>
+        <tr><td>hello_glyph</td><td>The smallest program: one breathing <code>@</code> and a gravity field.</td></tr>
+        <tr><td>colossus</td><td>GPU density entities: millions of particles from sixteen bones. Needs a strong GPU.</td></tr>
+        <tr><td>apotheosis</td><td>A character built on signed distance fields, about 10.8 million particles. Needs OpenGL 4.3.</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section id="capture" aria-labelledby="cap-h">
+  <div class="wrap split">
+    <div>
+      <p class="kicker cool">Capture</p>
+      <h2 id="cap-h">Record the engine&rsquo;s own frames.</h2>
+      <div class="prose">
+        <p>Any program built on Proof Engine can write its own frames, read straight back off the GPU after post-processing, with no code changes. <code>PROOF_HIDDEN=1</code> keeps the window invisible and unfocused, so it runs while you use the machine.</p>
+        <p>The sky, Lorenz and convergence frames on this page were all written this way.</p>
+      </div>
+    </div>
+    <div>
+      <div class="code">
+        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">Copy</button></div>
+<pre id="c4">PROOF_HIDDEN=1 PROOF_FIXED_DT=60 \
+PROOF_SHOT='frames/f_{n}.bmp' PROOF_SHOT_AT=560 \
+PROOF_SHOT_EVERY=2 PROOF_SHOT_COUNT=240 \
+cargo run --release --example sky</pre>
+      </div>
+      <p class="note"><code>PROOF_FIXED_DT</code> steps the simulation at a fixed rate, so a sequence plays back at true speed however long each frame took to capture. <code>PROOF_WINDOW=1920x1080</code> sets the size.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Proof Engine is MIT licensed. Built by <a href="https://github.com/Mattbusel">Matthew Busel</a>.</span>
+    <span><a href="https://github.com/Mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://github.com/Mattbusel/proof-engine">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  // Copy buttons.
+  function flash(b) { const t = b.textContent; b.textContent = 'Copied'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
+  document.querySelectorAll('button[data-copy], button[data-copy-from]').forEach(b => b.addEventListener('click', async () => {
+    const text = b.dataset.copy || document.getElementById(b.dataset.copyFrom).innerText;
+    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = 'Select and copy'; }
+  }));
+
+  // Sun scrubber: forty frames captured from the sky example.
+  const SUN = [["14:48",36.8],["14:54",35.8],["15:00",34.8],["15:05",33.7],["15:11",32.7],["15:17",31.6],["15:23",30.5],["15:28",29.5],["15:34",28.4],["15:40",27.3],["15:46",26.2],["15:51",25.1],["15:57",24.0],["16:03",22.9],["16:09",21.8],["16:14",20.6],["16:20",19.5],["16:26",18.4],["16:32",17.3],["16:37",16.2],["16:43",15.0],["16:49",13.9],["16:55",12.8],["17:00",11.6],["17:06",10.5],["17:12",9.4],["17:18",8.2],["17:23",7.1],["17:29",6.0],["17:35",4.8],["17:41",3.7],["17:47",2.6],["17:52",1.4],["17:58",0.3],["18:04",-0.9],["18:10",-2.0],["18:15",-3.1],["18:21",-4.3],["18:27",-5.4],["18:33",-6.5]];
+  const img = document.getElementById('sun-img'), range = document.getElementById('sun');
+  const src = i => 'assets/sun/' + String(i).padStart(2, '0') + '.jpg';
+  const fmt = e => (e >= 0 ? '+' : '−') + Math.abs(e).toFixed(1) + '°';
+  let warmed = false;
+  function warm() { if (warmed) return; warmed = true; SUN.forEach((_, i) => { const im = new Image(); im.src = src(i); }); }
+  function show(i) {
+    const [t, e] = SUN[i];
+    img.src = src(i);
+    img.alt = 'The sky demo at ' + t + ', sun elevation ' + e.toFixed(1) + ' degrees';
+    document.getElementById('sun-t').textContent = t;
+    document.getElementById('sun-el').textContent = fmt(e);
+  }
+  range.addEventListener('input', () => { warm(); show(+range.value); });
+  range.addEventListener('pointerdown', warm, { once: true });
+  new IntersectionObserver((es, o) => { if (es.some(e => e.isIntersecting)) { warm(); o.disconnect(); } }, { rootMargin: '400px' }).observe(img);
+
+  // Respect reduced motion for the looping clips.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) document.querySelectorAll('video').forEach(v => { v.removeAttribute('autoplay'); v.pause(); });
+</script>
+</body>
+</html>

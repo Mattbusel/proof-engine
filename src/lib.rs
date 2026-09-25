@@ -99,6 +99,7 @@ pub mod curves;
 pub mod nishita_sky;
 pub mod volumetric_fog;
 pub mod tiled_lighting;
+mod capture;
 
 pub use config::EngineConfig;
 pub use math::{MathFunction, ForceField, Falloff, AttractorType};
@@ -134,7 +135,11 @@ pub struct ProofEngine {
 }
 
 impl ProofEngine {
-    pub fn new(config: EngineConfig) -> Self {
+    pub fn new(mut config: EngineConfig) -> Self {
+        if let Some((w, h)) = capture::window_size() {
+            config.window_width = w;
+            config.window_height = h;
+        }
         let audio = if config.audio.enabled {
             audio::AudioEngine::try_new()
         } else {
@@ -204,11 +209,13 @@ impl ProofEngine {
     {
         let pipeline = render::Pipeline::init(&self.config);
         self.pipeline = Some(pipeline);
+        let mut capture = capture::Capture::from_env();
+        let fixed_dt = capture::fixed_dt();
 
         let mut last = std::time::Instant::now();
         loop {
             let now = std::time::Instant::now();
-            let dt = now.duration_since(last).as_secs_f32().min(0.1);
+            let dt = fixed_dt.unwrap_or_else(|| now.duration_since(last).as_secs_f32().min(0.1));
             last = now;
 
             // Poll input
@@ -246,6 +253,13 @@ impl ProofEngine {
                 update(self, dt, gl_ref);
             }
 
+            // PROOF_SHOT: read the finished frame back before it is swapped away.
+            if let Some(ref mut c) = capture {
+                if c.after_draw(self) {
+                    break;
+                }
+            }
+
             // Swap
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {
@@ -276,11 +290,14 @@ impl ProofEngine {
         let (w, h) = self.render_size();
         self.ui.resize(w as f32, h as f32);
 
+        let mut capture = capture::Capture::from_env();
+        let fixed_dt = capture::fixed_dt();
+
         let mut last = std::time::Instant::now();
         let mut last_size = (w, h);
         loop {
             let now = std::time::Instant::now();
-            let dt = now.duration_since(last).as_secs_f32().min(0.1);
+            let dt = fixed_dt.unwrap_or_else(|| now.duration_since(last).as_secs_f32().min(0.1));
             last = now;
 
             if let Some(ref mut p) = self.pipeline {
@@ -329,6 +346,12 @@ impl ProofEngine {
             }
             self.density_queue.clear();
             self.fx.lights.clear();
+
+            if let Some(ref mut c) = capture {
+                if c.after_draw(self) {
+                    break;
+                }
+            }
 
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {
