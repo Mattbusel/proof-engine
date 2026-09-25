@@ -133,3 +133,8 @@ Early (0.1.x) and moving fast. The public API is not stable, there is no CI work
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+
+## Hire the author
+
+**Need this kind of engineering on your product?** I take on a small number of client builds: LLM features, iOS apps and performance work, fixed price. [Services and pricing](https://mattbusel.github.io/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
