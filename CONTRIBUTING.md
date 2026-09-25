@@ -10,11 +10,12 @@ Thank you for your interest in contributing to Proof Engine! This document provi
    git clone https://github.com/YOUR_USERNAME/proof-engine.git
    cd proof-engine
    ```
-3. **Build** the project:
+3. **Build** the project and run a demo:
    ```bash
-   cargo check
-   cargo test
+   cargo build --all-targets
+   cargo run --release --example hello_glyph
    ```
+   On Linux, install the ALSA headers first: `sudo apt install libasound2-dev pkg-config`.
 
 ## Development Setup
 
@@ -49,10 +50,12 @@ Thank you for your interest in contributing to Proof Engine! This document provi
    - Use `std` only for new subsystems unless an external crate is truly necessary
    - Keep modules self-contained with clear public APIs
 
-3. **Ensure it compiles cleanly**:
+3. **Run what CI runs**:
    ```bash
-   cargo check
-   cargo test
+   cargo build --all-targets
+   sh ci/test-lib.sh            # library unit tests, minus the known failures
+   cargo test --test '*' --bins # integration tests
+   cargo test --doc
    ```
 
 4. **Commit** with a clear message:
@@ -98,10 +101,13 @@ Each module should:
 ### Testing
 
 - Add tests for new functionality in the same file or a `tests` submodule
-- Run the full test suite before submitting:
-  ```bash
-  cargo test
-  ```
+- Run the suite before submitting: `sh ci/test-lib.sh`, then `cargo test --test '*' --bins` and `cargo test --doc`.
+- A plain `cargo test --lib` currently reports failures: the tests named in
+  `ci/known-failing-tests.txt` fail on `main` and CI skips exactly those. Fixing
+  one is a good first contribution: make it pass, delete its line from the
+  file, and say in the PR whether the code or the test was wrong.
+  `sh ci/run-known-failing.sh` runs only those tests.
+- Tests must not need a window, a GPU or an audio device; CI has none of them.
 - Performance-sensitive code should have benchmarks in `benches/`
 
 ### What We're Looking For

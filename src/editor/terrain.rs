@@ -294,8 +294,8 @@ impl NoiseGenerator {
     }
 
     fn hash2(&self, x: i32, y: i32) -> u8 {
-        let mut h = self.seed.wrapping_add(x as u32 * 0x9e3779b9);
-        h = h.wrapping_add(y as u32 * 0x85ebca6b);
+        let mut h = self.seed.wrapping_add((x as u32).wrapping_mul(0x9e3779b9));
+        h = h.wrapping_add((y as u32).wrapping_mul(0x85ebca6b));
         h = h ^ (h >> 16);
         h = h.wrapping_mul(0xd2a98b26);
         h = h ^ (h >> 13);

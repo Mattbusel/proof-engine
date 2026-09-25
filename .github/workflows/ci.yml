@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The crate is large; incremental artifacts only bloat the cache.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: Build and test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System libraries (ALSA for cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      # Builds the library, examples, benches, integration tests and the
+      # proof_editor binary. Nothing here opens a window or needs a GPU.
+      - name: Build all targets
+        run: cargo build --all-targets
+      - name: Library unit tests
+        run: sh ci/test-lib.sh
+      - name: Integration and binary tests
+        run: cargo test --test '*' --bins
+      - name: Doc tests
+        run: cargo test --doc
+
+  examples:
+    name: Build examples (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build examples
+        run: cargo build --examples

@@ -9,7 +9,7 @@
 //! use proof_engine::ai::steering::{SteeringAgent, seek, arrive, WeightedSteering, SteeringBehavior};
 //! use glam::Vec2;
 //!
-//! let agent = SteeringAgent::new(Vec2::new(0.0, 0.0), 5.0, 10.0);
+//! let mut agent = SteeringAgent::new(Vec2::new(0.0, 0.0), 5.0, 10.0);
 //! let target = Vec2::new(10.0, 10.0);
 //!
 //! let force = seek(&agent, target);
@@ -17,7 +17,7 @@
 //! let mut ws = WeightedSteering::new();
 //! ws.add(SteeringBehavior::Seek(target), 1.0);
 //! ws.add(SteeringBehavior::Arrive { target, slow_radius: 3.0 }, 0.5);
-//! let combined = ws.calculate(&agent, &[]);
+//! let combined = ws.calculate(&mut agent, &[]);
 //! ```
 
 use glam::Vec2;

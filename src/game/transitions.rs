@@ -9,6 +9,7 @@
 //! ```rust,no_run
 //! use proof_engine::game::transitions::*;
 //!
+//! # let (dt, screen_width, screen_height) = (1.0 / 60.0, 1280.0, 720.0);
 //! let mut tm = TransitionManager::new();
 //! tm.start(TransitionType::FadeBlack {
 //!     out_time: 0.2, hold_time: 0.05, in_time: 0.2,

@@ -14,12 +14,12 @@
 //! ```rust,no_run
 //! use proof_engine::animation::*;
 //! let mut ctrl = AnimatorController::new();
-//! ctrl.add_state("idle",   AnimationState::clip("idle_clip",   1.0, true));
-//! ctrl.add_state("run",    AnimationState::clip("run_clip",    0.8, true));
-//! ctrl.add_state("attack", AnimationState::clip("attack_clip", 0.4, false));
-//! ctrl.add_transition("idle",   "run",    Condition::float_gt("speed", 0.1));
-//! ctrl.add_transition("run",    "idle",   Condition::float_lt("speed", 0.05));
-//! ctrl.add_transition("idle",   "attack", Condition::trigger("attack"));
+//! ctrl.add_state(AnimationState::clip(AnimationClip::new("idle",   1.0, true)));
+//! ctrl.add_state(AnimationState::clip(AnimationClip::new("run",    0.8, true)));
+//! ctrl.add_state(AnimationState::clip(AnimationClip::new("attack", 0.4, false)));
+//! ctrl.add_transition(Transition::new("idle", "run",    Condition::float_gt("speed", 0.1)));
+//! ctrl.add_transition(Transition::new("run",  "idle",   Condition::float_lt("speed", 0.05)));
+//! ctrl.add_transition(Transition::new("idle", "attack", Condition::trigger("attack")));
 //! ctrl.start("idle");
 //! ```
 

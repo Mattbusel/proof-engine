@@ -36,8 +36,12 @@ pub struct PostFxPipeline {
     scene_h: u32,
 
     // Bloom scratch (half-res)
-    bloom_fbo: [glow::Framebuffer; 2],
-    bloom_tex: [glow::Texture; 2],
+    /// Horizontal-pass scratch, one per pyramid level. A single shared
+    /// scratch sized for level 0 was wrong: each smaller level wrote its
+    /// bottom-left corner and the vertical pass then read the whole
+    /// texture, so three quarters of every level was the clear colour.
+    bloom_fbo: Vec<glow::Framebuffer>,
+    bloom_tex: Vec<glow::Texture>,
 
     /// A pyramid of successively halved targets, and their sizes.
     ///
@@ -132,8 +136,7 @@ impl PostFxPipeline {
         let (scene_w, scene_h) = scaled(width, height, render_scale);
         let (scene_fbo, scene_color_tex, scene_emission_tex, scene_occluder_tex) =
             create_scene_fbo(gl, scene_w, scene_h);
-        let (bloom_fbo, bloom_tex) =
-            create_bloom_fbos(gl, (scene_w / 2).max(1), (scene_h / 2).max(1));
+        let (bloom_fbo, bloom_tex, _) = create_pyramid(gl, scene_w, scene_h);
         let (mip_fbo, mip_tex, mip_size) = create_pyramid(gl, scene_w, scene_h);
         let (up_fbo, up_tex, _) = create_pyramid(gl, scene_w, scene_h);
         let (ldr_fbo, ldr_tex) = create_ldr_fbo(gl, width, height);
@@ -241,9 +244,11 @@ impl PostFxPipeline {
             gl.delete_framebuffer(self.history_fbo[i]);
             gl.delete_texture(self.history_tex[i]);
         }
-        for i in 0..2 {
-            gl.delete_framebuffer(self.bloom_fbo[i]);
-            gl.delete_texture(self.bloom_tex[i]);
+        for f in self.bloom_fbo.drain(..) {
+            gl.delete_framebuffer(f);
+        }
+        for t in self.bloom_tex.drain(..) {
+            gl.delete_texture(t);
         }
         for f in self.mip_fbo.drain(..) {
             gl.delete_framebuffer(f);
@@ -274,8 +279,7 @@ impl PostFxPipeline {
 
         let (scene_fbo, scene_color_tex, scene_emission_tex, scene_occluder_tex) =
             create_scene_fbo(gl, scene_w, scene_h);
-        let (bloom_fbo, bloom_tex) =
-            create_bloom_fbos(gl, (scene_w / 2).max(1), (scene_h / 2).max(1));
+        let (bloom_fbo, bloom_tex, _) = create_pyramid(gl, scene_w, scene_h);
         let (ldr_fbo, ldr_tex) = create_ldr_fbo(gl, width, height);
         let (lw, lh) = ((scene_w / 2).max(1), (scene_h / 2).max(1));
         let (light_fbo, light_tex) = create_hdr_fbo(gl, lw, lh, "light");
@@ -373,6 +377,8 @@ impl PostFxPipeline {
         // halo and a broad veil at once.
         if config.bloom_enabled && !self.mip_fbo.is_empty() {
             let radius = config.bloom_radius.max(0.5);
+            // Nothing in the bloom chain may inherit the scene ground colour.
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
             gl.use_program(Some(self.bloom_prog));
             gl.active_texture(glow::TEXTURE0);
             set_u_f32(gl, self.bloom_prog, "u_threshold", config.bloom_threshold);
@@ -388,7 +394,7 @@ impl PostFxPipeline {
                     self.mip_tex[level - 1]
                 };
 
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[level]));
                 gl.viewport(0, 0, w, h);
                 gl.clear(glow::COLOR_BUFFER_BIT);
                 gl.bind_texture(glow::TEXTURE_2D, Some(source));
@@ -400,7 +406,7 @@ impl PostFxPipeline {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mip_fbo[level]));
                 gl.viewport(0, 0, w, h);
                 gl.clear(glow::COLOR_BUFFER_BIT);
-                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[level]));
                 set_u_bool(gl, self.bloom_prog, "u_prefilter", false);
                 set_u_bool(gl, self.bloom_prog, "u_horizontal", false);
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -411,7 +417,7 @@ impl PostFxPipeline {
             if config.anamorphic > 0.0 && self.mip_fbo.len() > 2 {
                 let level = self.mip_fbo.len() / 2;
                 let (w, h) = self.mip_size[level];
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[0]));
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.bloom_fbo[level]));
                 gl.viewport(0, 0, w, h);
                 gl.clear(glow::COLOR_BUFFER_BIT);
                 gl.bind_texture(glow::TEXTURE_2D, Some(self.mip_tex[level]));
@@ -422,7 +428,7 @@ impl PostFxPipeline {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.mip_fbo[level]));
                 gl.viewport(0, 0, w, h);
                 gl.clear(glow::COLOR_BUFFER_BIT);
-                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[0]));
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.bloom_tex[level]));
                 set_u_bool(gl, self.bloom_prog, "u_horizontal", true);
                 set_u_f32(gl,  self.bloom_prog, "u_stretch", 16.0 * config.anamorphic);
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -702,25 +708,6 @@ unsafe fn create_pyramid(
     }
     gl.bind_framebuffer(glow::FRAMEBUFFER, None);
     (fbos, texs, sizes)
-}
-
-unsafe fn create_bloom_fbos(
-    gl: &glow::Context, w: u32, h: u32,
-) -> ([glow::Framebuffer; 2], [glow::Texture; 2]) {
-    let textures = [make_tex(gl, w, h, true), make_tex(gl, w, h, true)];
-    let fbos = [
-        gl.create_framebuffer().expect("bloom fbo 0"),
-        gl.create_framebuffer().expect("bloom fbo 1"),
-    ];
-    for i in 0..2 {
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbos[i]));
-        gl.framebuffer_texture_2d(
-            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(textures[i]), 0,
-        );
-        gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
-    }
-    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-    (fbos, textures)
 }
 
 // ── Shader compilation ─────────────────────────────────────────────────────────
