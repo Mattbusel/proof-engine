@@ -10,6 +10,8 @@ homepage = "https://github.com/Mattbusel/proof-engine"
 keywords = ["game-engine", "rendering", "mathematics", "ascii", "opengl"]
 categories = ["game-engines", "graphics", "rendering"]
 readme = "README.md"
+# Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.
+exclude = ["*.png", "*.gif", "assets/", "*.py", ".github/", "ci/"]
 
 [dependencies]
 # OpenGL / windowing — glutin-winit bridges the two and handles version alignment
