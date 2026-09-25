@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a new primitive, effect, demo or API
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What you want to do
+      description: The effect or program you are trying to build, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed approach
+      description: Optional. Which module it would live in, and the math behind it if it has any.
