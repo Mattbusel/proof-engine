@@ -11,7 +11,7 @@ keywords = ["game-engine", "rendering", "mathematics", "ascii", "opengl"]
 categories = ["game-engines", "graphics", "rendering"]
 readme = "README.md"
 # Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.
-exclude = ["*.png", "*.gif", "assets/", "*.py", ".github/", "ci/"]
+exclude = ["*.png", "*.gif", "*.jpg", "assets/", "docs/", "*.py", ".github/", "ci/"]
 
 [dependencies]
 # OpenGL / windowing — glutin-winit bridges the two and handles version alignment
@@ -113,6 +113,9 @@ name = "apotheosis"
 
 [[example]]
 name = "sky"
+
+[[example]]
+name = "lorenz"
 
 [[bin]]
 name = "proof_editor"

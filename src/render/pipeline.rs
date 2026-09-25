@@ -358,7 +358,11 @@ impl Pipeline {
         let window_attrs = Window::default_attributes()
             .with_title(&config.window_title)
             .with_inner_size(LogicalSize::new(config.window_width, config.window_height))
-            .with_resizable(true);
+            .with_resizable(true)
+            // PROOF_HIDDEN: capture frames without a window appearing or
+            // taking focus from whatever the person at the machine is doing.
+            .with_visible(!crate::capture::hidden_window())
+            .with_active(!crate::capture::hidden_window());
 
         // ── 3. GL config via DisplayBuilder (glutin-winit 0.5) ────────────────
         let template = ConfigTemplateBuilder::new()
