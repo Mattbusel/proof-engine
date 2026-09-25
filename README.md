@@ -1,82 +1,54 @@
 # Proof Engine
 
+[![crates.io](https://img.shields.io/crates/v/proof-engine.svg)](https://crates.io/crates/proof-engine)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Live Demo
+**A Rust rendering and game engine where every visual is the output of a mathematical function.** Glyphs and particles are moved by real differential equations, force fields and spring systems, not by sprites, meshes or keyframed animation.
 
-![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/Screenshot%202026-03-25%20231046.png?raw=true)
+A Lorenz attractor on screen looks like a Lorenz attractor because its particles are integrating the Lorenz equations. An entity is a cluster of glyphs held together by force cohesion; when it loses HP the binding weakens and it comes apart into an attractor instead of playing a death animation. If you like generative art, simulation or procedural games and want an engine built around that idea from the start, this is it.
 
-![Proof Engine ~ Convergence](https://github.com/Mattbusel/proof-engine/blob/main/ezgif.com-video-to-gif-converter%20(4).gif?raw=true)
+![Two particle-built figures in the convergence demo](Screenshot%202026-03-25%20231046.png)
 
-**What you're looking at:** Two humanoid entities rendered entirely from particles. No meshes. No skeletons. No sprites. Every figure is millions of independent particles held together by spring-force physics, the same way real matter holds its shape through intermolecular forces. Each particle is its own light source with emission, color, temperature, and physical mass. The engine does not distinguish between geometry and lighting. The matter IS the light.
+![Convergence demo, animated](ezgif.com-video-to-gif-converter%20%284%29.gif)
 
-When an entity takes damage, it doesn't play a death animation. It physically disintegrates because the forces holding it together are overcome. Destruction, deformation, cloth, fluid, fog, and soft-body behavior all emerge from the same particle system with zero additional engineering — just different spring constants on the same substrate. There is no polygon budget. There is no pre-fractured mesh. Destruction resolution is infinite because particles don't have polygon limits.
+![Supernova demo](assets/supernova-demo.gif)
 
-**What you're NOT seeing:** This demo is running with no lighting pipeline, no shaders, no post-processing, and no material system connected. The engine's full rendering stack — clean-room SVOGI (Sparse Voxel Octree Global Illumination rebuilt from the published SIGGRAPH papers that powered CryEngine), spherical harmonics, Nishita atmospheric scattering, deferred caustics, PBR materials, and volumetric fog — exists in the codebase but has not been turned on yet. When it is, every particle becomes a light emitter whose glow bounces off every surface through voxel light propagation. The lighting doesn't approximate the scene. The scene IS the light field.
+## What it does
 
-**What matters:** 50 million particles is not the ceiling. It's a development parameter. The architecture has no hard limit on particle count. Visual fidelity scales by turning one number up, more particles means smoother surfaces, denser matter, higher-resolution destruction, and richer light fields. No other engine scales fidelity with a single parameter because no other engine uses continuous matter as its rendering primitive.
+- **OpenGL 3.3 renderer** (glutin, winit, glow) with instanced glyph rendering, bloom, chromatic aberration, film grain, vignette, scanlines and motion blur.
+- **Math functions as animation**: Lorenz, Rossler, Chen, Halvorsen, Aizawa and Thomas attractors; sine, Perlin noise, logistic map, Collatz, golden spiral, Lissajous, Mandelbrot escape, spring-damper systems. Any glyph can have a `life_function` that drives its position or color.
+- **Composable force fields**: gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, magnetic dipole, entropy and damping, with linear, inverse-square, exponential or Gaussian falloff.
+- **Particle-built entities** held together by force cohesion, with HP-linked binding strength.
+- **Physics**: 2D rigid bodies with SAT collision, mass-spring soft bodies, Eulerian fluid, constraints and joints.
+- **Audio**: 48 kHz synthesis (rodio, cpal), ADSR, FM, music-theory helpers (scales, chords, progressions), stereo panning and reverb.
+- **Scripting**: a custom bytecode VM with lexer, parser and compiler, closures and tables.
+- **Procedural generation**: tectonics, erosion, climate, biomes, rivers, caves, settlements, history, language and quest generation, plus ecology models (Lotka-Volterra, SIR).
+- **Proof Editor**: an egui scene editor for placing glyphs, force fields and entities, with an inspector, hierarchy, post-FX presets, undo/redo and JSON scenes.
 
-Every other game engine renders polygons and then fakes destruction, fakes fluid, fakes cloth, fakes volumetric light, and fakes material behavior through separate engineered systems. This engine doesn't fake anything. The physics are real. The matter is real. The light emission is real. The visual output is what the mathematics produces.
+The source tree also contains modules for more advanced lighting (a sparse voxel octree GI cone tracer, Nishita sky scattering, tiled and deferred lighting, volumetric fog, a wgpu backend). Those exist as code but are not yet connected to the demos shown above.
 
-Particles are not an effect. Particles are the rendering primitive. Everything in the scene is made of them.
+## Quick start
 
-![Supernova Demo](assets/supernova-demo.gif)
+Requires a Rust toolchain and an OpenGL 3.3 capable GPU.
 
-## What is this?
-
-Proof Engine renders mathematics, not graphics. A Lorenz attractor looks like a Lorenz attractor because particles follow the actual differential equations in real time. Entities are held together by force fields and dissolve into strange attractors when they die. Audio is synthesized from music theory, not audio files.
-
-This is not a traditional game engine. It is a system where the math IS the visual.
-
-## Proof Editor
-
-A visual staging environment for building scenes, placing force fields, and tweaking every parameter in real time. Built with egui on top of the engine viewport.
-
-![Editor Screenshot](assets/editor-screenshot.png)
-
-**Download the editor:** [Releases page](https://github.com/Mattbusel/proof-engine/releases)
-
-### Editor features
-
-- Place glyphs, force fields, and entities by clicking in the viewport
-- 10 force field types: Gravity, Vortex, Lorenz, Rossler, Chen, Thomas, Flow, Shockwave, and more
-- Live property inspector with position, color, emission, glow sliders
-- Hierarchy panel with search, filter, and collapsible tree structure
-- Post-processing panel: bloom, chromatic aberration, film grain with preset buttons (Cinematic, Neon, Retro, Clean)
-- Asset browser with prefab spawning (Lorenz Cluster, Vortex Ring, etc.)
-- Console with command input and color-coded log
-- Full undo/redo across all operations
-- Save/load scenes to JSON
-- Copy/paste, duplicate, box select, multi-select
-
-## Getting started
-
-### Run the editor
-
-Download `proof-editor.exe` from the [Releases page](https://github.com/Mattbusel/proof-engine/releases) and double-click it.
-
-Or build from source:
-
-```
+```bash
 git clone https://github.com/Mattbusel/proof-engine.git
-cd proof-engine/editor
-cargo run --release
-```
-
-### Run the demos
-
-```
 cd proof-engine
+cargo run --release --example hello_glyph     # smallest possible program
 cargo run --release --example galaxy
 cargo run --release --example supernova
-cargo run --release --example math_rain
-cargo run --release --example heartbeat
+cargo run --release --example convergence     # the demo in the screenshots
 ```
+
+Other examples: `chaos_field`, `particle_demo`, `force_fields`, `amorphous_entity`, `strange_attractors`, `full_combat`, `math_rain`, `heartbeat`, `showcase`, `playground`, `sculptor`, `apotheosis`, `colossus`. Some of the heavier ones (`apotheosis`, `colossus`) allocate millions of GPU particles and need a strong GPU.
+
+Benchmarks: `cargo bench` (Criterion: `particle_bench`, `glyph_bench`).
 
 ### Use as a library
 
 ```toml
 [dependencies]
-proof-engine = { git = "https://github.com/Mattbusel/proof-engine.git" }
+proof-engine = "0.1"
 ```
 
 ```rust
@@ -105,195 +77,64 @@ fn main() {
 }
 ```
 
-## Editor controls
+## Proof Editor
+
+![Proof Editor](assets/editor-screenshot.png)
+
+Download `proof-editor.exe` (Windows) from the [releases page](https://github.com/Mattbusel/proof-engine/releases), or build it:
+
+```bash
+cd proof-engine/editor
+cargo run --release
+```
 
 | Key | Action |
-|-----|--------|
+| --- | --- |
 | Click viewport | Place with current tool |
-| WASD / Arrows | Pan camera |
-| V | Select tool |
-| G | Move tool (drag to reposition) |
-| P | Place glyph tool |
-| F | Place force field tool |
-| E | Place entity tool |
-| X | Particle burst tool |
+| WASD / arrows | Pan camera |
+| V / G / P / F / E / X | Select, move, place glyph, place force field, place entity, particle burst |
 | Shift+Click | Multi-select |
-| Ctrl+C / Ctrl+V | Copy / Paste |
-| Ctrl+Z / Ctrl+Y | Undo / Redo |
-| Ctrl+S / Ctrl+O | Save / Load |
-| Ctrl+N | New scene |
+| Ctrl+C / Ctrl+V | Copy / paste |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Ctrl+S / Ctrl+O / Ctrl+N | Save / load / new scene |
 | Delete | Remove selection |
 | Space | Screen shake |
 | F1 | Help |
 
-## Engine capabilities
-
-**Rendering:** OpenGL 3.3, glyph instancing, bloom, chromatic aberration, film grain, vignette, scanlines, motion blur
-
-**Math functions:** Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas attractor integration. Sine, cosine, Perlin noise, logistic map, Collatz, golden spiral, Lissajous, Mandelbrot escape, spring-damper systems
-
-**Force fields:** Gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, magnetic dipole. Composable with falloff (linear, inverse square, exponential, Gaussian)
-
-**Physics:** 2D rigid body with SAT collision, soft body mass-spring, Eulerian fluid simulation, constraints and joints
-
-**Audio:** 48kHz synthesis, ADSR envelopes, waveform oscillators, FM synthesis, music theory (scales, chords, progressions), spatial audio with stereo panning and room reverb
-
-**Entities:** Amorphous glyph formations held together by force cohesion. HP-linked binding strength. Dissolve into attractors on death
-
-**Scripting:** Custom bytecode VM with lexer, parser, compiler. Dynamic typing, closures, tables, metatables
-
-**Procedural generation:** Tectonic plates, hydraulic/thermal erosion, climate simulation, biome classification, river networks, cave systems, settlement placement, civilization history, language generation, mythology, genetics
-
-**Ecology:** Lotka-Volterra dynamics, food webs, migration, evolution, SIR disease models
-
-**Narrative:** Story grammars, character motivation, dialogue generation, quest generation, drama management, NPC memory, procedural poetry
-
 ## Architecture
 
-460,000+ lines of Rust across the engine, editor, and game frontend.
+Roughly 660,000 lines of Rust across the engine (`src/`), the editor (`editor/`) and the examples. The largest engine modules:
 
-| Module | Lines | Description |
-|--------|-------|-------------|
-| game | 28,891 | Boss AI, fluids, cloth, debris, achievements |
-| render | 26,849 | OpenGL pipeline, PBR, post-FX, shader graph |
-| math | 12,626 | Attractors, fields, curves, noise, springs |
-| terrain | 12,505 | Heightmaps, erosion, biomes, streaming |
-| physics | 9,018 | Rigid body, soft body, fluid, constraints |
-| audio | 8,870 | Synth, music, effects, spatial |
-| editor (engine) | 6,883 | State, inspector, hierarchy, console, gizmos |
-| ecs | 7,187 | Archetype ECS, generational IDs, queries |
-| scripting | 6,933 | Lexer, parser, compiler, bytecode VM |
-| worldgen | 3,272 | Tectonics, climate, rivers, caves, history |
-| + 45 more modules | ... | ... |
+| Module | Contents |
+| --- | --- |
+| `render` | OpenGL pipeline, post-FX, shader graph |
+| `math` | attractors, fields, curves, noise, springs, `MathFunction` evaluation |
+| `glyph`, `particle`, `entity` | the core primitives and their pools |
+| `physics` | rigid body, soft body, fluid, constraints |
+| `audio`, `dsp` | synthesis, music theory, effects, spatial audio |
+| `ecs` | archetype ECS with generational IDs |
+| `scripting` | lexer, parser, compiler, bytecode VM |
+| `terrain`, `worldgen`, `ecology`, `narrative` | procedural generation |
+| `game` | boss AI, cloth, debris, achievements |
+| `svogi`, `nishita_sky`, `volumetric_fog`, `wgpu_backend` | advanced lighting, not yet wired into the demos |
 
-## Kit System
+### The `apotheosis` example
 
-The apotheosis rendering pipeline is composed of eight kits. Each kit is a self-contained rendering subsystem that runs once per base particle and can be toggled independently.
+`examples/apotheosis.rs` is a standalone showcase of a particle-rendered character built on signed distance fields instead of meshes. A 26-bone capsule skeleton is blended with Inigo Quilez's polynomial smooth minimum, particles are importance-sampled onto the SDF shell, and normals, ambient occlusion and subsurface thickness are all computed from the SDF itself. On top of that it layers per-material shading (Schlick Fresnel, Kajiya-Kay hair and fabric specular, thin-film iridescence), a strand-based hair renderer, inertial lag for loose materials, and a post stack including TAA jitter, spectral bloom, god rays, depth of field bokeh and ACES tonemapping. It targets about 10.8 million GPU particles.
 
-| Kit | Description |
-|-----|-------------|
-| **BoneKit** | 26-bone skeleton defining Leon's body as axis-aligned capsule descriptors with per-bone particle weight and aspect ratio |
-| **ModelKit** | Per-bone anatomical cross-section profile via piecewise-cosine knot tables; joint continuity enforced at every bone junction |
-| **MaterialKit** | Classifies each surface point into one of six material tags (Skin, Hair, Jacket, Boot, Metal, Eye) and computes Schlick Fresnel edge brightening |
-| **LightingKit** | Warm directional key + three coloured fills + squared rim + hemisphere ambient; ACES filmic tonemap and S-curve contrast |
-| **ClothingKit** | Identifies fabric-carrying bones; adds radial garment push via clothing_offset(), seam darkening at material boundaries, and contact shadow at skin/fabric transitions |
-| **HairKit** | 500-strand curtain-cut renderer across five scalp zones; gravity-curved spline chains with wind sway and Kajiya-Kay anisotropic specular |
-| **PhysicsKit** | Per-particle inertial lag cache; loose materials (hair, jacket hem) trail behind on character movement using per-material smoothing weights |
-| **RenderKit** | Depth-of-field jitter, n_copies particle scatter to fill sub-pixel gaps, and per-copy alpha/emission scaling to preserve total luminance |
+## Related
 
-## SDF Architecture
+[chaos-rpg](https://github.com/Mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine. `CHAOS_RPG_API_CONTRACT.md` documents what the engine has to support for it.
 
-The engine uses signed distance fields (SDF) as its geometry representation instead of mesh geometry. Every body surface — torso, arms, legs, face — is defined by an analytic implicit function whose value at any point in space gives the exact Euclidean distance to the nearest surface.
+## Status
 
-**Primitives:**
-- `sdf_torso` — superellipsoid body with piecewise-linear ax/az cross-section profiles along Y (broad shoulders, cinched waist, hip flare)
-- `sdf_arm_r` / `sdf_forearm_r` — tapered elliptic capsules for each arm segment
-- `sdf_leg_r` — smooth union of thigh + shin/boot capsules
-- `sdf_face` — face topology with eye sockets, nose bridge, lip geometry, iris/sclera layers
-
-**Smooth minimum blending at joints:** All primitives are combined via Inigo Quilez's polynomial `smin(a, b, k)` function, which rounds the hard `min()` discontinuity into an organic blend zone. Shoulders merge into the torso, knees merge thigh into shin — all without visible seams or capsule gaps.
-
-**Analytical normals from SDF gradient:** Surface normals are computed as the gradient of the SDF field at each surface point using finite differences of `sdf_body`. This gives numerically exact normals with zero polygon faceting or normal-map baking.
-
-**Mathematically provable ambient occlusion:** AO is computed by marching a short ray along the outward surface normal and measuring how much the SDF value at each step falls below the step distance. When geometry is nearby, the SDF value is small — the body occludes its own escape horizon. The result matches the exact geometry (armpits, waist creases, inner elbows) with no pre-baked textures or screen-space approximations.
-
-**Subsurface scattering from SDF thickness:** An inward `-n` thickness probe marches through the body until the SDF becomes positive (surface exit). The probe depth gives tissue thickness; Beer-Lambert attenuation then produces physically accurate SSS — thin regions (ears, lip edges) transmit warm light; thick regions (chest, thigh) are opaque.
-
-**Importance sampling (near-100% acceptance):** Rather than rejecting uniform box samples that miss the surface (typically 92%+ rejection), each candidate particle is placed directly on the expected ellipse/capsule surface and perturbed ±SHELL in the outward radial direction. The SDF then verifies shell placement — acceptance rate is ~100% with zero wasted evaluations.
-
-## The Screen Pipeline
-
-What actually runs on the GPU every frame, in order:
-
-```text
-scene FBO (RGBA16F x2: colour, emission) at render_scale
-  3D glyph pass ─┐
-  UI world pass ─┤  (UiPass::World: particle clouds, filled rects, panel fills)
-                 ├─ emission ─► bloom pyramid: soft-knee threshold, blur down, tent up
-                 └─ colour ────► composite ─► [FXAA] ─► screen ─► UI HUD pass
-                                   (UiPass::Hud: text, borders, bars, sprites)
-```
-
-The scene buffers are half-float, so a few hundred thousand overlapping
-emissive particles accumulate real light instead of clipping at white. The
-composite is the one place the range comes down, through ACES.
-
-**Two UI passes.** `engine.ui` routes every command to a pass. Particle
-clouds and filled rectangles default to the world pass, which is painted into
-the HDR buffer before post-processing; text, outlines, bars and sprites
-default to the HUD pass, painted sharp on top afterwards. A panel splits: fill
-to the world, border to the HUD. `ui.begin_world()`, `ui.begin_hud()` and
-`ui.end_pass()` override the default for a run of commands. A game that draws
-its whole picture as screen-space matter gets bloom, grade, lens and grain on
-all of it, and a readable interface over that.
-
-**What the composite does, in order:** shockwave refraction, heat haze, barrel
-lens, chromatic aberration, unsharp mask, floor reflection, exposure,
-screen-space indirect light (matter near a lit thing is lit by it), bloom,
-halation, light shafts, lens flare, flash, ACES tonemap, lift/gain grade,
-tint, contrast, saturation, vignette, shadow-weighted grain, ordered dither,
-scanlines. Every standing parameter is a field on `RenderConfig`; the moments
-are on `engine.fx`.
-
-**`engine.fx` (ScreenFx).** Fire-and-forget effects that decay on their own:
-`shockwave(x, y, strength)`, `flash(color, strength)`,
-`light_shaft_at(x, y, strength)` or `auto_shafts = true` to stream from
-whatever is brightest on screen, `reflect_at(y, strength, fade)` for a glossy
-floor, and `haze` for heat shimmer. Coordinates are UI pixels.
-
-**Lights and shadows.** `engine.fx.light(x, y, radius, color, intensity)`
-and `engine.fx.ambient`. The glyph pass writes an occluder buffer (matter,
-never floors or panel fills); the light pass marches shadows through it
-from every light and the composite multiplies the scene by the result.
-Emissive matter lights itself. `config.persistence` keeps a decaying copy
-of last frame's scene under this one, for motion trails.
-
-**GPU density entities.** `engine.init_gpu_density(n)` and
-`engine.queue_gpu_density_entity(data)`: sixteen bones become millions of
-particles derived in the vertex shader from the instance index, with
-breathing, jitter and matter that comes loose as `hp` falls. Nothing per
-particle ever leaves the GPU. See `examples/colossus.rs`.
-
-**Sound.** A `MathAudioSource` now carries a pitch envelope, a second
-partial, a noise mix, biquad or comb filters, drive, a reverb send, and a
-start delay, and the output thread honours all of it, with separate music
-and effects buses, ducking, a master reverb and a soft limiter. A blow is a
-crack, a thud and a ring; before, it was a sine.
-
-**Also:** `render_scale` renders the scene at a fraction of the window and
-upsamples; `fxaa` runs a real FXAA 3.11 pass between the composite and the
-HUD; `shake_pixels` moves the world pass with camera trauma while the HUD
-stays put; `vsync` waits for the display.
-
-## Post-Processing Pipeline
-
-23 post-processing techniques are applied across three stages: CPU particle shading, GPU compute shader, and the billboard fragment shader.
-
-| # | Technique | Description |
-|---|-----------|-------------|
-| 2 | SDF analytical reflection trace | Ray-marches the reflected view vector against `sdf_body` — no BVH, no mesh required |
-| 3 | Atmospheric depth scattering | Back-of-body particles (pz < 0) scatter toward cool deep blue for volumetric depth |
-| 4 | TAA sub-pixel jitter | Halton(2,n) × Halton(3,n) per-frame offset covers the full pixel footprint for smooth edges |
-| 5 | Spectral bloom dispersion | Per-channel radial disk offsets cause the engine's Gaussian blur to produce prismatic rainbow fringes |
-| 6 | Chromatic depth separation | Particles farther from the near plane get per-channel disk radius shifts simulating lens dispersion |
-| 7 | SSR via SDF surface normal | Analytical SDF gradient normals importance-sample an implicit dungeon environment map |
-| 8 | Volumetric light shafts / god rays | Beer-Lambert transmittance along the key-light ray reveals lit corridors between arm and torso |
-| 9 | Cross-material GI color bleed | Jacket spills warm orange onto adjacent skin; pants bleed cool green into jacket hem |
-| 10 | Luminance-based film grain | Shadow regions receive heavier grain amplitude matching real photographic film stock |
-| 11 | Vignette + edge desaturation | Screen-space darkening and desaturation anchored to monitor frame via gl_FragCoord |
-| 12 | ACES filmic tonemapping | Narkowicz 2015 approximation; richer shadows, cleaner highlights than Reinhard |
-| 13 | Eye adaptation | Per-frame auto-exposure scalar applied to final composite color |
-| 14 | Edge sharpen | Ring boost at d ≈ 0.65 steepens the transition between adjacent particles |
-| 15 | Heat haze | High-emission particles distort their disk edge with a sine ripple — impossible in triangle rendering |
-| 16 | Kajiya-Kay anisotropic specular | SDF tangent derived analytically; horizontal weft for fabric, along-strand for hair |
-| 17 | SDF micro-displacement pore shadow | Two SDF differential samples along key-light direction produce concave pore shadows on skin |
-| 18 | DoF bokeh ring | Per-particle annular ring grows as depth diverges from focal plane, mimicking fast-lens bokeh |
-| 19 | Iridescent thin-film | 180 nm thin-film interference shifts leather from warm olive to faint teal at glancing angles |
-| 20 | SDF-curvature Fresnel rim | Hessian Laplacian amplifies rim light on convex geometry (knuckles, cheekbones, collar edge) |
-| 21 | Thickness-modulated SSS | Beer-Lambert skin transmission gated on SDF thickness probe depth |
-| 22 | SDF-analytical ambient occlusion | IQ 5-step geometric-decay AO march along surface normal; exact to SDF precision |
-| 23 | Eye spectral refraction | Per-wavelength IOR dispersion through the cornea SDF sphere; real chromatic aberration of the eye |
+Early (0.1.x) and moving fast. The public API is not stable, there is no CI workflow in this repository, and some subsystems are further along than others. Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
+
+
+## Hire the author
+
+**Need this kind of engineering on your product?** I take on a small number of client builds: LLM features, iOS apps and performance work, fixed price. [Services and pricing](https://mattbusel.github.io/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
