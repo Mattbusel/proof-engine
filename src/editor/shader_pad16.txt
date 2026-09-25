@@ -1,0 +1,109 @@
+
+// ── Shader Manager ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderManager {
+    pub compiler: ShaderCompilerMain,
+    pub post_config: FullPostProcessConfig,
+    pub extended_post: ExtendedPostProcessConfig,
+    pub anti_aliasing: AntiAliasingConfig,
+    pub quality_preset: String,
+    pub quality_presets: Vec<RenderQualityPreset>,
+    pub frame_executor: FrameGraphExecutor,
+    pub rt_manager: RenderTargetManager,
+    pub uniform_tracker: UniformTracker,
+    pub occlusion_cull: OcclusionCullSystem,
+    pub instance_batches: InstanceBatchManager,
+    pub render_state: RenderStateTracker,
+    pub error_reports: Vec<ShaderErrorReport>,
+    pub compile_stats: CompileStats,
+}
+
+impl ShaderManager {
+    pub fn new() -> Self {
+        Self {
+            compiler: ShaderCompilerMain::new(),
+            post_config: FullPostProcessConfig::new(),
+            extended_post: ExtendedPostProcessConfig::new(),
+            anti_aliasing: AntiAliasingConfig::default(),
+            quality_preset: "High".into(),
+            quality_presets: build_quality_presets(),
+            frame_executor: FrameGraphExecutor::new(),
+            rt_manager: RenderTargetManager::new(),
+            uniform_tracker: UniformTracker::new(),
+            occlusion_cull: OcclusionCullSystem::new(),
+            instance_batches: InstanceBatchManager::new(),
+            render_state: RenderStateTracker::new(),
+            error_reports: Vec::new(),
+            compile_stats: CompileStats::new(),
+        }
+    }
+    pub fn add_program(&mut self, prog: ShaderProgram) -> u32 { self.compiler.add_program(prog) }
+    pub fn add_material(&mut self, mat: Material) -> u32 { self.compiler.add_material(mat) }
+    pub fn begin_frame(&mut self) { self.compiler.begin_frame(); self.frame_executor.begin_frame(); self.render_state.begin_frame(); self.occlusion_cull.begin_frame(); self.instance_batches.clear_all(); }
+    pub fn set_quality(&mut self, preset_name: &str) { if self.quality_presets.iter().any(|p| p.name == preset_name) { self.quality_preset = preset_name.to_string(); } }
+    pub fn record_error(&mut self, report: ShaderErrorReport) { self.error_reports.push(report); }
+    pub fn clear_errors(&mut self) { self.error_reports.clear(); }
+    pub fn has_errors(&self) -> bool { !self.error_reports.is_empty() }
+    pub fn error_count(&self) -> usize { self.error_reports.len() }
+    pub fn program_count(&self) -> usize { self.compiler.program_count() }
+    pub fn compilation_summary(&self) -> String { self.compiler.compilation_summary() }
+    pub fn stats(&self) -> ShaderCompilerStats { ShaderCompilerStats::from_workspace(&self.compiler.workspace) }
+}
+
+impl Default for ShaderManager { fn default() -> Self { Self::new() } }
+
+// ── GLSL Intrinsics Documentation ─────────────────────────────────────────────
+
+pub struct GlslIntrinsicDoc {
+    pub name: &'static str,
+    pub signature: &'static str,
+    pub description: &'static str,
+    pub category: &'static str,
+}
+
+pub const GLSL_DOCS: &[GlslIntrinsicDoc] = &[
+    GlslIntrinsicDoc { name: "radians", signature: "genType radians(genType degrees)", description: "Convert degrees to radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "degrees", signature: "genType degrees(genType radians)", description: "Convert radians to degrees", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "sin", signature: "genType sin(genType angle)", description: "Sine of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "cos", signature: "genType cos(genType angle)", description: "Cosine of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "tan", signature: "genType tan(genType angle)", description: "Tangent of angle in radians", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "asin", signature: "genType asin(genType x)", description: "Arc sine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "acos", signature: "genType acos(genType x)", description: "Arc cosine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "atan", signature: "genType atan(genType y_over_x)", description: "Arc tangent", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "sinh", signature: "genType sinh(genType x)", description: "Hyperbolic sine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "cosh", signature: "genType cosh(genType x)", description: "Hyperbolic cosine", category: "trigonometry" },
+    GlslIntrinsicDoc { name: "pow", signature: "genType pow(genType x, genType y)", description: "x raised to y power", category: "exponential" },
+    GlslIntrinsicDoc { name: "exp", signature: "genType exp(genType x)", description: "e raised to x", category: "exponential" },
+    GlslIntrinsicDoc { name: "log", signature: "genType log(genType x)", description: "Natural logarithm", category: "exponential" },
+    GlslIntrinsicDoc { name: "exp2", signature: "genType exp2(genType x)", description: "2 raised to x", category: "exponential" },
+    GlslIntrinsicDoc { name: "log2", signature: "genType log2(genType x)", description: "Base-2 logarithm", category: "exponential" },
+    GlslIntrinsicDoc { name: "sqrt", signature: "genType sqrt(genType x)", description: "Square root", category: "exponential" },
+    GlslIntrinsicDoc { name: "inversesqrt", signature: "genType inversesqrt(genType x)", description: "Inverse square root", category: "exponential" },
+    GlslIntrinsicDoc { name: "abs", signature: "genType abs(genType x)", description: "Absolute value", category: "common" },
+    GlslIntrinsicDoc { name: "sign", signature: "genType sign(genType x)", description: "Sign of x", category: "common" },
+    GlslIntrinsicDoc { name: "floor", signature: "genType floor(genType x)", description: "Floor function", category: "common" },
+    GlslIntrinsicDoc { name: "ceil", signature: "genType ceil(genType x)", description: "Ceiling function", category: "common" },
+    GlslIntrinsicDoc { name: "round", signature: "genType round(genType x)", description: "Round to nearest", category: "common" },
+    GlslIntrinsicDoc { name: "fract", signature: "genType fract(genType x)", description: "Fractional part", category: "common" },
+    GlslIntrinsicDoc { name: "mod", signature: "genType mod(genType x, genType y)", description: "Modulo operation", category: "common" },
+    GlslIntrinsicDoc { name: "min", signature: "genType min(genType x, genType y)", description: "Minimum of two values", category: "common" },
+    GlslIntrinsicDoc { name: "max", signature: "genType max(genType x, genType y)", description: "Maximum of two values", category: "common" },
+    GlslIntrinsicDoc { name: "clamp", signature: "genType clamp(genType x, genType minVal, genType maxVal)", description: "Clamp x between min and max", category: "common" },
+    GlslIntrinsicDoc { name: "mix", signature: "genType mix(genType x, genType y, genType a)", description: "Linear interpolation", category: "common" },
+    GlslIntrinsicDoc { name: "step", signature: "genType step(genType edge, genType x)", description: "Step function", category: "common" },
+    GlslIntrinsicDoc { name: "smoothstep", signature: "genType smoothstep(genType edge0, genType edge1, genType x)", description: "Smooth step function", category: "common" },
+];
+
+pub fn find_glsl_doc(name: &str) -> Option<&'static GlslIntrinsicDoc> { GLSL_DOCS.iter().find(|d| d.name == name) }
+pub fn glsl_doc_count() -> usize { GLSL_DOCS.len() }
+pub fn glsl_docs_in_category(cat: &str) -> Vec<&'static GlslIntrinsicDoc> { GLSL_DOCS.iter().filter(|d| d.category == cat).collect() }
+
+pub const SHADER_MANAGER_VERSION: &str = "ShaderManager v1.0";
+pub const SHADER_GLSL_INTRINSIC_DOC_COUNT: usize = 30;
+pub const SHADER_MAX_ERROR_REPORTS: usize = 256;
+pub const FRAME_GRAPH_EXECUTOR_MAX_NODES: usize = 128;
+
+pub fn shader_manager_info() -> String {
+    format!("{} — {} programs max, {} intrinsics documented, {} quality presets", SHADER_MANAGER_VERSION, SHADER_MAX_PROGRAMS, SHADER_GLSL_INTRINSIC_DOC_COUNT, RENDER_QUALITY_PRESET_COUNT)
+}

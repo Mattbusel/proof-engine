@@ -1,0 +1,276 @@
+
+// ── Render Graph ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderGraphNode {
+    pub id: u32,
+    pub name: String,
+    pub node_type: RenderGraphNodeType,
+    pub inputs: Vec<RenderGraphResource>,
+    pub outputs: Vec<RenderGraphResource>,
+    pub shader_id: Option<u32>,
+    pub enabled: bool,
+    pub order: u32,
+    pub async_compute: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderGraphNodeType { Pass, Blit, Compute, Present, Upload, Barrier, Custom(String) }
+
+#[derive(Clone, Debug)]
+pub struct RenderGraphResource {
+    pub name: String,
+    pub resource_type: RenderGraphResourceType,
+    pub format: AttachmentFormat,
+    pub width: u32,
+    pub height: u32,
+    pub mips: u32,
+    pub transient: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderGraphResourceType { Texture, Buffer, RenderTarget, DepthStencil }
+
+impl RenderGraphNode {
+    pub fn new(id: u32, name: impl Into<String>, node_type: RenderGraphNodeType) -> Self {
+        Self { id, name: name.into(), node_type, inputs: Vec::new(), outputs: Vec::new(), shader_id: None, enabled: true, order: 0, async_compute: false }
+    }
+    pub fn add_input(&mut self, res: RenderGraphResource) { self.inputs.push(res); }
+    pub fn add_output(&mut self, res: RenderGraphResource) { self.outputs.push(res); }
+    pub fn is_pass(&self) -> bool { self.node_type == RenderGraphNodeType::Pass }
+    pub fn is_compute(&self) -> bool { self.node_type == RenderGraphNodeType::Compute }
+    pub fn input_count(&self) -> usize { self.inputs.len() }
+    pub fn output_count(&self) -> usize { self.outputs.len() }
+    pub fn with_shader(mut self, id: u32) -> Self { self.shader_id = Some(id); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderGraph {
+    pub nodes: Vec<RenderGraphNode>,
+    pub edges: Vec<(u32, u32)>,
+    pub name: String,
+    pub next_id: u32,
+}
+
+impl RenderGraph {
+    pub fn new(name: impl Into<String>) -> Self { Self { nodes: Vec::new(), edges: Vec::new(), name: name.into(), next_id: 1 } }
+    pub fn add_node(&mut self, node_type: RenderGraphNodeType, name: impl Into<String>) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.push(RenderGraphNode::new(id, name, node_type));
+        id
+    }
+    pub fn connect(&mut self, from: u32, to: u32) { self.edges.push((from, to)); }
+    pub fn sorted_nodes(&self) -> Vec<&RenderGraphNode> {
+        let mut sorted: Vec<_> = self.nodes.iter().filter(|n| n.enabled).collect();
+        sorted.sort_by_key(|n| n.order);
+        sorted
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn find_node(&self, id: u32) -> Option<&RenderGraphNode> { self.nodes.iter().find(|n| n.id == id) }
+    pub fn remove_node(&mut self, id: u32) { self.nodes.retain(|n| n.id != id); self.edges.retain(|(a, b)| *a != id && *b != id); }
+}
+
+impl Default for RenderGraph {
+    fn default() -> Self { Self::new("default") }
+}
+
+// ── Shader Compiler Main ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCompilerMain {
+    pub workspace: ShaderWorkspace,
+    pub render_graph: RenderGraph,
+    pub compile_stats: CompileStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompileStats {
+    pub total_compiled: u32,
+    pub total_failed: u32,
+    pub total_cached: u32,
+    pub total_reloaded: u32,
+    pub avg_compile_ms: f32,
+    pub peak_compile_ms: f32,
+}
+
+impl CompileStats {
+    pub fn new() -> Self { Self::default() }
+    pub fn record_compile(&mut self, ms: f32, success: bool, from_cache: bool) {
+        if from_cache { self.total_cached += 1; return; }
+        if success { self.total_compiled += 1; } else { self.total_failed += 1; }
+        self.peak_compile_ms = self.peak_compile_ms.max(ms);
+        let total = self.total_compiled + self.total_failed;
+        self.avg_compile_ms = (self.avg_compile_ms * (total - 1) as f32 + ms) / total as f32;
+    }
+    pub fn success_rate(&self) -> f32 {
+        let total = self.total_compiled + self.total_failed;
+        if total == 0 { 1.0 } else { self.total_compiled as f32 / total as f32 }
+    }
+    pub fn total_attempts(&self) -> u32 { self.total_compiled + self.total_failed + self.total_cached }
+}
+
+impl ShaderCompilerMain {
+    pub fn new() -> Self { Self { workspace: ShaderWorkspace::new(), render_graph: RenderGraph::new("main"), compile_stats: CompileStats::new() } }
+    pub fn add_program(&mut self, prog: ShaderProgram) -> u32 { self.workspace.registry.add(prog) }
+    pub fn get_program(&self, id: u32) -> Option<&ShaderProgram> { self.workspace.registry.get(id) }
+    pub fn add_material(&mut self, mat: Material) -> u32 { self.workspace.material_lib.add(mat) }
+    pub fn add_texture(&mut self, tex: TextureDescriptor) -> u32 { self.workspace.texture_reg.register(tex) }
+    pub fn begin_frame(&mut self) { self.workspace.begin_frame(); }
+    pub fn tick(&mut self, dt: f32) { self.workspace.tick(dt); }
+    pub fn program_count(&self) -> usize { self.workspace.program_count() }
+    pub fn compilation_summary(&self) -> String {
+        format!("Compiled: {}, Failed: {}, Cached: {}, Success: {:.1}%", self.compile_stats.total_compiled, self.compile_stats.total_failed, self.compile_stats.total_cached, self.compile_stats.success_rate() * 100.0)
+    }
+}
+
+impl Default for ShaderCompilerMain {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Color Grading ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ColorGradingSettings {
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub brightness: f32,
+    pub hue_shift: f32,
+    pub lift: [f32; 3],
+    pub gamma: [f32; 3],
+    pub gain: [f32; 3],
+    pub white_balance_temp: f32,
+    pub white_balance_tint: f32,
+    pub shadows_color: [f32; 3],
+    pub midtones_color: [f32; 3],
+    pub highlights_color: [f32; 3],
+    pub tonemapping: ToneMappingMode,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToneMappingMode { None, Reinhard, Aces, Filmic, Uncharted2, Custom }
+
+impl Default for ColorGradingSettings {
+    fn default() -> Self {
+        Self { exposure: 0.0, contrast: 1.0, saturation: 1.0, brightness: 0.0, hue_shift: 0.0, lift: [0.0; 3], gamma: [1.0; 3], gain: [1.0; 3], white_balance_temp: 6500.0, white_balance_tint: 0.0, shadows_color: [0.0; 3], midtones_color: [0.0; 3], highlights_color: [0.0; 3], tonemapping: ToneMappingMode::Aces }
+    }
+}
+
+impl ColorGradingSettings {
+    pub fn new() -> Self { Self::default() }
+    pub fn neutral() -> Self { Self::default() }
+    pub fn warm() -> Self { Self { white_balance_temp: 7500.0, saturation: 1.1, ..Self::default() } }
+    pub fn cool() -> Self { Self { white_balance_temp: 5500.0, saturation: 0.9, ..Self::default() } }
+    pub fn cinematic() -> Self { Self { contrast: 1.15, saturation: 0.9, tonemapping: ToneMappingMode::Filmic, ..Self::default() } }
+    pub fn generate_glsl(&self) -> String {
+        format!("// ColorGrading: exposure={:.2}, contrast={:.2}, saturation={:.2}, tonemapping={:?}", self.exposure, self.contrast, self.saturation, self.tonemapping)
+    }
+    pub fn is_neutral(&self) -> bool { self.exposure == 0.0 && self.contrast == 1.0 && self.saturation == 1.0 }
+}
+
+// ── Screen Space Ambient Occlusion Config ─────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SsaoConfig {
+    pub kernel_size: u32,
+    pub radius: f32,
+    pub bias: f32,
+    pub power: f32,
+    pub blur_passes: u32,
+    pub enabled: bool,
+    pub quality: SsaoQuality,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SsaoQuality { Low, Medium, High, Ultra }
+
+impl SsaoConfig {
+    pub fn new() -> Self { Self { kernel_size: 32, radius: 0.5, bias: 0.025, power: 2.0, blur_passes: 2, enabled: true, quality: SsaoQuality::Medium } }
+    pub fn low() -> Self { Self { kernel_size: 8, radius: 0.3, blur_passes: 1, quality: SsaoQuality::Low, ..Self::new() } }
+    pub fn high() -> Self { Self { kernel_size: 64, radius: 0.8, blur_passes: 3, quality: SsaoQuality::High, ..Self::new() } }
+    pub fn ultra() -> Self { Self { kernel_size: 128, radius: 1.0, blur_passes: 4, quality: SsaoQuality::Ultra, ..Self::new() } }
+}
+
+impl Default for SsaoConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Depth of Field ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct DepthOfFieldConfig {
+    pub enabled: bool,
+    pub focus_distance: f32,
+    pub focus_range: f32,
+    pub far_blur_range: f32,
+    pub near_blur_range: f32,
+    pub bokeh_radius: f32,
+    pub bokeh_blade_count: u32,
+    pub bokeh_rotation: f32,
+    pub max_coc_radius: f32,
+}
+
+impl DepthOfFieldConfig {
+    pub fn new() -> Self { Self { enabled: false, focus_distance: 10.0, focus_range: 5.0, far_blur_range: 20.0, near_blur_range: 2.0, bokeh_radius: 8.0, bokeh_blade_count: 6, bokeh_rotation: 0.0, max_coc_radius: 20.0 } }
+    pub fn portrait() -> Self { Self { enabled: true, focus_distance: 2.0, focus_range: 0.5, bokeh_radius: 12.0, ..Self::new() } }
+    pub fn cinematic() -> Self { Self { enabled: true, focus_distance: 5.0, focus_range: 2.0, bokeh_radius: 10.0, bokeh_blade_count: 8, ..Self::new() } }
+}
+
+impl Default for DepthOfFieldConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Bloom Config ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct BloomConfig {
+    pub enabled: bool,
+    pub threshold: f32,
+    pub intensity: f32,
+    pub scatter: f32,
+    pub clamp: f32,
+    pub downsample_passes: u32,
+    pub mode: BloomMode,
+    pub tint: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BloomMode { Classic, Kawase, Dual, Convolution }
+
+impl BloomConfig {
+    pub fn new() -> Self { Self { enabled: true, threshold: 0.9, intensity: 0.5, scatter: 0.7, clamp: 65472.0, downsample_passes: 5, mode: BloomMode::Dual, tint: [1.0; 3] } }
+    pub fn subtle() -> Self { Self { intensity: 0.2, ..Self::new() } }
+    pub fn intense() -> Self { Self { intensity: 1.5, threshold: 0.7, ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+}
+
+impl Default for BloomConfig {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Final Shader System Constants ─────────────────────────────────────────────
+
+pub const RENDER_GRAPH_MAX_NODES: usize = 64;
+pub const RENDER_GRAPH_MAX_EDGES: usize = 256;
+pub const COLOR_GRADING_LUT_SIZE: u32 = 32;
+pub const SSAO_KERNEL_SIZE_MAX: u32 = 256;
+pub const DOF_MAX_COC_RADIUS: f32 = 32.0;
+pub const BLOOM_MAX_DOWNSAMPLE_PASSES: u32 = 8;
+pub const SHADER_COMPILER_MAX_WORKSPACES: usize = 8;
+pub const GPU_BUDGET_WARNING_PERCENT: f32 = 80.0;
+pub const GPU_BUDGET_CRITICAL_PERCENT: f32 = 95.0;
+pub const SHADER_PERMUTATION_HASH_SEED: u64 = 14695981039346656037;
+
+pub fn tonemap_name(mode: &ToneMappingMode) -> &'static str {
+    match mode { ToneMappingMode::None => "None", ToneMappingMode::Reinhard => "Reinhard", ToneMappingMode::Aces => "ACES", ToneMappingMode::Filmic => "Filmic", ToneMappingMode::Uncharted2 => "Uncharted 2", ToneMappingMode::Custom => "Custom" }
+}
+pub fn bloom_mode_name(mode: &BloomMode) -> &'static str {
+    match mode { BloomMode::Classic => "Classic", BloomMode::Kawase => "Kawase", BloomMode::Dual => "Dual Kawase", BloomMode::Convolution => "Convolution" }
+}
+pub fn ssao_quality_name(q: &SsaoQuality) -> &'static str {
+    match q { SsaoQuality::Low => "Low", SsaoQuality::Medium => "Medium", SsaoQuality::High => "High", SsaoQuality::Ultra => "Ultra" }
+}
+pub fn shader_compiler_build_date() -> &'static str { "2026-03-29" }
+pub fn shader_compiler_complete_info() -> String {
+    format!("ShaderCompilerEditor v{} — {} modules, render graph, materials, post-process, color grading", shader_system_version(), shader_module_count())
+}

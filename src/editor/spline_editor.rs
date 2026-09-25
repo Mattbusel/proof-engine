@@ -6844,10 +6844,10 @@ impl SplineEditor {
 mod tests_spline_advanced {
     use super::*;
 
-    fn simple_line(n: usize) -> CatmullRomSpline {
+    pub(super) fn simple_line(n: usize) -> CatmullRomSpline {
         CatmullRomSpline {
             control_points: (0..n).map(|i| ControlPoint {
-                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         }
@@ -6857,9 +6857,9 @@ mod tests_spline_advanced {
     fn test_laplacian_smooth_middle_moves() {
         let mut s = CatmullRomSpline {
             control_points: vec![
-                ControlPoint { position: Vec3::new(0.0, 0.0, 0.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(1.0, 2.0, 0.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(2.0, 0.0, 0.0), weight: 1.0, tension: 0.0 },
+                ControlPoint { position: Vec3::new(0.0, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(1.0, 2.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(2.0, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
             ],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
@@ -6886,8 +6886,8 @@ mod tests_spline_advanced {
     fn test_spline_csv_round_trip() {
         let s = CatmullRomSpline {
             control_points: vec![
-                ControlPoint { position: Vec3::new(1.0,2.0,3.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(4.0,5.0,6.0), weight: 1.0, tension: 0.0 },
+                ControlPoint { position: Vec3::new(1.0,2.0,3.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(4.0,5.0,6.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
             ],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
@@ -6901,8 +6901,8 @@ mod tests_spline_advanced {
     fn test_spline_dynamics_gravity_falls() {
         let s = CatmullRomSpline {
             control_points: vec![
-                ControlPoint { position: Vec3::new(0.0,10.0,0.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(1.0,10.0,0.0), weight: 1.0, tension: 0.0 },
+                ControlPoint { position: Vec3::new(0.0,10.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(1.0,10.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
             ],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
@@ -6929,7 +6929,7 @@ mod tests_spline_advanced {
     #[test]
     fn test_snap_to_grid_rounds() {
         let mut s = CatmullRomSpline {
-            control_points: vec![ControlPoint { position: Vec3::new(0.3,1.7,-0.1), weight: 1.0, tension: 0.0 }],
+            control_points: vec![ControlPoint { position: Vec3::new(0.3,1.7,-0.1), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) }],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
         snap_to_grid(&mut s, 1.0);
@@ -6965,15 +6965,15 @@ mod tests_spline_advanced {
     fn test_spline_lattice_midpoint() {
         let rail_a = CatmullRomSpline {
             control_points: vec![
-                ControlPoint { position: Vec3::new(0.0,0.0,0.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(1.0,0.0,0.0), weight: 1.0, tension: 0.0 },
+                ControlPoint { position: Vec3::new(0.0,0.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(1.0,0.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
             ],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
         let rail_b = CatmullRomSpline {
             control_points: vec![
-                ControlPoint { position: Vec3::new(0.0,1.0,0.0), weight: 1.0, tension: 0.0 },
-                ControlPoint { position: Vec3::new(1.0,1.0,0.0), weight: 1.0, tension: 0.0 },
+                ControlPoint { position: Vec3::new(0.0,1.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
+                ControlPoint { position: Vec3::new(1.0,1.0,0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO) },
             ],
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
@@ -7324,16 +7324,15 @@ mod tests_spline_extra {
 
     #[test]
     fn test_speed_profile_linear_interpolation() {
-        let mut p = SpeedProfile::new();
-        p.add_key(0.0, 0.0);
-        p.add_key(1.0, 10.0);
+        let p = SpeedProfile { keyframes: vec![(0.0, 0.0), (1.0, 10.0)] };
         assert!((p.evaluate(0.5) - 5.0).abs() < 0.01);
     }
 
     #[test]
     fn test_speed_profile_total_time_positive() {
-        let p = SpeedProfile::quintic_ease(20.0);
-        let t = p.total_travel_time(100.0, 100);
+        // A profile that starts at rest never leaves t = 0, so start moving.
+        let p = SpeedProfile::ease_in_out(5.0, 20.0, 5.0);
+        let t = p.time_to_t(100.0, 1.0, 0.01);
         assert!(t > 0.0);
     }
 
@@ -7341,7 +7340,7 @@ mod tests_spline_extra {
     fn test_spline_bundle_lane_count() {
         let centre = CatmullRomSpline {
             control_points: (0..4).map(|i| crate::editor::spline_editor::ControlPoint {
-                position: glam::Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: glam::Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         };
@@ -7562,10 +7561,10 @@ pub fn reparametrise_by_curvature(
 mod tests_final {
     use super::*;
 
-    fn simple_line(n: usize) -> CatmullRomSpline {
+    pub(super) fn simple_line(n: usize) -> CatmullRomSpline {
         CatmullRomSpline {
             control_points: (0..n).map(|i| ControlPoint {
-                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         }
@@ -7754,10 +7753,10 @@ pub fn spline_heading_yaw(spline: &CatmullRomSpline, t: f32) -> f32 {
 mod tests_waypoints {
     use super::*;
 
-    fn simple_line(n: usize) -> CatmullRomSpline {
+    pub(super) fn simple_line(n: usize) -> CatmullRomSpline {
         CatmullRomSpline {
             control_points: (0..n).map(|i| ControlPoint {
-                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         }
@@ -7895,10 +7894,10 @@ pub fn winding_number_xz(spline: &CatmullRomSpline, query: Vec2, samples: usize)
 #[cfg(test)]
 mod tests_comb {
     use super::*;
-    fn simple_line(n: usize) -> CatmullRomSpline {
+    pub(super) fn simple_line(n: usize) -> CatmullRomSpline {
         CatmullRomSpline {
             control_points: (0..n).map(|i| ControlPoint {
-                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         }
@@ -7954,10 +7953,10 @@ pub fn max_chord_deviation(spline: &CatmullRomSpline) -> f32 {
 #[cfg(test)]
 mod tests_spline_geometry {
     use super::*;
-    fn simple_line(n: usize) -> CatmullRomSpline {
+    pub(super) fn simple_line(n: usize) -> CatmullRomSpline {
         CatmullRomSpline {
             control_points: (0..n).map(|i| ControlPoint {
-                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0
+                position: Vec3::new(i as f32, 0.0, 0.0), weight: 1.0, tension: 0.0, ..ControlPoint::new(Vec3::ZERO)
             }).collect(),
             closed: false, alpha: 0.5, arc_length_table: Vec::new(), total_length: 0.0,
         }

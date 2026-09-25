@@ -5,7 +5,7 @@
 
 /// A spring-damper system that tracks a scalar value toward a target.
 ///
-/// The spring has "mass" (implicit 1.0), stiffness `k`, and damping `d`.
+/// The spring has mass `m`, stiffness `k`, and damping `d`.
 /// ζ (damping ratio) = d / (2 * √k).
 ///   ζ < 1: underdamped (oscillates, overshoots)
 ///   ζ = 1: critically damped (fastest convergence, no overshoot)
@@ -17,11 +17,26 @@ pub struct SpringDamper {
     pub target: f32,
     pub stiffness: f32,
     pub damping: f32,
+    /// Inertia. Heavy things lag behind their target and keep going once moved;
+    /// light things snap. Must stay above zero or the integrator divides by it.
+    pub mass: f32,
 }
 
 impl SpringDamper {
     pub fn new(position: f32, stiffness: f32, damping: f32) -> Self {
-        Self { position, velocity: 0.0, target: position, stiffness, damping }
+        Self { position, velocity: 0.0, target: position, stiffness, damping, mass: 1.0 }
+    }
+
+    /// Same spring, with inertia. Values at or below zero are clamped to a
+    /// small positive mass rather than blowing the simulation up.
+    pub fn with_mass(mut self, mass: f32) -> Self {
+        self.set_mass(mass);
+        self
+    }
+
+    /// Set the inertia, keeping the spring stable.
+    pub fn set_mass(&mut self, mass: f32) {
+        self.mass = if mass.is_finite() { mass.max(0.01) } else { 1.0 };
     }
 
     /// Create a critically damped spring (no overshoot, fastest convergence).
@@ -39,10 +54,29 @@ impl SpringDamper {
     }
 
     /// Step the spring by `dt` seconds.
+    ///
+    /// Explicit integration goes unstable once the step is long relative to the
+    /// spring's own period, which a very light glyph on a stiff spring will hit
+    /// on an ordinary frame. Rather than clamp the physics into something
+    /// wrong, the step is subdivided until it is inside the stable range.
     pub fn tick(&mut self, dt: f32) {
-        let force = -self.stiffness * (self.position - self.target) - self.damping * self.velocity;
-        self.velocity += force * dt;
-        self.position += self.velocity * dt;
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        let m = self.mass.max(0.01);
+        // omega = sqrt(k/m); semi-implicit Euler is stable for dt < 2/omega, so
+        // aim comfortably inside that at dt <= 0.5/omega.
+        let omega = (self.stiffness.max(0.0) / m).sqrt();
+        let rate = (omega * dt / 0.5).max(self.damping / m * dt / 0.5);
+        let steps = (rate.ceil().max(1.0) as u32).min(32);
+        let h = dt / steps as f32;
+        for _ in 0..steps {
+            let force =
+                -self.stiffness * (self.position - self.target) - self.damping * self.velocity;
+            // F = ma, so heavier glyphs accelerate less for the same force.
+            self.velocity += force / m * h;
+            self.position += self.velocity * h;
+        }
     }
 
     /// Step and return the new position.
@@ -135,6 +169,18 @@ impl Spring3D {
             y: SpringDamper::critical(py, speed),
             z: SpringDamper::critical(pz, speed),
         }
+    }
+
+    /// Give all three axes the same inertia.
+    pub fn set_mass(&mut self, mass: f32) {
+        self.x.set_mass(mass);
+        self.y.set_mass(mass);
+        self.z.set_mass(mass);
+    }
+
+    /// The spring's inertia (all axes share it).
+    pub fn mass(&self) -> f32 {
+        self.x.mass
     }
 
     /// Step and return new position as Vec3 (used by camera).

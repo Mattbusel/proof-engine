@@ -1,0 +1,403 @@
+
+// ── Texture System ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TextureDescriptor {
+    pub id: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub mip_levels: u32,
+    pub array_layers: u32,
+    pub format: AttachmentFormat,
+    pub tex_type: TextureType,
+    pub usage: TextureUsage,
+    pub filter: TextureFilter,
+    pub wrap_u: WrapMode,
+    pub wrap_v: WrapMode,
+    pub wrap_w: WrapMode,
+    pub anisotropy: u32,
+    pub generate_mipmaps: bool,
+    pub srgb: bool,
+    pub compressed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextureType { Tex2D, Tex3D, TexCube, Tex2DArray, TexCubeArray }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextureUsage { Sampled, Storage, RenderTarget, DepthStencil }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextureFilter { Nearest, Linear, Trilinear, Anisotropic }
+#[derive(Clone, Debug, PartialEq)]
+pub enum WrapMode { Repeat, MirroredRepeat, ClampToEdge, ClampToBorder, MirrorClampToEdge }
+
+impl TextureDescriptor {
+    pub fn new_2d(id: u32, name: impl Into<String>, width: u32, height: u32, format: AttachmentFormat) -> Self {
+        Self { id, name: name.into(), width, height, depth: 1, mip_levels: 1, array_layers: 1, format, tex_type: TextureType::Tex2D, usage: TextureUsage::Sampled, filter: TextureFilter::Trilinear, wrap_u: WrapMode::Repeat, wrap_v: WrapMode::Repeat, wrap_w: WrapMode::ClampToEdge, anisotropy: 4, generate_mipmaps: true, srgb: false, compressed: false }
+    }
+    pub fn render_target(id: u32, name: impl Into<String>, w: u32, h: u32, fmt: AttachmentFormat) -> Self {
+        let mut t = Self::new_2d(id, name, w, h, fmt); t.usage = TextureUsage::RenderTarget; t.generate_mipmaps = false; t
+    }
+    pub fn depth_target(id: u32, name: impl Into<String>, w: u32, h: u32) -> Self {
+        let mut t = Self::new_2d(id, name, w, h, AttachmentFormat::Depth32F); t.usage = TextureUsage::DepthStencil; t.generate_mipmaps = false; t
+    }
+    pub fn mip_count_for_size(width: u32, height: u32) -> u32 { (width.max(height) as f32).log2().floor() as u32 + 1 }
+    pub fn bytes_per_pixel(&self) -> u32 {
+        match self.format {
+            AttachmentFormat::Rgba8 => 4, AttachmentFormat::Rgba16F => 8, AttachmentFormat::Rgba32F => 16,
+            AttachmentFormat::R8 => 1, AttachmentFormat::R16F => 2, AttachmentFormat::R32F => 4,
+            AttachmentFormat::Rg8 => 2, AttachmentFormat::Rg16F => 4,
+            AttachmentFormat::Depth32F => 4, _ => 4,
+        }
+    }
+    pub fn total_bytes(&self) -> u64 { self.width as u64 * self.height as u64 * self.depth as u64 * self.bytes_per_pixel() as u64 }
+    pub fn is_hdr(&self) -> bool { matches!(self.format, AttachmentFormat::Rgba16F | AttachmentFormat::Rgba32F | AttachmentFormat::R16F | AttachmentFormat::R32F) }
+    pub fn is_cubemap(&self) -> bool { self.tex_type == TextureType::TexCube }
+    pub fn is_depth(&self) -> bool { matches!(self.format, AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F | AttachmentFormat::Depth24Stencil8) }
+    pub fn aspect_ratio(&self) -> f32 { if self.height == 0 { 1.0 } else { self.width as f32 / self.height as f32 } }
+}
+
+#[derive(Clone, Debug)]
+pub struct TextureRegistry {
+    pub textures: HashMap<u32, TextureDescriptor>,
+    pub next_id: u32,
+}
+
+impl TextureRegistry {
+    pub fn new() -> Self { Self { textures: HashMap::new(), next_id: 1 } }
+    pub fn register(&mut self, mut tex: TextureDescriptor) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        tex.id = id;
+        self.textures.insert(id, tex);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&TextureDescriptor> { self.textures.get(&id) }
+    pub fn find_by_name(&self, name: &str) -> Option<&TextureDescriptor> { self.textures.values().find(|t| t.name == name) }
+    pub fn total_bytes(&self) -> u64 { self.textures.values().map(|t| t.total_bytes()).sum() }
+    pub fn count(&self) -> usize { self.textures.len() }
+    pub fn hdr_textures(&self) -> Vec<&TextureDescriptor> { self.textures.values().filter(|t| t.is_hdr()).collect() }
+    pub fn depth_textures(&self) -> Vec<&TextureDescriptor> { self.textures.values().filter(|t| t.is_depth()).collect() }
+    pub fn remove(&mut self, id: u32) -> bool { self.textures.remove(&id).is_some() }
+}
+
+impl Default for TextureRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Sampler System ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SamplerDescriptor {
+    pub id: u32,
+    pub min_filter: TextureFilter,
+    pub mag_filter: TextureFilter,
+    pub mip_filter: TextureFilter,
+    pub wrap_u: WrapMode,
+    pub wrap_v: WrapMode,
+    pub wrap_w: WrapMode,
+    pub anisotropy: u32,
+    pub border_color: [f32; 4],
+    pub lod_min: f32,
+    pub lod_max: f32,
+    pub lod_bias: f32,
+    pub compare_op: Option<CompareFunc>,
+}
+
+impl SamplerDescriptor {
+    pub fn default_linear() -> Self {
+        Self { id: 0, min_filter: TextureFilter::Linear, mag_filter: TextureFilter::Linear, mip_filter: TextureFilter::Linear, wrap_u: WrapMode::Repeat, wrap_v: WrapMode::Repeat, wrap_w: WrapMode::Repeat, anisotropy: 1, border_color: [0.0; 4], lod_min: 0.0, lod_max: 1000.0, lod_bias: 0.0, compare_op: None }
+    }
+    pub fn default_nearest() -> Self { Self { min_filter: TextureFilter::Nearest, mag_filter: TextureFilter::Nearest, mip_filter: TextureFilter::Nearest, ..Self::default_linear() } }
+    pub fn shadow() -> Self { Self { compare_op: Some(CompareFunc::Less), ..Self::default_linear() } }
+    pub fn clamp_to_edge() -> Self { Self { wrap_u: WrapMode::ClampToEdge, wrap_v: WrapMode::ClampToEdge, wrap_w: WrapMode::ClampToEdge, ..Self::default_linear() } }
+    pub fn anisotropic_16() -> Self { Self { anisotropy: 16, ..Self::default_linear() } }
+    pub fn is_shadow_sampler(&self) -> bool { self.compare_op.is_some() }
+    pub fn is_anisotropic(&self) -> bool { self.anisotropy > 1 }
+}
+
+// ── Vertex Layout ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct VertexAttribute {
+    pub location: u32,
+    pub name: String,
+    pub format: VertexFormat,
+    pub offset: u32,
+    pub normalized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Copy)]
+pub enum VertexFormat {
+    Float1, Float2, Float3, Float4,
+    Sint1, Sint2, Sint3, Sint4,
+    Uint1, Uint2, Uint3, Uint4,
+    Unorm4, Snorm4,
+    Half2, Half4,
+}
+
+impl VertexFormat {
+    pub fn size_bytes(self) -> u32 {
+        match self {
+            VertexFormat::Float1 | VertexFormat::Sint1 | VertexFormat::Uint1 => 4,
+            VertexFormat::Float2 | VertexFormat::Sint2 | VertexFormat::Uint2 | VertexFormat::Half4 => 8,
+            VertexFormat::Float3 | VertexFormat::Sint3 | VertexFormat::Uint3 => 12,
+            VertexFormat::Float4 | VertexFormat::Sint4 | VertexFormat::Uint4 | VertexFormat::Unorm4 | VertexFormat::Snorm4 => 16,
+            VertexFormat::Half2 => 4,
+        }
+    }
+    pub fn component_count(self) -> u32 {
+        match self {
+            VertexFormat::Float1 | VertexFormat::Sint1 | VertexFormat::Uint1 => 1,
+            VertexFormat::Float2 | VertexFormat::Sint2 | VertexFormat::Uint2 | VertexFormat::Half2 => 2,
+            VertexFormat::Float3 | VertexFormat::Sint3 | VertexFormat::Uint3 => 3,
+            _ => 4,
+        }
+    }
+    pub fn glsl_type_name(self) -> &'static str {
+        match self {
+            VertexFormat::Float1 => "float", VertexFormat::Float2 => "vec2",
+            VertexFormat::Float3 => "vec3", VertexFormat::Float4 => "vec4",
+            VertexFormat::Sint1 => "int", VertexFormat::Sint2 => "ivec2",
+            VertexFormat::Sint3 => "ivec3", VertexFormat::Sint4 => "ivec4",
+            VertexFormat::Uint1 => "uint", VertexFormat::Uint2 => "uvec2",
+            VertexFormat::Uint3 => "uvec3", VertexFormat::Uint4 => "uvec4",
+            _ => "vec4",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VertexLayout {
+    pub attributes: Vec<VertexAttribute>,
+    pub stride: u32,
+    pub instanced: bool,
+    pub instance_rate: u32,
+}
+
+impl VertexLayout {
+    pub fn new() -> Self { Self { attributes: Vec::new(), stride: 0, instanced: false, instance_rate: 1 } }
+    pub fn add_attribute(&mut self, location: u32, name: impl Into<String>, format: VertexFormat) {
+        let offset = self.stride;
+        self.stride += format.size_bytes();
+        self.attributes.push(VertexAttribute { location, name: name.into(), format, offset, normalized: false });
+    }
+    pub fn standard_mesh() -> Self {
+        let mut layout = Self::new();
+        layout.add_attribute(0, "position", VertexFormat::Float3);
+        layout.add_attribute(1, "normal", VertexFormat::Float3);
+        layout.add_attribute(2, "uv", VertexFormat::Float2);
+        layout.add_attribute(3, "tangent", VertexFormat::Float4);
+        layout
+    }
+    pub fn position_only() -> Self {
+        let mut layout = Self::new();
+        layout.add_attribute(0, "position", VertexFormat::Float3);
+        layout
+    }
+    pub fn particle() -> Self {
+        let mut layout = Self::new();
+        layout.add_attribute(0, "position", VertexFormat::Float3);
+        layout.add_attribute(1, "color", VertexFormat::Unorm4);
+        layout.add_attribute(2, "size_rotation", VertexFormat::Float2);
+        layout
+    }
+    pub fn attribute_count(&self) -> usize { self.attributes.len() }
+    pub fn generate_glsl_inputs(&self) -> String {
+        self.attributes.iter().map(|a| format!("layout(location={}) in {} {};\n", a.location, a.format.glsl_type_name(), a.name)).collect()
+    }
+}
+
+impl Default for VertexLayout {
+    fn default() -> Self { Self::standard_mesh() }
+}
+
+// ── Buffer System ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GpuBuffer {
+    pub id: u32,
+    pub name: String,
+    pub size_bytes: u64,
+    pub usage: BufferUsage,
+    pub access: BufferAccess,
+    pub binding: Option<u32>,
+    pub stride: u32,
+    pub element_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BufferUsage { Vertex, Index, Uniform, Storage, Indirect, Staging }
+#[derive(Clone, Debug, PartialEq)]
+pub enum BufferAccess { GpuOnly, CpuToGpu, GpuToCpu, CpuOnly }
+
+impl GpuBuffer {
+    pub fn new(id: u32, name: impl Into<String>, size: u64, usage: BufferUsage) -> Self {
+        Self { id, name: name.into(), size_bytes: size, usage, access: BufferAccess::GpuOnly, binding: None, stride: 0, element_count: 0 }
+    }
+    pub fn vertex(id: u32, name: impl Into<String>, vertex_count: u32, stride: u32) -> Self {
+        let mut b = Self::new(id, name, vertex_count as u64 * stride as u64, BufferUsage::Vertex);
+        b.stride = stride; b.element_count = vertex_count; b
+    }
+    pub fn index(id: u32, name: impl Into<String>, index_count: u32, is_u32: bool) -> Self {
+        let stride = if is_u32 { 4 } else { 2 };
+        let mut b = Self::new(id, name, index_count as u64 * stride, BufferUsage::Index);
+        b.stride = stride as u32; b.element_count = index_count; b
+    }
+    pub fn uniform(id: u32, name: impl Into<String>, size: u64, binding: u32) -> Self {
+        let mut b = Self::new(id, name, size, BufferUsage::Uniform);
+        b.binding = Some(binding); b
+    }
+    pub fn is_vertex_buffer(&self) -> bool { self.usage == BufferUsage::Vertex }
+    pub fn is_index_buffer(&self) -> bool { self.usage == BufferUsage::Index }
+    pub fn is_uniform_buffer(&self) -> bool { self.usage == BufferUsage::Uniform }
+    pub fn size_kb(&self) -> f64 { self.size_bytes as f64 / 1024.0 }
+    pub fn size_mb(&self) -> f64 { self.size_bytes as f64 / (1024.0 * 1024.0) }
+}
+
+#[derive(Clone, Debug)]
+pub struct BufferRegistry {
+    pub buffers: HashMap<u32, GpuBuffer>,
+    pub next_id: u32,
+    pub total_bytes: u64,
+}
+
+impl BufferRegistry {
+    pub fn new() -> Self { Self { buffers: HashMap::new(), next_id: 1, total_bytes: 0 } }
+    pub fn register(&mut self, mut buf: GpuBuffer) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        buf.id = id;
+        self.total_bytes += buf.size_bytes;
+        self.buffers.insert(id, buf);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&GpuBuffer> { self.buffers.get(&id) }
+    pub fn remove(&mut self, id: u32) -> bool {
+        if let Some(b) = self.buffers.remove(&id) { self.total_bytes = self.total_bytes.saturating_sub(b.size_bytes); true } else { false }
+    }
+    pub fn by_usage(&self, usage: &BufferUsage) -> Vec<&GpuBuffer> { self.buffers.values().filter(|b| &b.usage == usage).collect() }
+    pub fn total_mb(&self) -> f64 { self.total_bytes as f64 / (1024.0 * 1024.0) }
+    pub fn count(&self) -> usize { self.buffers.len() }
+}
+
+impl Default for BufferRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Compute Shader ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ComputePass {
+    pub id: u32,
+    pub name: String,
+    pub shader_program_id: u32,
+    pub dispatch_x: u32,
+    pub dispatch_y: u32,
+    pub dispatch_z: u32,
+    pub bindings: Vec<ComputeBinding>,
+    pub push_constants: Vec<u8>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ComputeBinding {
+    pub set: u32,
+    pub binding: u32,
+    pub resource_type: ComputeResourceType,
+    pub resource_id: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComputeResourceType { Texture, StorageTexture, Buffer, StorageBuffer, UniformBuffer }
+
+impl ComputePass {
+    pub fn new(id: u32, name: impl Into<String>, shader_id: u32) -> Self {
+        Self { id, name: name.into(), shader_program_id: shader_id, dispatch_x: 1, dispatch_y: 1, dispatch_z: 1, bindings: Vec::new(), push_constants: Vec::new(), enabled: true }
+    }
+    pub fn dispatch(mut self, x: u32, y: u32, z: u32) -> Self { self.dispatch_x = x; self.dispatch_y = y; self.dispatch_z = z; self }
+    pub fn add_binding(&mut self, set: u32, binding: u32, res_type: ComputeResourceType, res_id: u32) {
+        self.bindings.push(ComputeBinding { set, binding, resource_type: res_type, resource_id: res_id });
+    }
+    pub fn total_invocations(&self) -> u64 { self.dispatch_x as u64 * self.dispatch_y as u64 * self.dispatch_z as u64 }
+    pub fn binding_count(&self) -> usize { self.bindings.len() }
+}
+
+// ── GPU Memory Budget ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GpuMemoryBudget {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub textures_bytes: u64,
+    pub buffers_bytes: u64,
+    pub render_targets_bytes: u64,
+    pub shader_bytes: u64,
+    pub misc_bytes: u64,
+}
+
+impl GpuMemoryBudget {
+    pub fn new(total: u64) -> Self {
+        Self { total_bytes: total, available_bytes: total, textures_bytes: 0, buffers_bytes: 0, render_targets_bytes: 0, shader_bytes: 0, misc_bytes: 0 }
+    }
+    pub fn used_bytes(&self) -> u64 { self.textures_bytes + self.buffers_bytes + self.render_targets_bytes + self.shader_bytes + self.misc_bytes }
+    pub fn usage_percent(&self) -> f32 { if self.total_bytes == 0 { 0.0 } else { self.used_bytes() as f32 / self.total_bytes as f32 * 100.0 } }
+    pub fn is_overbudget(&self) -> bool { self.used_bytes() > self.total_bytes }
+    pub fn headroom_mb(&self) -> f64 { (self.total_bytes.saturating_sub(self.used_bytes())) as f64 / (1024.0 * 1024.0) }
+    pub fn allocate_texture(&mut self, bytes: u64) -> bool { if self.available_bytes >= bytes { self.textures_bytes += bytes; self.available_bytes -= bytes; true } else { false } }
+    pub fn allocate_buffer(&mut self, bytes: u64) -> bool { if self.available_bytes >= bytes { self.buffers_bytes += bytes; self.available_bytes -= bytes; true } else { false } }
+    pub fn free_texture(&mut self, bytes: u64) { self.textures_bytes = self.textures_bytes.saturating_sub(bytes); self.available_bytes += bytes.min(self.total_bytes); }
+}
+
+// ── Render Statistics ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct RenderStatistics {
+    pub draw_calls: u32,
+    pub triangles: u64,
+    pub vertices: u64,
+    pub texture_switches: u32,
+    pub shader_switches: u32,
+    pub render_pass_count: u32,
+    pub compute_dispatches: u32,
+    pub gpu_time_ms: f32,
+    pub cpu_time_ms: f32,
+    pub frame_number: u64,
+}
+
+impl RenderStatistics {
+    pub fn new() -> Self { Self::default() }
+    pub fn begin_frame(&mut self) {
+        self.draw_calls = 0; self.triangles = 0; self.vertices = 0;
+        self.texture_switches = 0; self.shader_switches = 0;
+        self.render_pass_count = 0; self.compute_dispatches = 0;
+        self.gpu_time_ms = 0.0; self.cpu_time_ms = 0.0;
+        self.frame_number += 1;
+    }
+    pub fn record_draw(&mut self, vertices: u64, triangles: u64) { self.draw_calls += 1; self.vertices += vertices; self.triangles += triangles; }
+    pub fn fps(&self) -> f32 { if self.gpu_time_ms < 1e-6 { 0.0 } else { 1000.0 / self.gpu_time_ms } }
+    pub fn avg_tris_per_draw(&self) -> f64 { if self.draw_calls == 0 { 0.0 } else { self.triangles as f64 / self.draw_calls as f64 } }
+    pub fn total_ms(&self) -> f32 { self.gpu_time_ms + self.cpu_time_ms }
+}
+
+// ── More shader constants ─────────────────────────────────────────────────────
+
+pub const TEXTURE_MAX_SIZE: u32 = 16384;
+pub const TEXTURE_MAX_MIP_LEVELS: u32 = 15;
+pub const TEXTURE_MAX_ARRAY_LAYERS: u32 = 2048;
+pub const SAMPLER_MAX_ANISOTROPY: u32 = 16;
+pub const BUFFER_ALIGNMENT: u32 = 256;
+pub const VERTEX_LAYOUT_MAX_ATTRIBUTES: usize = 16;
+pub const COMPUTE_MAX_WORKGROUP_SIZE: u32 = 1024;
+pub const RENDER_PASS_MAX_COLOR_ATTACHMENTS: usize = 8;
+pub const GPU_MEMORY_BUDGET_DEFAULT_MB: u64 = 4096;
+pub const MATERIAL_DEFAULT_RENDER_QUEUE: u32 = 2000;
+
+pub fn texture_format_name(fmt: &AttachmentFormat) -> &'static str { attachment_format_name(fmt) }
+pub fn vertex_format_size(fmt: VertexFormat) -> u32 { fmt.size_bytes() }
+pub fn buffer_aligned_size(size: u64) -> u64 { (size + BUFFER_ALIGNMENT as u64 - 1) & !(BUFFER_ALIGNMENT as u64 - 1) }
+pub fn is_power_of_two(n: u32) -> bool { n > 0 && (n & (n - 1)) == 0 }
+pub fn next_power_of_two(n: u32) -> u32 { if n == 0 { 1 } else { let mut p = n; p -= 1; p |= p >> 1; p |= p >> 2; p |= p >> 4; p |= p >> 8; p |= p >> 16; p + 1 } }
+pub fn mip_count(width: u32, height: u32) -> u32 { TextureDescriptor::mip_count_for_size(width, height) }
+pub fn shader_compiler_full_info() -> String {
+    format!("ShaderCompiler — {} target platforms, materials, textures, buffers, render pipeline", shader_target_count())
+}

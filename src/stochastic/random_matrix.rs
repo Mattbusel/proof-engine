@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_marchenko_pastur_density() {
-        let ratio = 0.5;
+        let ratio: f64 = 0.5;
         let lambda_min = (1.0 - ratio.sqrt()).powi(2);
         let lambda_max = (1.0 + ratio.sqrt()).powi(2);
         // Density should be 0 outside support

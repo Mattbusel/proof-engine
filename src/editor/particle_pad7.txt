@@ -1,0 +1,74 @@
+
+// ── Particle Warm-Up & Pre-Simulation ────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleWarmUp {
+    pub duration_secs: f32,
+    pub dt: f32,
+    pub enabled: bool,
+}
+
+impl ParticleWarmUp {
+    pub fn new(duration: f32, dt: f32) -> Self { Self { duration_secs: duration, dt: dt.max(0.001), enabled: true } }
+    pub fn steps(&self) -> u32 { (self.duration_secs / self.dt) as u32 }
+    pub fn disable(mut self) -> Self { self.enabled = false; self }
+    pub fn one_second() -> Self { Self::new(1.0, 0.033) }
+}
+
+impl Default for ParticleWarmUp {
+    fn default() -> Self { Self::new(0.0, 0.033) }
+}
+
+// ── Particle Data Buffer ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleDataBuffer {
+    pub positions: Vec<Vec3>,
+    pub velocities: Vec<Vec3>,
+    pub colors: Vec<Vec4>,
+    pub sizes: Vec<f32>,
+    pub lifetimes: Vec<f32>,
+    pub ages: Vec<f32>,
+    pub rotations: Vec<f32>,
+    pub capacity: u32,
+    pub active_count: u32,
+}
+
+impl ParticleDataBuffer {
+    pub fn new(capacity: u32) -> Self {
+        let n = capacity as usize;
+        Self { positions: vec![Vec3::ZERO; n], velocities: vec![Vec3::ZERO; n], colors: vec![Vec4::ONE; n], sizes: vec![1.0; n], lifetimes: vec![1.0; n], ages: vec![0.0; n], rotations: vec![0.0; n], capacity, active_count: 0 }
+    }
+    pub fn is_alive(&self, idx: usize) -> bool { idx < self.active_count as usize && self.ages[idx] < self.lifetimes[idx] }
+    pub fn age_normalized(&self, idx: usize) -> f32 {
+        let lt = self.lifetimes[idx];
+        if lt <= 0.0 { 1.0 } else { (self.ages[idx] / lt).clamp(0.0, 1.0) }
+    }
+    pub fn active_count(&self) -> u32 { self.active_count }
+    pub fn capacity(&self) -> u32 { self.capacity }
+    pub fn utilization(&self) -> f32 { if self.capacity == 0 { 0.0 } else { self.active_count as f32 / self.capacity as f32 } }
+    pub fn clear(&mut self) { self.active_count = 0; }
+    pub fn tick_ages(&mut self, dt: f32) { for i in 0..self.active_count as usize { self.ages[i] += dt; } }
+}
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const PARTICLE_WARMUP_MAX_SECS: f32 = 30.0;
+pub const PARTICLE_DATA_BUFFER_DEFAULT: u32 = 65536;
+pub const PARTICLE_MAX_ACTIVE_SYSTEMS: u32 = 128;
+pub const PARTICLE_TICK_RATE_DEFAULT: f32 = 60.0;
+
+pub fn particle_data_buffer_size_bytes(capacity: u32) -> u64 {
+    let n = capacity as u64;
+    n * (12 + 12 + 16 + 4 + 4 + 4 + 4)  // vec3 + vec3 + vec4 + f32*4
+}
+
+pub fn describe_blend_mode(mode: &BlendMode) -> &'static str {
+    match mode {
+        BlendMode::Additive => "Adds particle color to background — bright, glowing look",
+        BlendMode::Alpha => "Standard transparency — alpha channel used",
+        BlendMode::Multiply => "Darkens background — shadows, stains",
+        BlendMode::Screen => "Lightens background — soft glows",
+        BlendMode::Premultiplied => "Alpha pre-multiplied — avoids fringing",
+    }
+}

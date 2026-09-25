@@ -373,7 +373,7 @@ pub fn extrude_glyph(outline: &GlyphOutline, depth: f32, ch: char) -> GlyphMesh 
     }
 }
 
-fn create_box_mesh(min: Vec3, max: Vec3, ch: char, depth: f32) -> GlyphMesh {
+pub(crate) fn create_box_mesh(min: Vec3, max: Vec3, ch: char, depth: f32) -> GlyphMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 

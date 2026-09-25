@@ -1,0 +1,45 @@
+
+// ── Particle Effect Summary ───────────────────────────────────────────────────
+
+pub struct ParticleEffectSummary {
+    pub name: String,
+    pub emitter_count: u32,
+    pub max_particles: u32,
+    pub duration: f32,
+    pub looping: bool,
+    pub has_trails: bool,
+    pub has_sub_emitters: bool,
+    pub texture_count: u32,
+    pub blend_mode: String,
+    pub lod_levels: u32,
+    pub estimated_cost: f32,
+}
+
+impl ParticleEffectSummary {
+    pub fn estimate_cost(particles: u32, has_trails: bool, has_sub_emitters: bool) -> f32 {
+        let base = particles as f32 * 0.001;
+        let trail_mult = if has_trails { 2.0 } else { 1.0 };
+        let sub_mult = if has_sub_emitters { 1.5 } else { 1.0 };
+        base * trail_mult * sub_mult
+    }
+    pub fn is_expensive(&self) -> bool { self.estimated_cost > 10.0 }
+    pub fn is_cheap(&self) -> bool { self.estimated_cost < 1.0 }
+    pub fn performance_grade(&self) -> &'static str {
+        if self.is_cheap() { "Light" } else if self.is_expensive() { "Heavy" } else { "Medium" }
+    }
+}
+
+pub fn particle_system_ready() -> bool { true }
+pub fn particle_version() -> &'static str { "ParticleSystemEditor v2.0" }
+pub fn max_safe_particles_for_target_fps(target_fps: f32, ms_budget: f32) -> u32 { ((ms_budget / (1000.0 / target_fps)) * 50000.0) as u32 }
+pub fn particles_60fps_budget() -> u32 { max_safe_particles_for_target_fps(60.0, 3.0) }
+pub fn describe_attractor_type(t: &AttractorType) -> &'static str {
+    match t {
+        AttractorType::Attract => "Pulls particles toward center",
+        AttractorType::Repel => "Pushes particles away from center",
+        AttractorType::Vortex => "Spins particles in a spiral",
+        AttractorType::Drag => "Slows particle movement",
+        AttractorType::Gravity => "Directional gravity pull",
+        AttractorType::Wind => "Steady wind force",
+    }
+}

@@ -5,6 +5,14 @@ pub const GLYPH_VERT: &str     = include_str!("glyph.vert");
 pub const GLYPH_FRAG: &str     = include_str!("glyph.frag");
 pub const BLOOM_FRAG: &str     = include_str!("bloom.frag");
 pub const COMPOSITE_FRAG: &str = include_str!("composite.frag");
+/// Combines one level of the bloom pyramid with the next one up.
+pub const UPSAMPLE_FRAG: &str  = include_str!("upsample.frag");
+/// Anti-aliasing on the finished LDR frame, before the HUD.
+pub const FXAA_FRAG: &str      = include_str!("fxaa.frag");
+/// The screen-space light map with shadows marched through the occluder buffer.
+pub const LIGHT_FRAG: &str     = include_str!("light.frag");
+/// Motion trails: the brighter of this frame and the decayed last one.
+pub const PERSIST_FRAG: &str   = include_str!("persist.frag");
 pub const SDF_GLYPH_VERT: &str = include_str!("sdf_glyph.vert");
 pub const SDF_GLYPH_FRAG: &str = include_str!("sdf_glyph.frag");
 pub const PARTICLE_UPDATE_COMP: &str = include_str!("particle_update.comp");

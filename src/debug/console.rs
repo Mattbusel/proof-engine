@@ -20,8 +20,13 @@
 //!     handler:  Box::new(|args, out| {
 //!         out.push(proof_engine::debug::console::LogLine::info(args.join(" ")));
 //!     }),
+//!     aliases:  Vec::new(),
+//!     hidden:   false,
 //! });
-//! console.submit("say hello world");
+//! for c in "say hello world".chars() {
+//!     console.type_char(c);
+//! }
+//! console.submit();
 //! ```
 
 use std::collections::VecDeque;

@@ -451,7 +451,7 @@ mod tests {
     fn test_fresnel_normal_incidence() {
         let (r, t) = fresnel_coefficients(1.0, 1.5, 0.0);
         // At normal incidence: R = ((n1-n2)/(n1+n2))^2
-        let expected_r = ((1.0 - 1.5) / (1.0 + 1.5)).powi(2);
+        let expected_r = ((1.0f32 - 1.5) / (1.0 + 1.5)).powi(2);
         assert!((r - expected_r).abs() < 0.01, "R={}, expected={}", r, expected_r);
         assert!((r + t - 1.0).abs() < 0.01, "R+T should be 1");
     }
@@ -465,8 +465,8 @@ mod tests {
     #[test]
     fn test_diffraction_first_minimum() {
         // First minimum at sin(θ) = λ/a
-        let a = 2.0;
-        let lambda = 0.5;
+        let a: f32 = 2.0;
+        let lambda: f32 = 0.5;
         let angle = (lambda / a).asin();
         let intensity = diffraction_single_slit(a, lambda, angle);
         assert!(intensity < 0.001, "First minimum should be ~0, got {}", intensity);

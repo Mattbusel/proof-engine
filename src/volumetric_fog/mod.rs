@@ -742,7 +742,7 @@ fn value_noise_3d(x: f32, y: f32, z: f32) -> f32 {
     let tz = fz * fz * (3.0 - 2.0 * fz);
 
     let h = |i: i32, j: i32, k: i32| -> f32 {
-        let n = (i.wrapping_mul(374761393) + j.wrapping_mul(668265263) + k.wrapping_mul(1274126177)) as u32;
+        let n = i.wrapping_mul(374761393).wrapping_add(j.wrapping_mul(668265263)).wrapping_add(k.wrapping_mul(1274126177)) as u32;
         let n = n ^ (n >> 13);
         let n = n.wrapping_mul(0x5851F42D);
         (n & 0x00FF_FFFF) as f32 / 0x0080_0000 as f32 - 1.0

@@ -1,0 +1,38 @@
+
+// ── Final Loot Utilities ──────────────────────────────────────────────────────
+
+pub fn item_level_bracket(ilvl: u32) -> &'static str {
+    if ilvl >= 90 { "Endgame" }
+    else if ilvl >= 70 { "High" }
+    else if ilvl >= 50 { "Mid" }
+    else if ilvl >= 30 { "Low-Mid" }
+    else { "Starter" }
+}
+
+pub fn recommended_zone_ilvl(player_level: u32) -> u32 { player_level.saturating_sub(5) }
+pub fn max_zone_ilvl(player_level: u32) -> u32 { player_level + 5 }
+pub fn base_drop_chance(enemy_level: u32, player_level: u32) -> f32 {
+    let diff = enemy_level as i32 - player_level as i32;
+    let base = 0.15f32;
+    if diff > 5 { base * 1.5 } else if diff < -10 { base * 0.5 } else { base }
+}
+pub fn item_sell_value(base_value: f32, rarity: &ItemRarity, durability_pct: f32) -> f32 {
+    base_value * rarity_value_multiplier(rarity) * 0.3 * (durability_pct / 100.0).max(0.1)
+}
+pub fn max_affix_count(ilvl: u32) -> u32 { if ilvl >= 80 { 6 } else if ilvl >= 50 { 4 } else { 2 } }
+pub fn loot_seed_from_entity(entity_id: u32, zone_id: u32, timestamp: u64) -> u64 {
+    (entity_id as u64).wrapping_mul(0x517CC1B727220A95).wrapping_add(zone_id as u64).wrapping_add(timestamp)
+}
+pub fn normalize_weights(weights: &mut Vec<f32>) {
+    let total: f32 = weights.iter().sum();
+    if total > 0.0 { for w in weights.iter_mut() { *w /= total; } }
+}
+pub fn pick_weighted_index(weights: &[f32], roll: f32) -> usize {
+    let mut acc = 0.0f32;
+    for (i, &w) in weights.iter().enumerate() {
+        acc += w;
+        if roll <= acc { return i; }
+    }
+    weights.len().saturating_sub(1)
+}
+pub fn clamp_item_level(ilvl: u32, zone_min: u32, zone_max: u32) -> u32 { ilvl.clamp(zone_min, zone_max) }

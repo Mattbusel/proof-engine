@@ -27,6 +27,7 @@ fn make_particle(i: usize) -> MathParticle {
         origin: Vec3::new(i as f32 * 0.1, 0.0, 0.0),
         age: 0.0,
         lifetime: 5.0,
+        ..Default::default()
     }
 }
 

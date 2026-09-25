@@ -1,0 +1,273 @@
+
+// ── Shader Permutation System ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderPermutationKey {
+    pub features: Vec<String>,
+}
+
+impl ShaderPermutationKey {
+    pub fn new() -> Self { Self { features: Vec::new() } }
+    pub fn with(mut self, feature: impl Into<String>) -> Self { self.features.push(feature.into()); self }
+    pub fn add(&mut self, feature: impl Into<String>) { self.features.push(feature.into()); }
+    pub fn hash_key(&self) -> u64 {
+        let mut sorted = self.features.clone(); sorted.sort();
+        sorted.iter().fold(14695981039346656037u64, |h, s| s.bytes().fold(h, |h, b| h.wrapping_mul(1099511628211) ^ b as u64))
+    }
+    pub fn has(&self, feature: &str) -> bool { self.features.contains(&feature.to_string()) }
+    pub fn feature_count(&self) -> usize { self.features.len() }
+    pub fn is_empty(&self) -> bool { self.features.is_empty() }
+}
+
+impl Default for ShaderPermutationKey {
+    fn default() -> Self { Self::new() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderPermutationRegistry {
+    pub permutations: HashMap<u64, ShaderProgram>,
+    pub keys: HashMap<u64, ShaderPermutationKey>,
+    pub max_permutations: usize,
+    pub base_program_id: u32,
+}
+
+impl ShaderPermutationRegistry {
+    pub fn new(base_id: u32, max: usize) -> Self { Self { permutations: HashMap::new(), keys: HashMap::new(), max_permutations: max, base_program_id: base_id } }
+    pub fn register(&mut self, key: ShaderPermutationKey, program: ShaderProgram) -> bool {
+        if self.permutations.len() >= self.max_permutations { return false; }
+        let h = key.hash_key();
+        self.permutations.insert(h, program);
+        self.keys.insert(h, key);
+        true
+    }
+    pub fn find(&self, key: &ShaderPermutationKey) -> Option<&ShaderProgram> { self.permutations.get(&key.hash_key()) }
+    pub fn count(&self) -> usize { self.permutations.len() }
+    pub fn clear(&mut self) { self.permutations.clear(); self.keys.clear(); }
+}
+
+// ── Shader Reflection Extended ────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderBindingLayout {
+    pub set: u32,
+    pub bindings: Vec<DescriptorBinding>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DescriptorBinding {
+    pub binding: u32,
+    pub descriptor_type: DescriptorType,
+    pub count: u32,
+    pub stages: Vec<ShaderStage>,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DescriptorType { UniformBuffer, StorageBuffer, Sampler, SampledImage, StorageImage, CombinedImageSampler, InputAttachment }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderStage { Vertex, Fragment, Geometry, TessControl, TessEval, Compute, All }
+
+impl ShaderBindingLayout {
+    pub fn new(set: u32) -> Self { Self { set, bindings: Vec::new() } }
+    pub fn add_binding(&mut self, binding: u32, desc_type: DescriptorType, name: impl Into<String>) {
+        self.bindings.push(DescriptorBinding { binding, descriptor_type: desc_type, count: 1, stages: vec![ShaderStage::All], name: name.into() });
+    }
+    pub fn binding_count(&self) -> usize { self.bindings.len() }
+    pub fn has_binding(&self, binding: u32) -> bool { self.bindings.iter().any(|b| b.binding == binding) }
+}
+
+#[derive(Clone, Debug)]
+pub struct PipelineLayout {
+    pub descriptor_sets: Vec<ShaderBindingLayout>,
+    pub push_constant_size: u32,
+    pub push_constant_stages: Vec<ShaderStage>,
+}
+
+impl PipelineLayout {
+    pub fn new() -> Self { Self { descriptor_sets: Vec::new(), push_constant_size: 0, push_constant_stages: Vec::new() } }
+    pub fn add_set(&mut self, layout: ShaderBindingLayout) { self.descriptor_sets.push(layout); }
+    pub fn set_push_constants(&mut self, size: u32) { self.push_constant_size = size; self.push_constant_stages = vec![ShaderStage::Vertex, ShaderStage::Fragment]; }
+    pub fn set_count(&self) -> usize { self.descriptor_sets.len() }
+    pub fn has_push_constants(&self) -> bool { self.push_constant_size > 0 }
+    pub fn total_bindings(&self) -> usize { self.descriptor_sets.iter().map(|s| s.binding_count()).sum() }
+}
+
+impl Default for PipelineLayout {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Compile Pipeline ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct CompilePipelineConfig {
+    pub optimizer: ShaderOptimizer,
+    pub codegen: ShaderCodeGen,
+    pub preprocessor: ShaderPreprocessor,
+    pub include_resolver: ShaderIncludeResolver,
+    pub cache: ShaderCache,
+    pub diagnostic_limit: usize,
+    pub strict_mode: bool,
+    pub pedantic: bool,
+}
+
+impl CompilePipelineConfig {
+    pub fn new(target: CodeGenTarget) -> Self {
+        Self { optimizer: ShaderOptimizer::default(), codegen: ShaderCodeGen::new(target), preprocessor: ShaderPreprocessor::new(), include_resolver: ShaderIncludeResolver::new(), cache: ShaderCache::default(), diagnostic_limit: SHADER_DIAGNOSTIC_MAX, strict_mode: false, pedantic: false }
+    }
+    pub fn debug_config(target: CodeGenTarget) -> Self {
+        let mut c = Self::new(target); c.optimizer = ShaderOptimizer::debug(); c
+    }
+    pub fn release_config(target: CodeGenTarget) -> Self {
+        let mut c = Self::new(target); c.optimizer = ShaderOptimizer::release(); c
+    }
+    pub fn add_define(&mut self, key: impl Into<String>, val: impl Into<String>) { self.preprocessor.define(key, val); }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompileResult {
+    pub success: bool,
+    pub spirv_bytes: Option<Vec<u8>>,
+    pub diagnostics: DiagnosticList,
+    pub reflection: ShaderReflection,
+    pub compile_time_ms: f32,
+    pub source_lines: u32,
+    pub optimized: bool,
+}
+
+impl CompileResult {
+    pub fn ok(spirv: Vec<u8>, reflection: ShaderReflection) -> Self {
+        Self { success: true, spirv_bytes: Some(spirv), diagnostics: DiagnosticList::new(), reflection, compile_time_ms: 0.0, source_lines: 0, optimized: false }
+    }
+    pub fn fail(diagnostics: DiagnosticList) -> Self {
+        Self { success: false, spirv_bytes: None, diagnostics, reflection: ShaderReflection::new(), compile_time_ms: 0.0, source_lines: 0, optimized: false }
+    }
+    pub fn error_count(&self) -> usize { self.diagnostics.error_count() }
+    pub fn warning_count(&self) -> usize { self.diagnostics.warning_count() }
+    pub fn spirv_size(&self) -> usize { self.spirv_bytes.as_ref().map(|b| b.len()).unwrap_or(0) }
+    pub fn has_warnings(&self) -> bool { self.diagnostics.warning_count() > 0 }
+}
+
+// ── Shader Editor State ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderEditorState {
+    pub active_program_id: Option<u32>,
+    pub active_stage: ShaderStage,
+    pub cursor_line: u32,
+    pub cursor_col: u32,
+    pub scroll_top: u32,
+    pub selection: Option<(u32, u32, u32, u32)>,
+    pub font_size: f32,
+    pub show_line_numbers: bool,
+    pub show_minimap: bool,
+    pub syntax_highlight: bool,
+    pub auto_complete: bool,
+    pub bracket_matching: bool,
+    pub indent_guides: bool,
+    pub word_wrap: bool,
+    pub theme: String,
+    pub undo_stack: VecDeque<String>,
+    pub redo_stack: Vec<String>,
+    pub modified: bool,
+}
+
+impl ShaderEditorState {
+    pub fn new() -> Self {
+        Self { active_program_id: None, active_stage: ShaderStage::Fragment, cursor_line: 0, cursor_col: 0, scroll_top: 0, selection: None, font_size: 14.0, show_line_numbers: true, show_minimap: true, syntax_highlight: true, auto_complete: true, bracket_matching: true, indent_guides: true, word_wrap: false, theme: "dark".into(), undo_stack: VecDeque::new(), redo_stack: Vec::new(), modified: false }
+    }
+    pub fn set_active(&mut self, id: u32, stage: ShaderStage) { self.active_program_id = Some(id); self.active_stage = stage; self.cursor_line = 0; self.cursor_col = 0; }
+    pub fn move_cursor(&mut self, line: u32, col: u32) { self.cursor_line = line; self.cursor_col = col; }
+    pub fn push_undo(&mut self, desc: impl Into<String>) { if self.undo_stack.len() >= 100 { self.undo_stack.pop_front(); } self.undo_stack.push_back(desc.into()); self.redo_stack.clear(); self.modified = true; }
+    pub fn can_undo(&self) -> bool { !self.undo_stack.is_empty() }
+    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+    pub fn undo(&mut self) -> Option<String> { let v = self.undo_stack.pop_back()?; self.redo_stack.push(v.clone()); Some(v) }
+    pub fn redo(&mut self) -> Option<String> { let v = self.redo_stack.pop()?; self.undo_stack.push_back(v.clone()); Some(v) }
+    pub fn mark_saved(&mut self) { self.modified = false; }
+    pub fn increase_font(&mut self) { self.font_size = (self.font_size + 1.0).min(48.0); }
+    pub fn decrease_font(&mut self) { self.font_size = (self.font_size - 1.0).max(8.0); }
+}
+
+impl Default for ShaderEditorState {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Autocomplete Provider ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct AutoCompleteItem {
+    pub label: String,
+    pub kind: AutoCompleteKind,
+    pub detail: String,
+    pub insert_text: String,
+    pub documentation: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutoCompleteKind { Function, Variable, Type, Keyword, Snippet, Uniform }
+
+impl AutoCompleteItem {
+    pub fn function(name: impl Into<String>, signature: impl Into<String>) -> Self {
+        let n = name.into();
+        Self { label: n.clone(), kind: AutoCompleteKind::Function, detail: signature.into(), insert_text: n, documentation: String::new() }
+    }
+    pub fn type_item(name: &'static str) -> Self {
+        Self { label: name.into(), kind: AutoCompleteKind::Type, detail: "GLSL type".into(), insert_text: name.into(), documentation: String::new() }
+    }
+    pub fn keyword(kw: &'static str) -> Self {
+        Self { label: kw.into(), kind: AutoCompleteKind::Keyword, detail: "keyword".into(), insert_text: kw.into(), documentation: String::new() }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AutoCompleteProvider {
+    pub builtins: Vec<AutoCompleteItem>,
+    pub user_symbols: Vec<AutoCompleteItem>,
+    pub max_results: usize,
+}
+
+impl AutoCompleteProvider {
+    pub fn new() -> Self {
+        let mut builtins = Vec::new();
+        for kw in &["void", "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "mat3", "mat4", "sampler2D"] {
+            builtins.push(AutoCompleteItem::type_item(kw));
+        }
+        for kw in &["if", "else", "for", "while", "return", "break", "continue", "discard", "uniform", "in", "out", "const"] {
+            builtins.push(AutoCompleteItem::keyword(kw));
+        }
+        for (name, sig) in &[("normalize", "vec3 normalize(vec3)"), ("length", "float length(genType)"), ("dot", "float dot(genType, genType)"), ("cross", "vec3 cross(vec3, vec3)"), ("reflect", "genType reflect(genType, genType)"), ("refract", "genType refract(genType, genType, float)"), ("mix", "genType mix(genType, genType, genType)"), ("clamp", "genType clamp(genType, genType, genType)"), ("pow", "genType pow(genType, genType)"), ("sqrt", "genType sqrt(genType)"), ("abs", "genType abs(genType)"), ("max", "genType max(genType, genType)"), ("min", "genType min(genType, genType)"), ("texture", "vec4 texture(sampler2D, vec2)"), ("step", "genType step(genType, genType)"), ("smoothstep", "genType smoothstep(genType, genType, genType)"), ("sin", "genType sin(genType)"), ("cos", "genType cos(genType)"), ("tan", "genType tan(genType)"), ("floor", "genType floor(genType)"), ("ceil", "genType ceil(genType)"), ("fract", "genType fract(genType)"), ("mod", "genType mod(genType, genType)"), ("sign", "genType sign(genType)"), ("distance", "float distance(genType, genType)"), ("transpose", "mat transpose(mat)"), ("inverse", "mat inverse(mat)"), ("determinant", "float determinant(mat)")] {
+            builtins.push(AutoCompleteItem::function(*name, *sig));
+        }
+        Self { builtins, user_symbols: Vec::new(), max_results: 20 }
+    }
+    pub fn query(&self, prefix: &str) -> Vec<&AutoCompleteItem> {
+        let lower = prefix.to_lowercase();
+        let mut results: Vec<_> = self.builtins.iter().chain(self.user_symbols.iter()).filter(|item| item.label.to_lowercase().starts_with(&lower)).collect();
+        results.truncate(self.max_results);
+        results
+    }
+    pub fn add_user_symbol(&mut self, item: AutoCompleteItem) { self.user_symbols.push(item); }
+    pub fn clear_user_symbols(&mut self) { self.user_symbols.clear(); }
+    pub fn builtin_count(&self) -> usize { self.builtins.len() }
+}
+
+impl Default for AutoCompleteProvider {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+pub const SHADER_EDITOR_MAX_UNDO: usize = 200;
+pub const SHADER_AUTOCOMPLETE_MAX_RESULTS: usize = 20;
+pub const SHADER_PERMUTATION_MAX: usize = 512;
+pub const SHADER_BINDING_SET_MAX: usize = 4;
+pub const SHADER_BINDING_MAX_PER_SET: usize = 16;
+pub const SHADER_STAGE_COUNT: usize = 6;
+pub const SHADER_PUSH_CONSTANT_MAX_BYTES: u32 = 128;
+
+pub fn shader_stage_name(stage: &ShaderStage) -> &'static str {
+    match stage { ShaderStage::Vertex => "vertex", ShaderStage::Fragment => "fragment", ShaderStage::Geometry => "geometry", ShaderStage::TessControl => "tess_control", ShaderStage::TessEval => "tess_eval", ShaderStage::Compute => "compute", ShaderStage::All => "all" }
+}
+pub fn descriptor_type_name(dt: &DescriptorType) -> &'static str {
+    match dt { DescriptorType::UniformBuffer => "UniformBuffer", DescriptorType::StorageBuffer => "StorageBuffer", DescriptorType::Sampler => "Sampler", DescriptorType::SampledImage => "SampledImage", DescriptorType::StorageImage => "StorageImage", DescriptorType::CombinedImageSampler => "CombinedImageSampler", DescriptorType::InputAttachment => "InputAttachment" }
+}

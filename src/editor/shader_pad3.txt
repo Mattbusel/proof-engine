@@ -1,0 +1,345 @@
+
+// ── Material System ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct Material {
+    pub id: u32,
+    pub name: String,
+    pub shader_program_id: u32,
+    pub textures: Vec<MaterialTexture>,
+    pub properties: HashMap<String, MaterialProperty>,
+    pub pipeline: PipelineState,
+    pub render_queue: u32,
+    pub cast_shadows: bool,
+    pub receive_shadows: bool,
+    pub instanced: bool,
+    pub double_sided: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MaterialTexture {
+    pub name: String,
+    pub texture_id: u32,
+    pub slot: u32,
+    pub sampler_type: SamplerType,
+    pub uv_channel: u32,
+}
+
+#[derive(Clone, Debug)]
+pub enum MaterialProperty {
+    Float(f32),
+    Vec2([f32; 2]),
+    Vec3([f32; 3]),
+    Vec4([f32; 4]),
+    Int(i32),
+    Bool(bool),
+    Color([f32; 4]),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SamplerType { Linear, Nearest, LinearMipmap, Trilinear, Anisotropic }
+
+impl Material {
+    pub fn new(id: u32, name: impl Into<String>, shader_id: u32) -> Self {
+        Self { id, name: name.into(), shader_program_id: shader_id, textures: Vec::new(), properties: HashMap::new(), pipeline: PipelineState::default(), render_queue: 2000, cast_shadows: true, receive_shadows: true, instanced: false, double_sided: false }
+    }
+    pub fn add_texture(&mut self, name: impl Into<String>, tex_id: u32, slot: u32) {
+        self.textures.push(MaterialTexture { name: name.into(), texture_id: tex_id, slot, sampler_type: SamplerType::Trilinear, uv_channel: 0 });
+    }
+    pub fn set_float(&mut self, name: impl Into<String>, value: f32) { self.properties.insert(name.into(), MaterialProperty::Float(value)); }
+    pub fn set_color(&mut self, name: impl Into<String>, r: f32, g: f32, b: f32, a: f32) { self.properties.insert(name.into(), MaterialProperty::Color([r, g, b, a])); }
+    pub fn set_vec4(&mut self, name: impl Into<String>, v: [f32; 4]) { self.properties.insert(name.into(), MaterialProperty::Vec4(v)); }
+    pub fn is_transparent(&self) -> bool { self.pipeline.is_transparent() }
+    pub fn is_opaque(&self) -> bool { !self.is_transparent() }
+    pub fn texture_count(&self) -> usize { self.textures.len() }
+    pub fn property_count(&self) -> usize { self.properties.len() }
+    pub fn make_transparent(&mut self) { self.pipeline = PipelineState::transparent(); self.render_queue = 3000; }
+    pub fn make_additive(&mut self) { self.pipeline = PipelineState::additive(); self.render_queue = 3500; }
+}
+
+#[derive(Clone, Debug)]
+pub struct MaterialLibrary {
+    pub materials: HashMap<u32, Material>,
+    pub next_id: u32,
+    pub default_material_id: u32,
+}
+
+impl MaterialLibrary {
+    pub fn new() -> Self { Self { materials: HashMap::new(), next_id: 1, default_material_id: 0 } }
+    pub fn add(&mut self, mat: Material) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.materials.insert(id, mat);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&Material> { self.materials.get(&id) }
+    pub fn get_mut(&mut self, id: u32) -> Option<&mut Material> { self.materials.get_mut(&id) }
+    pub fn find_by_name(&self, name: &str) -> Option<&Material> { self.materials.values().find(|m| m.name == name) }
+    pub fn opaque_materials(&self) -> Vec<&Material> { self.materials.values().filter(|m| m.is_opaque()).collect() }
+    pub fn transparent_materials(&self) -> Vec<&Material> { self.materials.values().filter(|m| m.is_transparent()).collect() }
+    pub fn count(&self) -> usize { self.materials.len() }
+    pub fn remove(&mut self, id: u32) -> bool { self.materials.remove(&id).is_some() }
+    pub fn set_default(&mut self, id: u32) { self.default_material_id = id; }
+}
+
+impl Default for MaterialLibrary {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Render Pass System ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct RenderPass {
+    pub id: u32,
+    pub name: String,
+    pub pass_type: RenderPassType,
+    pub color_attachments: Vec<ColorAttachment>,
+    pub depth_attachment: Option<DepthAttachment>,
+    pub clear_color: [f32; 4],
+    pub clear_depth: f32,
+    pub clear_stencil: u8,
+    pub viewport: (u32, u32, u32, u32),
+    pub enabled: bool,
+    pub order: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderPassType { Opaque, Transparent, Shadow, PostProcess, Ui, Compute, Custom }
+
+#[derive(Clone, Debug)]
+pub struct ColorAttachment {
+    pub texture_id: u32,
+    pub format: AttachmentFormat,
+    pub load_op: LoadOp,
+    pub store_op: StoreOp,
+    pub mip_level: u32,
+    pub layer: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct DepthAttachment {
+    pub texture_id: u32,
+    pub format: AttachmentFormat,
+    pub load_op: LoadOp,
+    pub store_op: StoreOp,
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachmentFormat { Rgba8, Rgba16F, Rgba32F, R8, R16F, R32F, Rg8, Rg16F, Depth16, Depth24, Depth32F, Depth24Stencil8 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoadOp { Load, Clear, DontCare }
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoreOp { Store, DontCare }
+
+impl RenderPass {
+    pub fn new(id: u32, name: impl Into<String>, pass_type: RenderPassType) -> Self {
+        Self { id, name: name.into(), pass_type, color_attachments: Vec::new(), depth_attachment: None, clear_color: [0.0, 0.0, 0.0, 1.0], clear_depth: 1.0, clear_stencil: 0, viewport: (0, 0, 1920, 1080), enabled: true, order: 0 }
+    }
+    pub fn add_color_attachment(&mut self, tex_id: u32, format: AttachmentFormat) {
+        self.color_attachments.push(ColorAttachment { texture_id: tex_id, format, load_op: LoadOp::Clear, store_op: StoreOp::Store, mip_level: 0, layer: 0 });
+    }
+    pub fn set_depth(&mut self, tex_id: u32) {
+        self.depth_attachment = Some(DepthAttachment { texture_id: tex_id, format: AttachmentFormat::Depth32F, load_op: LoadOp::Clear, store_op: StoreOp::Store, read_only: false });
+    }
+    pub fn is_shadow_pass(&self) -> bool { self.pass_type == RenderPassType::Shadow }
+    pub fn is_postprocess(&self) -> bool { self.pass_type == RenderPassType::PostProcess }
+    pub fn attachment_count(&self) -> usize { self.color_attachments.len() + if self.depth_attachment.is_some() { 1 } else { 0 } }
+    pub fn set_viewport(&mut self, x: u32, y: u32, w: u32, h: u32) { self.viewport = (x, y, w, h); }
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderPipeline {
+    pub passes: Vec<RenderPass>,
+    pub next_id: u32,
+}
+
+impl RenderPipeline {
+    pub fn new() -> Self { Self { passes: Vec::new(), next_id: 1 } }
+    pub fn add_pass(&mut self, pass: RenderPass) { self.passes.push(pass); }
+    pub fn sorted_passes(&self) -> Vec<&RenderPass> {
+        let mut sorted: Vec<_> = self.passes.iter().filter(|p| p.enabled).collect();
+        sorted.sort_by_key(|p| p.order);
+        sorted
+    }
+    pub fn pass_count(&self) -> usize { self.passes.len() }
+    pub fn find_by_type(&self, pass_type: &RenderPassType) -> Vec<&RenderPass> {
+        self.passes.iter().filter(|p| &p.pass_type == pass_type).collect()
+    }
+    pub fn enable_pass(&mut self, id: u32) { if let Some(p) = self.passes.iter_mut().find(|p| p.id == id) { p.enabled = true; } }
+    pub fn disable_pass(&mut self, id: u32) { if let Some(p) = self.passes.iter_mut().find(|p| p.id == id) { p.enabled = false; } }
+}
+
+impl Default for RenderPipeline {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Post-Process Effect ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct PostProcessEffect {
+    pub id: u32,
+    pub name: String,
+    pub effect_type: PostEffectType,
+    pub shader_program_id: u32,
+    pub properties: HashMap<String, f32>,
+    pub enabled: bool,
+    pub order: u32,
+    pub input_texture: u32,
+    pub output_texture: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PostEffectType { Bloom, Tonemap, Vignette, ChromaticAberration, DepthOfField, MotionBlur, Ssao, Fxaa, Custom }
+
+impl PostProcessEffect {
+    pub fn new(id: u32, name: impl Into<String>, effect_type: PostEffectType, shader_id: u32) -> Self {
+        Self { id, name: name.into(), effect_type, shader_program_id: shader_id, properties: HashMap::new(), enabled: true, order: 0, input_texture: 0, output_texture: 0 }
+    }
+    pub fn set_property(&mut self, key: impl Into<String>, val: f32) { self.properties.insert(key.into(), val); }
+    pub fn get_property(&self, key: &str) -> f32 { self.properties.get(key).copied().unwrap_or(0.0) }
+    pub fn bloom_intensity(&self) -> f32 { self.get_property("intensity") }
+    pub fn vignette_strength(&self) -> f32 { self.get_property("strength") }
+    pub fn is_bloom(&self) -> bool { self.effect_type == PostEffectType::Bloom }
+    pub fn is_tonemap(&self) -> bool { self.effect_type == PostEffectType::Tonemap }
+}
+
+#[derive(Clone, Debug)]
+pub struct PostProcessStack {
+    pub effects: Vec<PostProcessEffect>,
+    pub enabled: bool,
+}
+
+impl PostProcessStack {
+    pub fn new() -> Self { Self { effects: Vec::new(), enabled: true } }
+    pub fn add(&mut self, effect: PostProcessEffect) { self.effects.push(effect); }
+    pub fn enabled_effects(&self) -> Vec<&PostProcessEffect> {
+        let mut v: Vec<_> = self.effects.iter().filter(|e| e.enabled).collect();
+        v.sort_by_key(|e| e.order);
+        v
+    }
+    pub fn enable_effect(&mut self, id: u32) { if let Some(e) = self.effects.iter_mut().find(|e| e.id == id) { e.enabled = true; } }
+    pub fn disable_effect(&mut self, id: u32) { if let Some(e) = self.effects.iter_mut().find(|e| e.id == id) { e.enabled = false; } }
+    pub fn effect_count(&self) -> usize { self.effects.len() }
+    pub fn active_count(&self) -> usize { self.effects.iter().filter(|e| e.enabled).count() }
+}
+
+impl Default for PostProcessStack {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Node Graph ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderNode {
+    pub id: u32,
+    pub node_type: ShaderNodeType,
+    pub label: String,
+    pub position: (f32, f32),
+    pub inputs: Vec<ShaderNodePort>,
+    pub outputs: Vec<ShaderNodePort>,
+    pub properties: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderNodeType {
+    Input, Output, Math, Texture, Color, Constant, Mix, Clamp, Normalize, Length, Dot, Cross, Reflect, Refract, Fresnel, NormalMap, VertexShader, FragmentShader, Custom(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderNodePort {
+    pub id: u32,
+    pub name: String,
+    pub port_type: ShaderDataType,
+    pub connected_to: Option<(u32, u32)>,
+    pub default_value: String,
+}
+
+impl ShaderNode {
+    pub fn new(id: u32, node_type: ShaderNodeType, label: impl Into<String>) -> Self {
+        Self { id, node_type, label: label.into(), position: (0.0, 0.0), inputs: Vec::new(), outputs: Vec::new(), properties: HashMap::new() }
+    }
+    pub fn add_input(&mut self, name: impl Into<String>, port_type: ShaderDataType) -> u32 {
+        let pid = self.inputs.len() as u32;
+        self.inputs.push(ShaderNodePort { id: pid, name: name.into(), port_type, connected_to: None, default_value: "0.0".into() });
+        pid
+    }
+    pub fn add_output(&mut self, name: impl Into<String>, port_type: ShaderDataType) -> u32 {
+        let pid = self.outputs.len() as u32;
+        self.outputs.push(ShaderNodePort { id: pid, name: name.into(), port_type, connected_to: None, default_value: "0.0".into() });
+        pid
+    }
+    pub fn set_property(&mut self, key: impl Into<String>, val: impl Into<String>) { self.properties.insert(key.into(), val.into()); }
+    pub fn is_output_node(&self) -> bool { self.node_type == ShaderNodeType::Output }
+    pub fn is_input_node(&self) -> bool { self.node_type == ShaderNodeType::Input }
+    pub fn input_count(&self) -> usize { self.inputs.len() }
+    pub fn output_count(&self) -> usize { self.outputs.len() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderNodeGraph {
+    pub nodes: HashMap<u32, ShaderNode>,
+    pub connections: Vec<(u32, u32, u32, u32)>,
+    pub next_id: u32,
+    pub name: String,
+}
+
+impl ShaderNodeGraph {
+    pub fn new(name: impl Into<String>) -> Self { Self { nodes: HashMap::new(), connections: Vec::new(), next_id: 1, name: name.into() } }
+    pub fn add_node(&mut self, node_type: ShaderNodeType, label: impl Into<String>) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.nodes.insert(id, ShaderNode::new(id, node_type, label));
+        id
+    }
+    pub fn connect(&mut self, from_node: u32, from_port: u32, to_node: u32, to_port: u32) {
+        self.connections.push((from_node, from_port, to_node, to_port));
+        if let Some(node) = self.nodes.get_mut(&to_node) {
+            if let Some(port) = node.inputs.get_mut(to_port as usize) { port.connected_to = Some((from_node, from_port)); }
+        }
+    }
+    pub fn disconnect(&mut self, to_node: u32, to_port: u32) {
+        self.connections.retain(|(_, _, tn, tp)| !(*tn == to_node && *tp == to_port));
+        if let Some(node) = self.nodes.get_mut(&to_node) {
+            if let Some(port) = node.inputs.get_mut(to_port as usize) { port.connected_to = None; }
+        }
+    }
+    pub fn remove_node(&mut self, id: u32) {
+        self.nodes.remove(&id);
+        self.connections.retain(|(a, _, b, _)| *a != id && *b != id);
+    }
+    pub fn node_count(&self) -> usize { self.nodes.len() }
+    pub fn connection_count(&self) -> usize { self.connections.len() }
+    pub fn output_node(&self) -> Option<&ShaderNode> { self.nodes.values().find(|n| n.is_output_node()) }
+    pub fn move_node(&mut self, id: u32, x: f32, y: f32) { if let Some(n) = self.nodes.get_mut(&id) { n.position = (x, y); } }
+}
+
+impl Default for ShaderNodeGraph {
+    fn default() -> Self { Self::new("new_graph") }
+}
+
+// ── More constants ────────────────────────────────────────────────────────────
+
+pub const MATERIAL_MAX_TEXTURES: usize = 16;
+pub const MATERIAL_MAX_PROPERTIES: usize = 64;
+pub const RENDER_PASS_MAX: usize = 32;
+pub const POST_PROCESS_EFFECT_MAX: usize = 16;
+pub const SHADER_NODE_GRAPH_MAX_NODES: usize = 512;
+pub const SHADER_NODE_GRAPH_MAX_CONNECTIONS: usize = 1024;
+pub const MATERIAL_OPAQUE_QUEUE: u32 = 2000;
+pub const MATERIAL_TRANSPARENT_QUEUE: u32 = 3000;
+pub const MATERIAL_OVERLAY_QUEUE: u32 = 4000;
+
+pub fn attachment_format_name(fmt: &AttachmentFormat) -> &'static str {
+    match fmt {
+        AttachmentFormat::Rgba8 => "RGBA8", AttachmentFormat::Rgba16F => "RGBA16F",
+        AttachmentFormat::Rgba32F => "RGBA32F", AttachmentFormat::Depth32F => "Depth32F",
+        AttachmentFormat::Depth24Stencil8 => "Depth24Stencil8", _ => "Unknown",
+    }
+}
+pub fn blend_factor_glsl(f: &BlendFactor) -> &'static str {
+    match f {
+        BlendFactor::Zero => "GL_ZERO", BlendFactor::One => "GL_ONE",
+        BlendFactor::SrcAlpha => "GL_SRC_ALPHA", BlendFactor::OneMinusSrcAlpha => "GL_ONE_MINUS_SRC_ALPHA",
+        _ => "GL_ONE",
+    }
+}

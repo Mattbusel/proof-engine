@@ -322,6 +322,51 @@ pub struct RenderConfig {
     pub film_grain:           f32,
     pub scanlines_enabled:    bool,
     pub scanline_intensity:   f32,
+
+    // ── Grade ────────────────────────────────────────────────────────────────
+    //
+    // The composite shader has had tint, saturation, contrast and a vignette
+    // since it was written, and every one of them was hard-coded in the
+    // pipeline where nothing could reach it. A game could turn bloom on and
+    // that was the whole of its control over how the picture looked.
+    /// Linear exposure, applied before the tonemap. 1.0 is neutral.
+    pub exposure:             f32,
+    /// How much of the filmic curve to apply, 0.0 to 1.0.
+    ///
+    /// Without it the image is clipped rather than rolled off, which is what
+    /// makes a rendered frame look rendered.
+    pub tonemap:              f32,
+    /// Warm bleed around bright edges, the way film halates. 0.0 to ~0.5.
+    pub halation:             f32,
+    pub saturation:           f32,
+    pub contrast:             f32,
+    pub brightness:           f32,
+    /// Strength of the corner darkening, 0.0 to 1.0.
+    pub vignette:             f32,
+    /// Where the vignette starts, as a fraction of the way to the corner.
+    pub vignette_softness:    f32,
+    /// Colour cast, multiplied over everything.
+    pub tint:                 [f32; 3],
+    /// Shadows, lifted toward this colour.
+    pub lift:                 [f32; 3],
+    /// Highlights, multiplied by this colour.
+    pub gain:                 [f32; 3],
+    /// Nothing dimmer than this blooms. 0.0 blooms everything.
+    pub bloom_threshold:      f32,
+    /// How soft the edge of that threshold is.
+    pub bloom_knee:           f32,
+    /// Horizontal light streaking, the way anamorphic glass flares. 0.0 off.
+    pub anamorphic:           f32,
+    /// Unsharp mask after the tonemap, to put back the edge bloom takes off.
+    pub sharpen:              f32,
+    /// Ordered dither before output, in 8-bit steps.
+    ///
+    /// This engine renders very dark scenes, and a dark gradient in eight bits
+    /// per channel bands visibly. A quarter-step of ordered noise costs
+    /// nothing and removes it.
+    pub dither:               f32,
+    /// Barrel distortion, as a fraction of the frame. Small values only.
+    pub barrel:               f32,
     pub font_size:            u32,
     pub fullscreen:           bool,
     /// Render scale (1.0 = native, 0.5 = half res).
@@ -333,6 +378,49 @@ pub struct RenderConfig {
     pub antialiasing:         bool,
     /// Color depth per channel for dithering: 8, 16, or 32.
     pub color_depth:          u8,
+    /// Voxel-cone global illumination: voxelise the scene, inject light,
+    /// propagate. Worth it for a lit 3D scene and pure cost for anything else.
+    ///
+    /// This used to run unconditionally, every frame, whatever was on screen —
+    /// which meant a game drawing its whole interface in the screen-space UI
+    /// layer paid for a global illumination solve it could never see.
+    pub global_illumination:  bool,
+    /// Volumetric fog. Same story: a real effect, and a real cost, that a
+    /// scene with nothing in it cannot benefit from.
+    pub volumetric_fog:       bool,
+
+    // ── Light ────────────────────────────────────────────────────────────────
+    //
+    // Everything above shapes the picture. These add light to it.
+    /// Screen-space indirect light: how strongly matter near something
+    /// bright is lit by it, in that thing's colour. 0.0 off; 0.5 to 1.5 is
+    /// a lit room.
+    pub indirect_light:       f32,
+    /// Radial light shafts from the source the game sets on `engine.fx`.
+    /// 0.0 off; the source's own strength scales it further.
+    pub light_shafts:         f32,
+    /// Lens flare ghosts and halo off anything that blooms. 0.0 off; 0.1 to
+    /// 0.4 is a visible lens without being a screensaver.
+    pub lens_flare:           f32,
+    /// How far, in pixels, the world pass moves at full camera trauma. The
+    /// HUD does not move. 0.0 turns screen shake off for the world pass.
+    pub shake_pixels:         f32,
+    /// Anti-aliasing on the finished frame, between the composite and the
+    /// HUD. A real FXAA pass, not the terminal approximation `antialiasing`
+    /// names.
+    pub fxaa:                 bool,
+    /// Motion trails. The fraction of the previous frame's scene that
+    /// survives into this one, 0.0 to about 0.9. Applies to the scene and
+    /// the UI world pass, never to the HUD.
+    pub persistence:          f32,
+    /// Wait for the display's vertical refresh before presenting. Off, the
+    /// loop runs as fast as the GPU allows, which burns power and makes
+    /// every time-based effect run at whatever rate the machine happens to.
+    pub vsync:                bool,
+    /// Whether the UI layer's world pass is painted into the scene buffer.
+    /// Off, every UI command paints in the HUD pass after post-processing,
+    /// which is how the layer behaved before the world pass existed.
+    pub world_ui_in_scene:    bool,
 }
 
 impl Default for RenderConfig {
@@ -348,6 +436,25 @@ impl Default for RenderConfig {
             film_grain:           0.0,
             scanlines_enabled:    false,
             scanline_intensity:   0.15,
+            // Neutral: the same picture the pipeline produced before the grade
+            // was exposed, so nothing that already existed changes look.
+            exposure:             1.0,
+            tonemap:              0.0,
+            halation:             0.0,
+            saturation:           1.0,
+            contrast:             1.05,
+            brightness:           0.0,
+            vignette:             0.25,
+            vignette_softness:    0.35,
+            tint:                 [1.0, 1.0, 1.0],
+            lift:                 [0.0, 0.0, 0.0],
+            gain:                 [1.0, 1.0, 1.0],
+            bloom_threshold:      0.0,
+            bloom_knee:           0.1,
+            anamorphic:           0.0,
+            sharpen:              0.0,
+            dither:               0.0,
+            barrel:               0.0,
             font_size:            32,
             fullscreen:           false,
             render_scale:         1.0,
@@ -355,6 +462,19 @@ impl Default for RenderConfig {
             shadow_quality:       ShadowQuality::Medium,
             antialiasing:         true,
             color_depth:          8,
+            // On by default, because turning them off silently would change
+            // how every existing scene looks. A caller that draws in the UI
+            // layer should turn them off deliberately.
+            global_illumination:  true,
+            volumetric_fog:       true,
+            indirect_light:       0.0,
+            light_shafts:         0.0,
+            lens_flare:           0.0,
+            shake_pixels:         0.0,
+            fxaa:                 false,
+            persistence:          0.0,
+            vsync:                true,
+            world_ui_in_scene:    true,
         }
     }
 }
@@ -370,6 +490,11 @@ impl RenderConfig {
         self.render_scale         = self.render_scale.clamp(0.25, 8.0);
         self.particle_multiplier  = self.particle_multiplier.max(0.0);
         self.motion_blur_samples  = self.motion_blur_samples.clamp(1, 16);
+        self.indirect_light       = self.indirect_light.clamp(0.0, 8.0);
+        self.light_shafts         = self.light_shafts.clamp(0.0, 8.0);
+        self.lens_flare           = self.lens_flare.clamp(0.0, 4.0);
+        self.shake_pixels         = self.shake_pixels.clamp(0.0, 200.0);
+        self.persistence          = self.persistence.clamp(0.0, 0.98);
     }
 }
 

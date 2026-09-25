@@ -1,6 +1,6 @@
 [package]
 name = "proof-engine"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Matthew Busel <matt@tensorust.com>"]
 license = "MIT"
@@ -10,6 +10,8 @@ homepage = "https://github.com/Mattbusel/proof-engine"
 keywords = ["game-engine", "rendering", "mathematics", "ascii", "opengl"]
 categories = ["game-engines", "graphics", "rendering"]
 readme = "README.md"
+# Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.
+exclude = ["*.png", "*.gif", "assets/", "*.py", ".github/", "ci/"]
 
 [dependencies]
 # OpenGL / windowing — glutin-winit bridges the two and handles version alignment
@@ -108,6 +110,9 @@ name = "sculptor"
 
 [[example]]
 name = "apotheosis"
+
+[[example]]
+name = "sky"
 
 [[bin]]
 name = "proof_editor"

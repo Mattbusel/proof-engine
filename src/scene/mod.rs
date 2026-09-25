@@ -569,9 +569,31 @@ impl Scene {
             self.particles.apply_field(field, self.time);
         }
 
-        // Tick entities
+        // Tick entities, then move their glyphs to wherever the springs put
+        // them. Without this second step the formation, cohesion and pulse are
+        // all computed and never seen: entities render as a static cloud.
         for (_, entity) in &mut self.entities {
             entity.tick(dt, self.time);
+            let positions = entity.step_glyph_physics(dt);
+            for (slot, id) in entity.glyph_ids.iter().enumerate() {
+                let Some(pos) = positions.get(slot) else { break };
+                if let Some(g) = self.glyphs.get_mut(*id) {
+                    g.position = *pos;
+                    // Matter that has drifted from its slot cools and dims:
+                    // the light is the matter, so a scattered entity is a
+                    // darker one.
+                    let drift = entity
+                        .cohesion_system
+                        .as_ref()
+                        .and_then(|cs| cs.glyphs.get(slot))
+                        .map(|gc| gc.drift)
+                        .unwrap_or(0.0);
+                    let bound = (1.0 - drift * 0.25).clamp(0.15, 1.0);
+                    g.emission = 0.8 * bound;
+                    g.color.w = bound;
+                    g.temperature = entity.entity_temperature;
+                }
+            }
         }
 
         // Update node world transforms

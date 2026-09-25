@@ -117,6 +117,16 @@ pub struct ProofEngine {
     pub scene: SceneGraph,
     pub camera: ProofCamera,
     pub input: InputState,
+    /// Screen-space UI, in pixel coordinates. Cleared at the start of every
+    /// frame by `run_ui`, so games redraw it immediate-mode style.
+    pub ui: render::ui_layer::UiLayer,
+    /// Transient screen effects: shockwaves, flashes, light shafts. Fire and
+    /// forget; ticked and uploaded by `run_ui` every frame.
+    pub fx: render::screen_fx::ScreenFx,
+    /// GPU density entities queued for this frame. Drained after the render.
+    density_queue: Vec<particle::gpu_density::GpuDensityEntityData>,
+    /// The particle budget per density entity, set by `init_gpu_density`.
+    density_budget: u32,
     /// Optional audio engine — None if no output device is available.
     pub audio: Option<audio::AudioEngine>,
     // Internal render pipeline (initialized lazily when run() is called)
@@ -134,10 +144,37 @@ impl ProofEngine {
             camera: ProofCamera::new(&config),
             scene: SceneGraph::new(),
             input: InputState::new(),
+            ui: render::ui_layer::UiLayer::new(
+                config.window_width as f32,
+                config.window_height as f32,
+            ),
+            fx: render::screen_fx::ScreenFx::new(),
+            density_queue: Vec::new(),
+            density_budget: 0,
             audio,
             config,
             pipeline: None,
         }
+    }
+
+    /// Turn on GPU density entities with a per-entity particle budget.
+    ///
+    /// The budget is capped at
+    /// [`MAX_PARTICLES_PER_ENTITY`](particle::gpu_density::MAX_PARTICLES_PER_ENTITY):
+    /// past that there are more particles than pixels and the picture stops
+    /// improving while the frame time keeps climbing. Asking for more is
+    /// fine; you get the cap and a log line.
+    pub fn init_gpu_density(&mut self, particles: u32) {
+        let cap = particle::gpu_density::MAX_PARTICLES_PER_ENTITY;
+        if particles > cap {
+            log::info!("gpu density: {particles} particles requested, drawing {cap} per entity");
+        }
+        self.density_budget = particles.min(cap);
+    }
+
+    /// Draw a density entity this frame. Call every frame it should show.
+    pub fn queue_gpu_density_entity(&mut self, entity: particle::gpu_density::GpuDensityEntityData) {
+        self.density_queue.push(entity);
     }
 
     /// Send an audio event. No-op if audio is unavailable.
@@ -197,8 +234,11 @@ impl ProofEngine {
 
             // Render scene first
             if let Some(ref mut p) = self.pipeline {
+                p.set_density_entities(&self.density_queue, self.density_budget);
                 p.render(&self.scene, &self.camera);
             }
+            self.density_queue.clear();
+            self.fx.lights.clear();
 
             // NOW paint the overlay (egui) on top of the rendered scene
             if let Some(ptr) = gl_ptr {
@@ -207,6 +247,89 @@ impl ProofEngine {
             }
 
             // Swap
+            if let Some(ref mut p) = self.pipeline {
+                if !p.swap() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Run a UI-driven game.
+    ///
+    /// Unlike [`run`], `update` is called *before* the scene is drawn, and the
+    /// screen-space `ui` layer is painted afterwards. That ordering matters for
+    /// a game: what you push this frame is what appears this frame, rather than
+    /// showing up one frame late.
+    ///
+    /// The UI layer is cleared before each `update`, so games redraw it in full
+    /// every frame instead of tracking what to erase.
+    pub fn run_ui<F>(&mut self, mut update: F)
+    where
+        F: FnMut(&mut ProofEngine, f32),
+    {
+        let pipeline = render::Pipeline::init(&self.config);
+        self.pipeline = Some(pipeline);
+
+        // Size the UI layer from the framebuffer, which is what the viewport
+        // uses; the window's own size can differ on a scaled display.
+        let (w, h) = self.render_size();
+        self.ui.resize(w as f32, h as f32);
+
+        let mut last = std::time::Instant::now();
+        let mut last_size = (w, h);
+        loop {
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last).as_secs_f32().min(0.1);
+            last = now;
+
+            if let Some(ref mut p) = self.pipeline {
+                if !p.poll_events(&mut self.input) {
+                    break;
+                }
+            }
+
+            // Keep the UI projection matched to the framebuffer.
+            let size = self.render_size();
+            if size != last_size {
+                last_size = size;
+                self.ui.resize(size.0 as f32, size.1 as f32);
+            }
+
+            self.scene.tick(dt);
+
+            // Game logic and UI construction, both before anything is drawn.
+            self.ui.begin_frame();
+            update(self, dt);
+
+            // Honour a quit asked for during the update.
+            //
+            // `request_quit` used to set a flag that nothing read, so a game's
+            // own Quit menu did nothing at all and the only way out was the
+            // window's close button. The check goes here, after the update and
+            // before the render, so the frame that asked to quit is the last
+            // one and nothing half-drawn reaches the screen.
+            if self.input.quit_requested {
+                break;
+            }
+
+            // Trauma decays here. It used to be added and never ticked in
+            // this loop, so the first hit left the camera shaking forever.
+            self.camera.shake.tick(dt);
+            self.fx.tick(dt);
+
+            if let Some(ref mut p) = self.pipeline {
+                p.update_render_config(&self.config.render);
+                p.set_density_entities(&self.density_queue, self.density_budget);
+                // The scene, then the UI's world pass into the same buffer,
+                // then post-processing over both.
+                p.render_frame(&self.scene, &self.camera, Some(&self.ui), &self.fx);
+                // The HUD, painted after post-processing so it stays sharp.
+                p.render_ui(&self.ui);
+            }
+            self.density_queue.clear();
+            self.fx.lights.clear();
+
             if let Some(ref mut p) = self.pipeline {
                 if !p.swap() {
                     break;
@@ -296,6 +419,75 @@ impl ProofEngine {
     pub fn window_size(&self) -> (u32, u32) {
         self.pipeline.as_ref().map(|p| p.window_size()).unwrap_or((1600, 1000))
     }
+
+    /// The framebuffer size, in the same units the viewport uses.
+    ///
+    /// Screen-space UI must lay out against this, not the window size: on a
+    /// scaled display the two differ and the UI ends up magnified.
+    pub fn render_size(&self) -> (u32, u32) {
+        self.pipeline.as_ref().map(|p| p.render_size()).unwrap_or((1600, 1000))
+    }
+
+    /// Write the frame currently on screen to an uncompressed 24-bit BMP.
+    ///
+    /// The point of this is being able to see what the engine actually drew.
+    /// Asking the window manager for a picture of a hardware-accelerated window
+    /// is unreliable — it hands back whatever it last cached, which can be a
+    /// stale frame or a blank one — so the only trustworthy answer comes from
+    /// reading the framebuffer back off the GPU.
+    ///
+    /// BMP because it needs no compression and therefore no dependency; the
+    /// row order matches OpenGL's, so no flip is needed either.
+    pub fn save_frame(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let Some(p) = self.pipeline.as_ref() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "no pipeline to read from",
+            ));
+        };
+        let (w, h, rgba) = p.read_frame();
+        if w == 0 || h == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "empty framebuffer",
+            ));
+        }
+
+        // Each BMP row is padded to a multiple of four bytes.
+        let stride = ((w as usize * 3) + 3) & !3;
+        let pixels = stride * h as usize;
+        let mut out = Vec::with_capacity(54 + pixels);
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&((54 + pixels) as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(w as i32).to_le_bytes());
+        out.extend_from_slice(&(h as i32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24u16.to_le_bytes());
+        for _ in 0..6 {
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        for y in 0..h as usize {
+            let row = y * w as usize * 4;
+            for x in 0..w as usize {
+                let i = row + x * 4;
+                // BMP stores blue first.
+                out.push(rgba[i + 2]);
+                out.push(rgba[i + 1]);
+                out.push(rgba[i]);
+            }
+            for _ in 0..(stride - w as usize * 3) {
+                out.push(0);
+            }
+        }
+
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(&out)
+    }
 }
 
 /// Common imports for using Proof Engine.
@@ -318,6 +510,11 @@ pub mod prelude {
         tween::sequence::{TweenSequence, TweenTimeline, SequenceBuilder},
         debug::DebugOverlay,
         render::pipeline::FrameStats,
+        render::screen_fx::{ScreenFx, ScreenLight, Shockwave},
+        render::ui_layer::UiPass,
     };
-    pub use glam::{Vec2, Vec3, Vec4};
+    // Quat and Mat4 belong here too: the skeleton and animation APIs hand out
+    // transforms built from them, so a caller who only has the prelude cannot
+    // pose a figure without reaching past it into glam.
+    pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 }

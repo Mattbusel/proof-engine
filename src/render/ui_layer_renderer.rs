@@ -9,7 +9,7 @@
 
 use glam::{Vec2, Vec3, Vec4, Mat4};
 
-use super::ui_layer::{UiLayer, UiDrawCommand, TextAlign, BorderStyle};
+use super::ui_layer::{UiLayer, UiDrawCommand, UiParticle, UiPass, TextAlign, BorderStyle};
 use crate::glyph::batch::GlyphInstance;
 use crate::glyph::atlas::FontAtlas;
 
@@ -20,8 +20,14 @@ use crate::glyph::atlas::FontAtlas;
 /// Holds CPU-side instance buffers and converts `UiDrawCommand`s into
 /// `GlyphInstance`s positioned in screen-pixel coordinates.
 pub struct UiLayerRenderer {
-    /// Accumulated glyph instances for the current frame.
+    /// Scratch: the instances of the command currently being built. Moved
+    /// into `hud` or `world` as each command finishes.
     instances: Vec<GlyphInstance>,
+    /// Instances for the HUD pass, painted after post-processing.
+    hud: Vec<GlyphInstance>,
+    /// Instances for the world pass, painted into the scene buffer before
+    /// post-processing. See [`UiPass`].
+    world: Vec<GlyphInstance>,
     /// Rect instances (quads without texture — solid color).
     rect_instances: Vec<RectInstance>,
 }
@@ -39,6 +45,8 @@ impl UiLayerRenderer {
     pub fn new() -> Self {
         Self {
             instances: Vec::with_capacity(2048),
+            hud: Vec::with_capacity(2048),
+            world: Vec::with_capacity(1 << 16),
             rect_instances: Vec::with_capacity(256),
         }
     }
@@ -46,6 +54,8 @@ impl UiLayerRenderer {
     /// Clear instance buffers. Call at the start of each frame.
     pub fn begin(&mut self) {
         self.instances.clear();
+        self.hud.clear();
+        self.world.clear();
         self.rect_instances.clear();
     }
 
@@ -57,7 +67,7 @@ impl UiLayerRenderer {
             return;
         }
 
-        for cmd in ui.draw_queue() {
+        for (i, cmd) in ui.draw_queue().iter().enumerate() {
             match cmd {
                 UiDrawCommand::Text { text, x, y, scale, color, emission, alignment } => {
                     self.build_text_instances(
@@ -66,17 +76,27 @@ impl UiLayerRenderer {
                 }
                 UiDrawCommand::Rect { x, y, w, h, color, filled } => {
                     if *filled {
-                        self.rect_instances.push(RectInstance {
-                            position: [*x, *y],
-                            size: [*w, *h],
-                            color: color.to_array(),
-                        });
+                        self.push_filled_rect(*x, *y, *w, *h, *color, atlas);
                     } else {
                         self.build_rect_outline(*x, *y, *w, *h, *color, ui, atlas);
                     }
                 }
                 UiDrawCommand::Panel { x, y, w, h, border, fill_color, border_color } => {
-                    self.build_panel(*x, *y, *w, *h, *border, *fill_color, *border_color, ui, atlas);
+                    // A defaulted panel is split: the fill is ground and goes
+                    // under the matter in the world pass, the border is
+                    // interface and stays sharp in the HUD. A forced panel
+                    // goes whole wherever it was sent.
+                    let split = !ui.pass_forced(i);
+                    let fill = if split {
+                        Vec4::new(fill_color.x, fill_color.y, fill_color.z, 0.0)
+                    } else {
+                        *fill_color
+                    };
+                    if split && fill_color.w > 0.0 {
+                        self.build_panel(*x, *y, *w, *h, *border, *fill_color, Vec4::ZERO, ui, atlas);
+                        self.world.extend(self.instances.drain(..));
+                    }
+                    self.build_panel(*x, *y, *w, *h, *border, fill, *border_color, ui, atlas);
                 }
                 UiDrawCommand::Bar { x, y, w, h, fill_pct, fill_color, bg_color, ghost_pct, ghost_color } => {
                     self.build_bar(*x, *y, *w, *h, *fill_pct, *fill_color, *bg_color, *ghost_pct, *ghost_color, ui, atlas);
@@ -84,18 +104,44 @@ impl UiLayerRenderer {
                 UiDrawCommand::Sprite { lines, x, y, color } => {
                     self.build_sprite(lines, *x, *y, *color, ui, atlas);
                 }
+                UiDrawCommand::Particles(particles) => {
+                    self.build_particle_instances(particles, 0.0, 0.0, atlas);
+                }
+                UiDrawCommand::SharedParticles { particles, dx, dy } => {
+                    self.build_particle_instances(particles, *dx, *dy, atlas);
+                }
+            }
+            // Each command lands whole in one pass or the other.
+            match ui.pass_of(i) {
+                UiPass::World => self.world.extend(self.instances.drain(..)),
+                UiPass::Hud => self.hud.extend(self.instances.drain(..)),
             }
         }
     }
 
-    /// Get the glyph instances for GPU upload.
+    /// The HUD-pass glyph instances for GPU upload.
     pub fn glyph_instances(&self) -> &[GlyphInstance] {
-        &self.instances
+        &self.hud
     }
 
-    /// Get glyph instance data as raw bytes for GPU upload.
+    /// HUD-pass instance data as raw bytes for GPU upload.
     pub fn glyph_bytes(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.instances)
+        bytemuck::cast_slice(&self.hud)
+    }
+
+    /// The world-pass glyph instances for GPU upload.
+    pub fn world_instances(&self) -> &[GlyphInstance] {
+        &self.world
+    }
+
+    /// World-pass instance data as raw bytes for GPU upload.
+    pub fn world_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.world)
+    }
+
+    /// World-pass glyph count.
+    pub fn world_count(&self) -> usize {
+        self.world.len()
     }
 
     /// Get rect instances for GPU upload.
@@ -108,9 +154,9 @@ impl UiLayerRenderer {
         bytemuck::cast_slice(&self.rect_instances)
     }
 
-    /// Total glyph count.
+    /// HUD-pass glyph count.
     pub fn glyph_count(&self) -> usize {
-        self.instances.len()
+        self.hud.len()
     }
 
     /// Total rect count.
@@ -163,6 +209,76 @@ impl UiLayerRenderer {
                 _pad: [0.0; 2],
             });
         }
+    }
+
+
+    /// Emit one glyph instance per particle in a cloud.
+    ///
+    /// Particles are placed by their centre and carry their own rotation and
+    /// glow, which is what separates a cloud of matter from a run of text.
+    fn build_particle_instances(
+        &mut self,
+        particles: &[UiParticle],
+        dx: f32,
+        dy: f32,
+        atlas: &FontAtlas,
+    ) {
+        self.instances.reserve(particles.len());
+        for p in particles {
+            if p.color.w <= 0.0 || p.w <= 0.0 || p.h <= 0.0 {
+                continue;
+            }
+            if !(p.x.is_finite() && p.y.is_finite() && p.rotation.is_finite()) {
+                continue;
+            }
+            let uv = atlas.uv_for(p.ch);
+            self.instances.push(GlyphInstance {
+                position: [p.x + dx, p.y + dy, 0.0],
+                scale: [p.w, p.h],
+                rotation: p.rotation,
+                color: p.color.to_array(),
+                emission: p.emission,
+                glow_color: [p.color.x, p.color.y, p.color.z],
+                glow_radius: p.glow,
+                uv_offset: uv.offset(),
+                uv_size: uv.size(),
+                _pad: [0.0; 2],
+            });
+        }
+    }
+
+    /// Emit a filled rectangle as a single stretched block glyph.
+    ///
+    /// The UI pass draws one instanced glyph batch, so rectangles have to go
+    /// through the same path. Pushing them to a separate buffer meant filled
+    /// rects and panel fills were built every frame and never drawn, because
+    /// nothing uploaded that buffer.
+    fn push_filled_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Vec4, atlas: &FontAtlas) {
+        if w <= 0.0 || h <= 0.0 || color.w <= 0.0 {
+            return;
+        }
+        // Sample a single texel from deep inside the full block rather than
+        // stretching the whole glyph. A distance field stretched across a
+        // panel-sized quad turns its edge falloff into a wide gradient, which
+        // reads as a blurry smear; a zero-area UV at the centre is uniformly
+        // "inside" and therefore solid at any size.
+        let uv = atlas.uv_for('\u{2588}'); // FULL BLOCK
+        let cu = (uv.u0 + uv.u1) * 0.5;
+        let cv = (uv.v0 + uv.v1) * 0.5;
+        self.instances.push(GlyphInstance {
+            position: [x + w * 0.5, y + h * 0.5, 0.0],
+            scale: [w, h],
+            rotation: 0.0,
+            color: color.to_array(),
+            emission: 0.0,
+            glow_color: [color.x, color.y, color.z],
+            glow_radius: 0.0,
+            uv_offset: [cu, cv],
+            uv_size: [0.0, 0.0],
+            // A fill is ground or a panel, not matter: it casts no shadow.
+            // The glyph shader reads this as the instance's flags.
+            _pad: [1.0, 0.0],
+        });
     }
 
     fn build_rect_outline(
@@ -234,11 +350,14 @@ impl UiLayerRenderer {
 
         // Fill background
         if fill_color.w > 0.0 {
-            self.rect_instances.push(RectInstance {
-                position: [x + char_w, y + char_h],
-                size: [w - char_w * 2.0, h - char_h * 2.0],
-                color: fill_color.to_array(),
-            });
+            self.push_filled_rect(
+                x + char_w,
+                y + char_h,
+                w - char_w * 2.0,
+                h - char_h * 2.0,
+                fill_color,
+                atlas,
+            );
         }
 
         let chars = border.chars();

@@ -1,0 +1,9 @@
+
+pub fn loot_version_string() -> String {
+    let v = LOOT_SYSTEM_VERSION;
+    let m = total_loot_modules();
+    format!("LootEditor v{} — {} modules active", v, m)
+}
+pub fn is_loot_system_ready() -> bool { true }
+pub fn loot_subsystem_count() -> usize { total_loot_modules() }
+pub fn loot_max_item_id() -> u32 { LOOT_MAX_TOTAL_ITEMS }

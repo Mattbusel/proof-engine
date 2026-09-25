@@ -12,6 +12,7 @@ pub mod render_graph;
 pub mod pbr;
 pub mod ui_layer;
 pub mod ui_layer_renderer;
+pub mod screen_fx;
 pub mod ui_primitives;
 
 pub mod hdr;

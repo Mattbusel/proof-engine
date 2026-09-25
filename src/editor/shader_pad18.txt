@@ -1,0 +1,116 @@
+
+// ── Shader Compilation Summary ────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ShaderSystemState {
+    pub initialized: bool,
+    pub programs_loaded: u32,
+    pub materials_loaded: u32,
+    pub textures_loaded: u32,
+    pub compile_errors: u32,
+    pub compile_warnings: u32,
+    pub last_error: Option<String>,
+    pub uptime_frames: u64,
+    pub total_draw_calls: u64,
+    pub total_triangles: u64,
+}
+
+impl ShaderSystemState {
+    pub fn new() -> Self { Self { initialized: false, ..Default::default() } }
+    pub fn initialize(&mut self) { self.initialized = true; }
+    pub fn record_draw(&mut self, triangles: u64) { self.total_draw_calls += 1; self.total_triangles += triangles; }
+    pub fn record_compile_error(&mut self, msg: impl Into<String>) { self.compile_errors += 1; self.last_error = Some(msg.into()); }
+    pub fn record_compile_warning(&mut self) { self.compile_warnings += 1; }
+    pub fn tick_frame(&mut self) { self.uptime_frames += 1; }
+    pub fn is_healthy(&self) -> bool { self.initialized && self.compile_errors == 0 }
+    pub fn avg_tris_per_call(&self) -> f64 { if self.total_draw_calls == 0 { 0.0 } else { self.total_triangles as f64 / self.total_draw_calls as f64 } }
+    pub fn summary(&self) -> String {
+        format!("ShaderSystem: init={}, programs={}, materials={}, textures={}, errors={}, warnings={}", self.initialized, self.programs_loaded, self.materials_loaded, self.textures_loaded, self.compile_errors, self.compile_warnings)
+    }
+}
+
+// ── Built-in PBR Vertex Shader ────────────────────────────────────────────────
+
+pub fn builtin_pbr_vertex_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 a_position;
+layout(location=1) in vec3 a_normal;
+layout(location=2) in vec2 a_uv;
+layout(location=3) in vec4 a_tangent;
+layout(std140, binding=0) uniform PerFrame { mat4 view; mat4 proj; mat4 view_proj; vec4 camera_pos; float time; float delta_time; float near_plane; float far_plane; };
+layout(std140, binding=1) uniform PerObject { mat4 model; mat4 mvp; mat4 normal_matrix; };
+layout(location=0) out vec3 v_world_pos;
+layout(location=1) out vec3 v_normal;
+layout(location=2) out vec2 v_uv;
+layout(location=3) out vec3 v_tangent;
+layout(location=4) out vec3 v_bitangent;
+void main() {
+    vec4 world_pos = model * vec4(a_position, 1.0);
+    v_world_pos = world_pos.xyz;
+    v_normal = normalize((normal_matrix * vec4(a_normal, 0.0)).xyz);
+    v_tangent = normalize((normal_matrix * vec4(a_tangent.xyz, 0.0)).xyz);
+    v_bitangent = cross(v_normal, v_tangent) * a_tangent.w;
+    v_uv = a_uv;
+    gl_Position = view_proj * world_pos;
+}"#
+}
+
+pub fn builtin_pbr_fragment_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 v_world_pos;
+layout(location=1) in vec3 v_normal;
+layout(location=2) in vec2 v_uv;
+layout(location=3) in vec3 v_tangent;
+layout(location=4) in vec3 v_bitangent;
+layout(std140, binding=2) uniform PerMaterial { vec4 albedo_color; vec4 emissive_color; float roughness; float metalness; float normal_scale; float occlusion_strength; float emissive_intensity; float opacity; };
+layout(binding=0) uniform sampler2D u_albedo;
+layout(binding=1) uniform sampler2D u_normal_map;
+layout(binding=2) uniform sampler2D u_orm;
+layout(location=0) out vec4 out_color;
+const float PI = 3.14159265;
+void main() {
+    vec3 albedo = texture(u_albedo, v_uv).rgb * albedo_color.rgb;
+    vec3 orm = texture(u_orm, v_uv).rgb;
+    float ao = orm.r; float roughness_v = orm.g * roughness; float metalness_v = orm.b * metalness;
+    vec3 N = normalize(v_normal);
+    vec3 emit = emissive_color.rgb * emissive_intensity;
+    out_color = vec4(albedo + emit, opacity);
+}"#
+}
+
+pub fn builtin_unlit_vertex_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec3 a_position;
+layout(location=2) in vec2 a_uv;
+layout(std140, binding=1) uniform PerObject { mat4 mvp; mat4 model; mat4 normal_matrix; };
+layout(location=0) out vec2 v_uv;
+void main() { v_uv = a_uv; gl_Position = mvp * vec4(a_position, 1.0); }"#
+}
+
+pub fn builtin_unlit_fragment_shader() -> &'static str {
+    r#"#version 450
+layout(location=0) in vec2 v_uv;
+layout(binding=0) uniform sampler2D u_texture;
+layout(std140, binding=2) uniform PerMaterial { vec4 albedo_color; vec4 emissive_color; float roughness; float metalness; float normal_scale; float occlusion_strength; float emissive_intensity; float opacity; };
+layout(location=0) out vec4 out_color;
+void main() { out_color = texture(u_texture, v_uv) * albedo_color; }"#
+}
+
+pub const SHADER_SYSTEM_STATE_VERSION: u32 = 1;
+pub const BUILTIN_PBR_SHADER_STAGES: usize = 2;
+pub const BUILTIN_UNLIT_SHADER_STAGES: usize = 2;
+pub const BUILTIN_SHADER_COUNT: usize = 4;
+
+pub fn builtin_shader_names() -> &'static [&'static str] { &["pbr_vertex", "pbr_fragment", "unlit_vertex", "unlit_fragment"] }
+pub fn get_builtin_shader(name: &str) -> Option<&'static str> {
+    match name {
+        "pbr_vertex" => Some(builtin_pbr_vertex_shader()),
+        "pbr_fragment" => Some(builtin_pbr_fragment_shader()),
+        "unlit_vertex" => Some(builtin_unlit_vertex_shader()),
+        "unlit_fragment" => Some(builtin_unlit_fragment_shader()),
+        _ => None,
+    }
+}
+pub fn shader_editor_complete_build_info() -> String {
+    format!("ShaderCompilerEditor Complete Build — {} builtin shaders, {} intrinsic docs, {} module total", BUILTIN_SHADER_COUNT, SHADER_GLSL_INTRINSIC_DOC_COUNT, shader_module_count())
+}

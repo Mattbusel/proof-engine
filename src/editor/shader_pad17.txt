@@ -1,0 +1,136 @@
+
+// ── Geometry Shader Support ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GeometryShaderConfig {
+    pub input_primitive: GeometryPrimitive,
+    pub output_primitive: GeometryPrimitive,
+    pub max_vertices_out: u32,
+    pub invocations: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GeometryPrimitive { Points, Lines, LinesAdjacency, Triangles, TrianglesAdjacency, LineStrip, TriangleStrip }
+
+impl GeometryShaderConfig {
+    pub fn passthrough_triangles() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 3, invocations: 1 } }
+    pub fn silhouette_detection() -> Self { Self { input_primitive: GeometryPrimitive::TrianglesAdjacency, output_primitive: GeometryPrimitive::LineStrip, max_vertices_out: 4, invocations: 1 } }
+    pub fn shadow_volumes() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 18, invocations: 1 } }
+    pub fn point_sprites() -> Self { Self { input_primitive: GeometryPrimitive::Points, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 4, invocations: 1 } }
+    pub fn cubemap_rendering() -> Self { Self { input_primitive: GeometryPrimitive::Triangles, output_primitive: GeometryPrimitive::TriangleStrip, max_vertices_out: 18, invocations: 6 } }
+}
+
+impl Default for GeometryShaderConfig { fn default() -> Self { Self::passthrough_triangles() } }
+
+// ── Tessellation Shader Support ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TessellationConfig {
+    pub enabled: bool,
+    pub patch_size: u32,
+    pub outer_level: [f32; 4],
+    pub inner_level: [f32; 2],
+    pub spacing: TessSpacing,
+    pub winding: TessWinding,
+    pub primitive: TessPrimitive,
+    pub point_mode: bool,
+    pub adaptive: bool,
+    pub max_tess_level: f32,
+    pub screen_space_factor: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessSpacing { Equal, FractionalEven, FractionalOdd }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessWinding { Ccw, Cw }
+#[derive(Clone, Debug, PartialEq)]
+pub enum TessPrimitive { Triangles, Quads, Isolines }
+
+impl TessellationConfig {
+    pub fn new() -> Self { Self { enabled: false, patch_size: 3, outer_level: [4.0; 4], inner_level: [4.0; 2], spacing: TessSpacing::Equal, winding: TessWinding::Ccw, primitive: TessPrimitive::Triangles, point_mode: false, adaptive: false, max_tess_level: 64.0, screen_space_factor: 1.0 } }
+    pub fn displacement_mapping() -> Self { Self { enabled: true, adaptive: true, ..Self::new() } }
+    pub fn lod_triangles(level: f32) -> Self { Self { enabled: true, outer_level: [level; 4], inner_level: [level; 2], ..Self::new() } }
+    pub fn disabled() -> Self { Self { enabled: false, ..Self::new() } }
+    pub fn effective_patch_vertices(&self) -> u32 {
+        match self.primitive { TessPrimitive::Triangles => 3, TessPrimitive::Quads => 4, TessPrimitive::Isolines => 2 }
+    }
+}
+
+impl Default for TessellationConfig { fn default() -> Self { Self::new() } }
+
+// ── Wireframe Overlay ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct WireframeConfig {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    pub line_width: f32,
+    pub overlay_on_solid: bool,
+    pub show_normals: bool,
+    pub normal_length: f32,
+    pub normal_color: [f32; 4],
+    pub show_tangents: bool,
+    pub highlight_selected: bool,
+    pub selection_color: [f32; 4],
+}
+
+impl WireframeConfig {
+    pub fn new() -> Self { Self { enabled: false, color: [0.0, 1.0, 0.0, 1.0], line_width: 1.0, overlay_on_solid: true, show_normals: false, normal_length: 0.1, normal_color: [0.0, 0.0, 1.0, 1.0], show_tangents: false, highlight_selected: true, selection_color: [1.0, 0.5, 0.0, 1.0] } }
+    pub fn enable(&mut self) { self.enabled = true; }
+    pub fn disable(&mut self) { self.enabled = false; }
+    pub fn show_normals(mut self) -> Self { self.show_normals = true; self }
+}
+
+impl Default for WireframeConfig { fn default() -> Self { Self::new() } }
+
+// ── Shader Error Recovery ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderFallback {
+    pub trigger_on_error: bool,
+    pub fallback_program_id: u32,
+    pub fallback_name: String,
+    pub auto_compile_fallback: bool,
+    pub notify_on_fallback: bool,
+}
+
+impl ShaderFallback {
+    pub fn new(fallback_id: u32) -> Self { Self { trigger_on_error: true, fallback_program_id: fallback_id, fallback_name: "error_fallback".into(), auto_compile_fallback: true, notify_on_fallback: true } }
+    pub fn with_name(mut self, name: impl Into<String>) -> Self { self.fallback_name = name.into(); self }
+    pub fn silent(mut self) -> Self { self.notify_on_fallback = false; self }
+}
+
+impl Default for ShaderFallback { fn default() -> Self { Self::new(0) } }
+
+// ── Final constants ───────────────────────────────────────────────────────────
+
+pub const TESSELLATION_MAX_PATCH_SIZE: u32 = 32;
+pub const TESSELLATION_MAX_LEVEL: f32 = 64.0;
+pub const GEOMETRY_SHADER_MAX_VERTICES_OUT: u32 = 256;
+pub const GEOMETRY_SHADER_MAX_INVOCATIONS: u32 = 32;
+pub const WIREFRAME_LINE_WIDTH_MAX: f32 = 8.0;
+pub const SHADER_FALLBACK_MAX_DEPTH: u32 = 3;
+
+pub fn geometry_primitive_name(p: &GeometryPrimitive) -> &'static str {
+    match p { GeometryPrimitive::Points => "points", GeometryPrimitive::Lines => "lines", GeometryPrimitive::LinesAdjacency => "lines_adjacency", GeometryPrimitive::Triangles => "triangles", GeometryPrimitive::TrianglesAdjacency => "triangles_adjacency", GeometryPrimitive::LineStrip => "line_strip", GeometryPrimitive::TriangleStrip => "triangle_strip" }
+}
+
+pub fn tess_spacing_name(s: &TessSpacing) -> &'static str {
+    match s { TessSpacing::Equal => "equal_spacing", TessSpacing::FractionalEven => "fractional_even_spacing", TessSpacing::FractionalOdd => "fractional_odd_spacing" }
+}
+
+pub fn glsl_layout_tess_ctrl(patch_size: u32) -> String { format!("layout(vertices = {}) out;", patch_size) }
+pub fn glsl_layout_tess_eval(primitive: &TessPrimitive, spacing: &TessSpacing, winding: &TessWinding) -> String {
+    format!("layout({}, {}, {}) in;", match primitive { TessPrimitive::Triangles => "triangles", TessPrimitive::Quads => "quads", TessPrimitive::Isolines => "isolines" }, tess_spacing_name(spacing), match winding { TessWinding::Ccw => "ccw", TessWinding::Cw => "cw" })
+}
+pub fn glsl_layout_geometry(input: &GeometryPrimitive, output: &GeometryPrimitive, max_verts: u32) -> String {
+    format!("layout({}) in;\nlayout({}, max_vertices = {}) out;", geometry_primitive_name(input), geometry_primitive_name(output), max_verts)
+}
+
+pub fn shader_complete_feature_list() -> Vec<String> {
+    let mut features = shader_compiler_module_list().iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    features.extend(all_post_process_effect_names().iter().map(|s| s.to_string()));
+    features.extend(all_glsl_keywords().iter().map(|s| s.to_string()));
+    features
+}
+pub fn shader_feature_count() -> usize { shader_complete_feature_list().len() }

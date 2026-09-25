@@ -248,14 +248,14 @@ mod tests {
         let curve = EntityCurve::new(CurveType::Bezier { degree: 2 }, pts.clone());
         let poly = tessellate_curve(&curve);
         assert!((poly[0] - pts[0]).length() < 0.01, "should start at first control point");
-        assert!((poly.last().unwrap() - pts[2]).length() < 0.01, "should end at last");
+        assert!((*poly.last().unwrap() - pts[2]).length() < 0.01, "should end at last");
     }
 
     #[test]
     fn test_circle_closed() {
         let curve = EntityCurve::new(CurveType::Circle { radius: 1.0, distortion: None }, vec![Vec2::ZERO]);
         let poly = tessellate_curve(&curve);
-        assert!((poly[0] - poly.last().unwrap()).length() < 0.01, "circle should close");
+        assert!((poly[0] - *poly.last().unwrap()).length() < 0.01, "circle should close");
     }
 
     #[test]

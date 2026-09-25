@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_dijkstra_no_path() {
-        let mut g = Graph::new(GraphKind::Directed);
+        let mut g = Graph::<(), f32>::new(GraphKind::Directed);
         let a = g.add_node(());
         let b = g.add_node(());
         // No edge from a to b in directed graph

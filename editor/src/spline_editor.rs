@@ -2929,7 +2929,7 @@ impl RoadNetwork {
     }
     pub fn total_road_length(&self, splines: &[Spline]) -> f32 {
         self.segments.iter().map(|s| {
-            if s.spline_idx < splines.len() { spline_arc_length(&splines[s.spline_idx], 64) } else { 0.0 }
+            if s.spline_idx < splines.len() { spline_length(&splines[s.spline_idx]) } else { 0.0 }
         }).sum()
     }
 }
@@ -3336,7 +3336,8 @@ pub fn show_camera_sequence_editor(ui: &mut egui::Ui, seq: &mut CameraSequence, 
 
     if seq.is_playing { seq.tick(dt); }
 
-    ui.add(egui::Slider::new(&mut seq.playback_time, 0.0..=seq.total_duration().max(0.01)).text("Time"));
+    let max_dur = seq.total_duration().max(0.01);
+    ui.add(egui::Slider::new(&mut seq.playback_time, 0.0..=max_dur).text("Time"));
 
     ui.separator();
     if ui.button("Add Shot").clicked() {
@@ -3440,7 +3441,7 @@ impl PathFollower {
 }
 
 pub fn advance_follower(follower: &mut PathFollower, dt: f32, spline: &Spline) -> ([f32;2], [f32;2]) {
-    let arc_len = spline_arc_length(spline, 32);
+    let arc_len = spline_length(spline);
     let t_step = if arc_len > 0.0 { follower.speed * dt / arc_len } else { 0.0 };
     follower.current_t += t_step * follower.direction;
 
@@ -3593,7 +3594,7 @@ impl Train {
     pub fn total_length(&self) -> f32 { self.cars.iter().map(|c| c.length + 1.5).sum::<f32>() }
     pub fn tick(&mut self, dt: f32, track: &RailwayTrack, spline: &Spline) {
         if !self.active { return; }
-        let arc_len = spline_arc_length(spline, 32).max(0.001);
+        let arc_len = spline_length(spline).max(0.001);
         let t_step = self.speed * dt / arc_len;
         self.t += t_step * self.direction;
         self.t = self.t.rem_euclid(1.0);
@@ -3641,7 +3642,7 @@ pub fn draw_railway(painter: &Painter, track: &RailwayTrack, spline: &Spline, ed
         let spt = point_on_spline(spline, sw.t);
         let sp = editor.world_to_screen(spt);
         let col = if sw.triggered { Color32::from_rgb(80,200,80) } else { Color32::from_rgb(200,200,80) };
-        painter.diamond_shape(sp, 6.0, col);
+        painter.circle_filled(sp, 6.0, col);
         painter.text(Pos2::new(sp.x, sp.y - 10.0), egui::Align2::CENTER_BOTTOM, &sw.label, FontId::proportional(8.0), col);
     }
     let _ = canvas_rect;
@@ -3650,7 +3651,7 @@ pub fn draw_railway(painter: &Painter, track: &RailwayTrack, spline: &Spline, ed
 pub fn draw_train(painter: &Painter, train: &Train, spline: &Spline, editor: &SplineEditor) {
     if !train.active { return; }
     if spline.nodes.is_empty() { return; }
-    let arc_len = spline_arc_length(spline, 32).max(0.001);
+    let arc_len = spline_length(spline).max(0.001);
     let mut car_t = train.t;
 
     for car in &train.cars {
@@ -3831,7 +3832,7 @@ pub fn show_spline_animation_editor(ui: &mut egui::Ui, animations: &mut Vec<Spli
                 // Tick
                 if anim.active {
                     if let Some(spline) = splines.get(anim.spline_idx) {
-                        let arc_len = spline_arc_length(spline, 32);
+                        let arc_len = spline_length(spline);
                         anim.tick(dt, arc_len);
                     }
                 }
@@ -4447,7 +4448,7 @@ pub fn fit_spline_to_points(points: &[[f32;2]], mode: InterpolationMode, resolut
     result
 }
 
-pub fn compute_spline_arc_length_points(points: &[[f32;2]]) -> f32 {
+pub fn compute_spline_length_points(points: &[[f32;2]]) -> f32 {
     let mut length = 0.0f32;
     for i in 1..points.len() {
         let dx = points[i][0] - points[i-1][0];
@@ -4459,7 +4460,7 @@ pub fn compute_spline_arc_length_points(points: &[[f32;2]]) -> f32 {
 
 pub fn resample_spline_uniform(points: &[[f32;2]], target_count: usize) -> Vec<[f32;2]> {
     if points.len() < 2 || target_count < 2 { return points.to_vec(); }
-    let total_len = compute_spline_arc_length_points(points);
+    let total_len = compute_spline_length_points(points);
     let step = total_len / (target_count - 1) as f32;
     let mut result = vec![points[0]];
     let mut dist_so_far = 0.0f32;
@@ -4769,7 +4770,7 @@ pub fn extrude_profile_along_path(profile: &ExtrusionProfile, path_points: &[[f3
     let mut vertices = Vec::new();
     let mut uvs = Vec::new();
     let mut face_normals = Vec::new();
-    let total_len = compute_spline_arc_length_points(&resampled);
+    let total_len = compute_spline_length_points(&resampled);
     let mut dist_accum = 0.0f32;
     let pc = profile.profile_points.len();
 
@@ -5069,7 +5070,7 @@ pub struct SplineNetworkStats {
 
 impl SplineNetworkStats {
     pub fn compute_for_spline_nodes(nodes: &[[f32;2]]) -> Self {
-        let total = compute_spline_arc_length_points(nodes);
+        let total = compute_spline_length_points(nodes);
         Self {
             total_splines: 1,
             total_nodes: nodes.len(),
@@ -5262,7 +5263,7 @@ pub fn offset_spline(points: &[[f32;2]], offset_dist: f32) -> Vec<[f32;2]> {
     result
 }
 
-pub fn reverse_spline(points: &[[f32;2]]) -> Vec<[f32;2]> {
+pub fn reverse_points(points: &[[f32;2]]) -> Vec<[f32;2]> {
     let mut r = points.to_vec();
     r.reverse();
     r
@@ -5395,7 +5396,7 @@ mod spline_expansion_tests {
     #[test]
     fn test_arc_length_computation() {
         let pts = vec![[0.0f32,0.0],[3.0,4.0]]; // 5 units
-        let len = compute_spline_arc_length_points(&pts);
+        let len = compute_spline_length_points(&pts);
         assert!((len - 5.0).abs() < 0.001);
     }
 
@@ -6475,7 +6476,7 @@ impl SplineLibraryEntry {
     }
 
     pub fn arc_length(&self) -> f32 {
-        compute_spline_arc_length_points(&self.points)
+        compute_spline_length_points(&self.points)
     }
 }
 
@@ -6557,15 +6558,18 @@ pub fn show_spline_library_manager(ui: &mut egui::Ui, state: &mut SplineLibraryM
     egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
         let visible = state.visible_entries();
         for i in visible {
-            let entry = &state.entries[i];
             let sel = state.selected == Some(i);
+            let (is_fav, name, pts_len, arc_len) = {
+                let entry = &state.entries[i];
+                (entry.is_favorite, entry.name.clone(), entry.points.len(), entry.arc_length())
+            };
             ui.horizontal(|ui| {
-                if entry.is_favorite { ui.label("★"); }
-                if ui.selectable_label(sel, format!("{} [{} pts]", entry.name, entry.points.len())).clicked() {
+                if is_fav { ui.label("★"); }
+                if ui.selectable_label(sel, format!("{} [{} pts]", name, pts_len)).clicked() {
                     state.selected = Some(i);
                     state.entries[i].usage_count += 1;
                 }
-                ui.label(format!("L:{:.1}", entry.arc_length()));
+                ui.label(format!("L:{:.1}", arc_len));
             });
         }
     });
@@ -7059,14 +7063,14 @@ pub fn generate_tube_mesh(spline: &Spline, radius: f32, segments: u32, rings: u3
         let node_idx = (t_scaled as usize).min(spline.nodes.len() - 2);
         let local_t = t_scaled - node_idx as f32;
 
-        let p0 = spline.nodes[node_idx].position;
-        let p1 = spline.nodes[(node_idx + 1).min(spline.nodes.len() - 1)].position;
+        let p0 = spline.nodes[node_idx].point.position;
+        let p1 = spline.nodes[(node_idx + 1).min(spline.nodes.len() - 1)].point.position;
 
-        let cx = p0.x + (p1.x - p0.x) * local_t;
-        let cy = p0.y + (p1.y - p0.y) * local_t;
+        let cx = p0[0] + (p1[0] - p0[0]) * local_t;
+        let cy = p0[1] + (p1[1] - p0[1]) * local_t;
 
-        let tan_x = (p1.x - p0.x).max(0.001);
-        let tan_y = (p1.y - p0.y);
+        let tan_x = (p1[0] - p0[0]).max(0.001);
+        let tan_y = (p1[1] - p0[1]);
         let tan_len = (tan_x*tan_x + tan_y*tan_y).sqrt().max(0.001);
         let nx = -tan_y / tan_len;
         let ny = tan_x / tan_len;
@@ -7111,13 +7115,13 @@ pub fn generate_ribbon_mesh(spline: &Spline, width: f32, samples: u32) -> Spline
         let node_idx = (t_scaled as usize).min(spline.nodes.len() - 2);
         let local_t = t_scaled - node_idx as f32;
 
-        let p0 = spline.nodes[node_idx].position;
-        let p1 = spline.nodes[(node_idx + 1).min(spline.nodes.len() - 1)].position;
-        let cx = p0.x + (p1.x - p0.x) * local_t;
-        let cy = p0.y + (p1.y - p0.y) * local_t;
+        let p0 = spline.nodes[node_idx].point.position;
+        let p1 = spline.nodes[(node_idx + 1).min(spline.nodes.len() - 1)].point.position;
+        let cx = p0[0] + (p1[0] - p0[0]) * local_t;
+        let cy = p0[1] + (p1[1] - p0[1]) * local_t;
 
-        let dx = p1.x - p0.x;
-        let dy = p1.y - p0.y;
+        let dx = p1[0] - p0[0];
+        let dy = p1[1] - p0[1];
         let len = (dx*dx + dy*dy).sqrt().max(0.001);
         let nx = -dy / len;
         let ny = dx / len;

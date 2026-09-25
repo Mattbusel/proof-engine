@@ -1,0 +1,183 @@
+
+// ── Particle Editor UI State ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleEditorState {
+    pub selected_emitter: Option<u32>,
+    pub selected_effect: Option<u32>,
+    pub viewport_camera_pos: Vec3,
+    pub viewport_camera_rot: Quat,
+    pub preview_playing: bool,
+    pub preview_time: f32,
+    pub show_grid: bool,
+    pub grid_size: f32,
+    pub background_color: Vec4,
+    pub zoom_level: f32,
+    pub panel_sizes: HashMap<String, f32>,
+    pub undo_stack: VecDeque<String>,
+    pub redo_stack: Vec<String>,
+    pub max_undo: usize,
+    pub modified: bool,
+}
+
+impl ParticleEditorState {
+    pub fn new() -> Self {
+        Self {
+            selected_emitter: None, selected_effect: None,
+            viewport_camera_pos: Vec3::new(0.0, 2.0, 5.0),
+            viewport_camera_rot: Quat::IDENTITY,
+            preview_playing: false, preview_time: 0.0,
+            show_grid: true, grid_size: 1.0,
+            background_color: Vec4::new(0.1, 0.1, 0.15, 1.0),
+            zoom_level: 1.0,
+            panel_sizes: HashMap::new(),
+            undo_stack: VecDeque::new(), redo_stack: Vec::new(),
+            max_undo: 100, modified: false,
+        }
+    }
+    pub fn play(&mut self) { self.preview_playing = true; }
+    pub fn stop(&mut self) { self.preview_playing = false; self.preview_time = 0.0; }
+    pub fn pause(&mut self) { self.preview_playing = false; }
+    pub fn tick_preview(&mut self, dt: f32) { if self.preview_playing { self.preview_time += dt; } }
+    pub fn select_emitter(&mut self, id: u32) { self.selected_emitter = Some(id); }
+    pub fn deselect(&mut self) { self.selected_emitter = None; }
+    pub fn push_undo(&mut self, desc: impl Into<String>) {
+        if self.undo_stack.len() >= self.max_undo { self.undo_stack.pop_front(); }
+        self.undo_stack.push_back(desc.into()); self.redo_stack.clear(); self.modified = true;
+    }
+    pub fn undo(&mut self) -> Option<String> { let v = self.undo_stack.pop_back()?; self.redo_stack.push(v.clone()); Some(v) }
+    pub fn redo(&mut self) -> Option<String> { let v = self.redo_stack.pop()?; self.undo_stack.push_back(v.clone()); Some(v) }
+    pub fn can_undo(&self) -> bool { !self.undo_stack.is_empty() }
+    pub fn can_redo(&self) -> bool { !self.redo_stack.is_empty() }
+    pub fn mark_saved(&mut self) { self.modified = false; }
+}
+
+impl Default for ParticleEditorState {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Particle Effect Exporter ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleExportSettings {
+    pub format: String,
+    pub include_textures: bool,
+    pub compress: bool,
+    pub min_emit_rate: Option<f32>,
+    pub bake_curves: bool,
+    pub target_platform: String,
+    pub output_dir: String,
+}
+
+impl ParticleExportSettings {
+    pub fn new(format: impl Into<String>, output_dir: impl Into<String>) -> Self {
+        Self { format: format.into(), include_textures: true, compress: false, min_emit_rate: None, bake_curves: false, target_platform: "pc".into(), output_dir: output_dir.into() }
+    }
+    pub fn compressed(mut self) -> Self { self.compress = true; self }
+    pub fn baked(mut self) -> Self { self.bake_curves = true; self }
+    pub fn for_platform(mut self, platform: impl Into<String>) -> Self { self.target_platform = platform.into(); self }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParticleExportResult {
+    pub success: bool,
+    pub files_written: Vec<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub total_bytes: u64,
+    pub duration_ms: f32,
+}
+
+impl ParticleExportResult {
+    pub fn ok(files: Vec<String>, bytes: u64) -> Self {
+        Self { success: true, files_written: files, errors: Vec::new(), warnings: Vec::new(), total_bytes: bytes, duration_ms: 0.0 }
+    }
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self { success: false, files_written: Vec::new(), errors: vec![msg.into()], warnings: Vec::new(), total_bytes: 0, duration_ms: 0.0 }
+    }
+    pub fn add_warning(&mut self, w: impl Into<String>) { self.warnings.push(w.into()); }
+    pub fn file_count(&self) -> usize { self.files_written.len() }
+}
+
+// ── Particle System Benchmark ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct ParticleBenchmarkResult {
+    pub scenario_name: String,
+    pub particle_count: u32,
+    pub emitter_count: u32,
+    pub avg_fps: f32,
+    pub min_fps: f32,
+    pub max_fps: f32,
+    pub avg_sim_ms: f32,
+    pub avg_render_ms: f32,
+    pub frame_count: u64,
+}
+
+impl ParticleBenchmarkResult {
+    pub fn new(name: impl Into<String>) -> Self { Self { scenario_name: name.into(), min_fps: f32::MAX, ..Default::default() } }
+    pub fn record_frame(&mut self, fps: f32, sim_ms: f32, render_ms: f32) {
+        if fps < self.min_fps { self.min_fps = fps; }
+        if fps > self.max_fps { self.max_fps = fps; }
+        self.avg_fps = (self.avg_fps * self.frame_count as f32 + fps) / (self.frame_count + 1) as f32;
+        self.avg_sim_ms = (self.avg_sim_ms * self.frame_count as f32 + sim_ms) / (self.frame_count + 1) as f32;
+        self.avg_render_ms = (self.avg_render_ms * self.frame_count as f32 + render_ms) / (self.frame_count + 1) as f32;
+        self.frame_count += 1;
+    }
+    pub fn total_ms(&self) -> f32 { self.avg_sim_ms + self.avg_render_ms }
+    pub fn passed_60fps(&self) -> bool { self.avg_fps >= 60.0 }
+    pub fn grade(&self) -> &'static str {
+        if self.avg_fps >= 120.0 { "Excellent" } else if self.avg_fps >= 60.0 { "Good" } else if self.avg_fps >= 30.0 { "Acceptable" } else { "Poor" }
+    }
+}
+
+// ── Particle Simulation Scenarios ────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleScenario {
+    pub name: String,
+    pub description: String,
+    pub emitter_configs: Vec<String>,
+    pub duration_secs: f32,
+    pub expected_peak_particles: u32,
+    pub benchmark: Option<ParticleBenchmarkResult>,
+}
+
+impl ParticleScenario {
+    pub fn new(name: impl Into<String>, desc: impl Into<String>) -> Self {
+        Self { name: name.into(), description: desc.into(), emitter_configs: Vec::new(), duration_secs: 10.0, expected_peak_particles: 1000, benchmark: None }
+    }
+    pub fn add_emitter_config(&mut self, config: impl Into<String>) { self.emitter_configs.push(config.into()); }
+    pub fn set_expected_peak(&mut self, n: u32) { self.expected_peak_particles = n; }
+    pub fn has_benchmark(&self) -> bool { self.benchmark.is_some() }
+    pub fn benchmark_grade(&self) -> Option<&'static str> { self.benchmark.as_ref().map(|b| b.grade()) }
+}
+
+pub fn build_stress_test_scenarios() -> Vec<ParticleScenario> {
+    let mut s1 = ParticleScenario::new("Low Load", "Single small emitter");
+    s1.set_expected_peak(500);
+    let mut s2 = ParticleScenario::new("Medium Load", "Multiple emitters");
+    s2.set_expected_peak(10000);
+    let mut s3 = ParticleScenario::new("High Load", "Many emitters with trails");
+    s3.set_expected_peak(100000);
+    let mut s4 = ParticleScenario::new("Extreme Load", "Maximum particle count stress test");
+    s4.set_expected_peak(500000);
+    vec![s1, s2, s3, s4]
+}
+
+// ── Final particle constants ──────────────────────────────────────────────────
+
+pub const PARTICLE_EDITOR_UNDO_MAX: usize = 100;
+pub const PARTICLE_EXPORT_FORMATS: &[&str] = &["json", "binary", "xml", "custom"];
+pub const PARTICLE_BENCH_FRAME_MIN: u64 = 300;
+pub const PARTICLE_SCENARIO_MAX: usize = 16;
+pub const PARTICLE_EMITTER_GRID_DEFAULT_SIZE: f32 = 1.0;
+pub const PARTICLE_VIEWPORT_FAR_PLANE: f32 = 1000.0;
+pub const PARTICLE_VIEWPORT_NEAR_PLANE: f32 = 0.01;
+
+pub fn particle_editor_full_info() -> String {
+    format!(
+        "ParticleSystemEditor — {} feature modules, editor + runtime + benchmark pipeline",
+        particle_module_count()
+    )
+}

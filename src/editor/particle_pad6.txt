@@ -1,0 +1,111 @@
+
+// ── Particle Spatial Hash ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleSpatialHash {
+    pub cell_size: f32,
+    pub cells: HashMap<(i32, i32, i32), Vec<u32>>,
+    pub particle_count: u32,
+}
+
+impl ParticleSpatialHash {
+    pub fn new(cell_size: f32) -> Self { Self { cell_size, cells: HashMap::new(), particle_count: 0 } }
+    fn cell_key(&self, pos: Vec3) -> (i32, i32, i32) {
+        ((pos.x / self.cell_size).floor() as i32, (pos.y / self.cell_size).floor() as i32, (pos.z / self.cell_size).floor() as i32)
+    }
+    pub fn insert(&mut self, id: u32, pos: Vec3) {
+        let key = self.cell_key(pos);
+        self.cells.entry(key).or_default().push(id);
+        self.particle_count += 1;
+    }
+    pub fn query_radius(&self, center: Vec3, radius: f32) -> Vec<u32> {
+        let r = (radius / self.cell_size).ceil() as i32 + 1;
+        let cx = (center.x / self.cell_size).floor() as i32;
+        let cy = (center.y / self.cell_size).floor() as i32;
+        let cz = (center.z / self.cell_size).floor() as i32;
+        let mut result = Vec::new();
+        for dx in -r..=r { for dy in -r..=r { for dz in -r..=r {
+            if let Some(ids) = self.cells.get(&(cx+dx, cy+dy, cz+dz)) { result.extend_from_slice(ids); }
+        }}}
+        result
+    }
+    pub fn clear(&mut self) { self.cells.clear(); self.particle_count = 0; }
+    pub fn cell_count(&self) -> usize { self.cells.len() }
+}
+
+// ── Particle Boundary Volume ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleAabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl ParticleAabb {
+    pub fn new(min: Vec3, max: Vec3) -> Self { Self { min, max } }
+    pub fn empty() -> Self { Self { min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN) } }
+    pub fn extend(&mut self, p: Vec3) {
+        self.min = Vec3::new(self.min.x.min(p.x), self.min.y.min(p.y), self.min.z.min(p.z));
+        self.max = Vec3::new(self.max.x.max(p.x), self.max.y.max(p.y), self.max.z.max(p.z));
+    }
+    pub fn center(&self) -> Vec3 { (self.min + self.max) * 0.5 }
+    pub fn size(&self) -> Vec3 { self.max - self.min }
+    pub fn volume(&self) -> f32 { let s = self.size(); s.x * s.y * s.z }
+    pub fn contains(&self, p: Vec3) -> bool { p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y && p.z >= self.min.z && p.z <= self.max.z }
+    pub fn intersects(&self, other: &Self) -> bool { self.min.x <= other.max.x && self.max.x >= other.min.x && self.min.y <= other.max.y && self.max.y >= other.min.y && self.min.z <= other.max.z && self.max.z >= other.min.z }
+    pub fn is_valid(&self) -> bool { self.min.x <= self.max.x && self.min.y <= self.max.y && self.min.z <= self.max.z }
+    pub fn expand(&self, amount: f32) -> Self { Self { min: self.min - Vec3::splat(amount), max: self.max + Vec3::splat(amount) } }
+}
+
+// ── Particle Camera Culling ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ParticleFrustumCuller {
+    pub planes: Vec<Vec4>,
+    pub cull_count_last_frame: u32,
+    pub pass_count_last_frame: u32,
+}
+
+impl ParticleFrustumCuller {
+    pub fn new() -> Self { Self { planes: vec![Vec4::ZERO; 6], cull_count_last_frame: 0, pass_count_last_frame: 0 } }
+    pub fn set_frustum(&mut self, planes: Vec<Vec4>) { self.planes = planes; }
+    pub fn test_aabb(&self, aabb: &ParticleAabb) -> bool {
+        for plane in &self.planes {
+            let px = if plane.x > 0.0 { aabb.max.x } else { aabb.min.x };
+            let py = if plane.y > 0.0 { aabb.max.y } else { aabb.min.y };
+            let pz = if plane.z > 0.0 { aabb.max.z } else { aabb.min.z };
+            if plane.x * px + plane.y * py + plane.z * pz + plane.w < 0.0 { return false; }
+        }
+        true
+    }
+    pub fn begin_frame(&mut self) { self.cull_count_last_frame = 0; self.pass_count_last_frame = 0; }
+    pub fn record_cull(&mut self) { self.cull_count_last_frame += 1; }
+    pub fn record_pass(&mut self) { self.pass_count_last_frame += 1; }
+    pub fn cull_rate(&self) -> f32 {
+        let total = self.cull_count_last_frame + self.pass_count_last_frame;
+        if total == 0 { 0.0 } else { self.cull_count_last_frame as f32 / total as f32 }
+    }
+}
+
+impl Default for ParticleFrustumCuller {
+    fn default() -> Self { Self::new() }
+}
+
+pub const PARTICLE_SPATIAL_HASH_DEFAULT_CELL: f32 = 2.0;
+pub const PARTICLE_AABB_MARGIN: f32 = 0.1;
+pub const PARTICLE_CULL_BACKFACE: bool = false;
+pub const PARTICLE_SORT_BACK_TO_FRONT: bool = true;
+pub const PARTICLE_GPU_INSTANCING_MAX: u32 = 65536;
+
+pub fn particle_system_capabilities() -> HashMap<&'static str, bool> {
+    let mut caps = HashMap::new();
+    caps.insert("gpu_simulation", false);
+    caps.insert("compute_shaders", false);
+    caps.insert("instanced_rendering", true);
+    caps.insert("trail_rendering", true);
+    caps.insert("texture_animation", true);
+    caps.insert("lod", true);
+    caps.insert("frustum_culling", true);
+    caps.insert("spatial_hashing", true);
+    caps
+}

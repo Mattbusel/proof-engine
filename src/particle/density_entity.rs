@@ -417,7 +417,7 @@ impl DensityEntity {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn hash_f32(seed: u32, variant: usize) -> f32 {
-    let n = seed.wrapping_mul(374761393).wrapping_add(variant as u32 * 668265263);
+    let n = seed.wrapping_mul(374761393).wrapping_add((variant as u32).wrapping_mul(668265263));
     let n = n ^ (n >> 13);
     let n = n.wrapping_mul(0x5851F42D);
     let n = n ^ (n >> 16);

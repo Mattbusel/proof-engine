@@ -1,0 +1,83 @@
+
+// ── Shader Compilation Diagnostic Helpers ────────────────────────────────────
+
+pub fn diagnostic_kind_name(kind: &DiagnosticKind) -> &'static str {
+    match kind {
+        DiagnosticKind::Error => "error",
+        DiagnosticKind::Warning => "warning",
+        DiagnosticKind::Info => "info",
+        DiagnosticKind::Hint => "hint",
+    }
+}
+
+pub fn blend_factor_name(f: &BlendFactor) -> &'static str {
+    match f {
+        BlendFactor::Zero => "Zero",
+        BlendFactor::One => "One",
+        BlendFactor::SrcAlpha => "SrcAlpha",
+        BlendFactor::OneMinusSrcAlpha => "OneMinusSrcAlpha",
+        BlendFactor::DstAlpha => "DstAlpha",
+        BlendFactor::OneMinusDstAlpha => "OneMinusDstAlpha",
+        BlendFactor::SrcColor => "SrcColor",
+        BlendFactor::DstColor => "DstColor",
+        BlendFactor::OneMinusSrcColor => "OneMinusSrcColor",
+        BlendFactor::OneMinusDstColor => "OneMinusDstColor",
+    }
+}
+
+pub fn compare_func_name(f: &CompareFunc) -> &'static str {
+    match f {
+        CompareFunc::Never => "Never",
+        CompareFunc::Less => "Less",
+        CompareFunc::Equal => "Equal",
+        CompareFunc::LessEqual => "LessEqual",
+        CompareFunc::Greater => "Greater",
+        CompareFunc::NotEqual => "NotEqual",
+        CompareFunc::GreaterEqual => "GreaterEqual",
+        CompareFunc::Always => "Always",
+    }
+}
+
+pub fn cull_mode_name(m: &CullMode) -> &'static str {
+    match m { CullMode::None => "None", CullMode::Front => "Front", CullMode::Back => "Back" }
+}
+
+pub fn polygon_mode_name(m: &PolygonMode) -> &'static str {
+    match m { PolygonMode::Fill => "Fill", PolygonMode::Line => "Line", PolygonMode::Point => "Point" }
+}
+
+pub fn vertex_format_size(f: &VertexFormat) -> u32 {
+    match f {
+        VertexFormat::Float32 => 4, VertexFormat::Float32x2 => 8, VertexFormat::Float32x3 => 12,
+        VertexFormat::Float32x4 => 16, VertexFormat::Uint8x4 => 4, VertexFormat::Sint8x4 => 4,
+        VertexFormat::Unorm8x4 => 4, VertexFormat::Snorm8x4 => 4, VertexFormat::Uint16x2 => 4,
+        VertexFormat::Sint16x2 => 4, VertexFormat::Unorm16x2 => 4, VertexFormat::Snorm16x2 => 4,
+        VertexFormat::Uint16x4 => 8, VertexFormat::Sint16x4 => 8, VertexFormat::Unorm16x4 => 8,
+        VertexFormat::Snorm16x4 => 8, VertexFormat::Uint32 => 4, VertexFormat::Uint32x2 => 8,
+        VertexFormat::Uint32x3 => 12, VertexFormat::Uint32x4 => 16, VertexFormat::Sint32 => 4,
+        VertexFormat::Sint32x2 => 8, VertexFormat::Sint32x3 => 12, VertexFormat::Sint32x4 => 16,
+    }
+}
+
+pub fn attachment_format_is_depth(f: &AttachmentFormat) -> bool {
+    matches!(f, AttachmentFormat::Depth16 | AttachmentFormat::Depth24 | AttachmentFormat::Depth32F | AttachmentFormat::Depth24Stencil8 | AttachmentFormat::Depth32FStencil8)
+}
+
+pub fn buffer_usage_name(u: &BufferUsage) -> &'static str {
+    match u { BufferUsage::Vertex => "Vertex", BufferUsage::Index => "Index", BufferUsage::Uniform => "Uniform", BufferUsage::Storage => "Storage", BufferUsage::Indirect => "Indirect", BufferUsage::TransferSrc => "TransferSrc", BufferUsage::TransferDst => "TransferDst" }
+}
+
+pub fn shader_compiler_credits() -> &'static str {
+    "ShaderCompilerEditor — Built for proof-engine by the core rendering team."
+}
+
+pub fn shader_module_summary() -> String {
+    format!(
+        "Module count: {} | Version: {} | APIs: {} | Keywords: {} | Builtins: {}",
+        shader_module_count(),
+        shader_system_version(),
+        supported_render_apis().len(),
+        glsl_keyword_count(),
+        glsl_builtin_function_count(),
+    )
+}

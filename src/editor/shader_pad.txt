@@ -1,0 +1,400 @@
+
+// ── Shader Program Representation ────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderProgram {
+    pub id: u32,
+    pub name: String,
+    pub vertex_source: String,
+    pub fragment_source: String,
+    pub geometry_source: Option<String>,
+    pub compute_source: Option<String>,
+    pub defines: HashMap<String, String>,
+    pub version: String,
+    pub compiled: bool,
+    pub compile_errors: Vec<String>,
+    pub compile_warnings: Vec<String>,
+}
+
+impl ShaderProgram {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), vertex_source: String::new(), fragment_source: String::new(), geometry_source: None, compute_source: None, defines: HashMap::new(), version: "450".into(), compiled: false, compile_errors: Vec::new(), compile_warnings: Vec::new() }
+    }
+    pub fn with_vertex(mut self, src: impl Into<String>) -> Self { self.vertex_source = src.into(); self }
+    pub fn with_fragment(mut self, src: impl Into<String>) -> Self { self.fragment_source = src.into(); self }
+    pub fn add_define(&mut self, key: impl Into<String>, val: impl Into<String>) { self.defines.insert(key.into(), val.into()); }
+    pub fn is_compute(&self) -> bool { self.compute_source.is_some() }
+    pub fn has_geometry(&self) -> bool { self.geometry_source.is_some() }
+    pub fn is_valid(&self) -> bool { self.compiled && self.compile_errors.is_empty() }
+    pub fn error_count(&self) -> usize { self.compile_errors.len() }
+    pub fn warning_count(&self) -> usize { self.compile_warnings.len() }
+    pub fn add_error(&mut self, err: impl Into<String>) { self.compile_errors.push(err.into()); }
+    pub fn add_warning(&mut self, warn: impl Into<String>) { self.compile_warnings.push(warn.into()); }
+    pub fn clear_diagnostics(&mut self) { self.compile_errors.clear(); self.compile_warnings.clear(); }
+    pub fn mark_compiled(&mut self) { self.compiled = true; }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderProgramRegistry {
+    pub programs: HashMap<u32, ShaderProgram>,
+    pub next_id: u32,
+    pub active_program: Option<u32>,
+}
+
+impl ShaderProgramRegistry {
+    pub fn new() -> Self { Self { programs: HashMap::new(), next_id: 1, active_program: None } }
+    pub fn add(&mut self, prog: ShaderProgram) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.programs.insert(id, prog);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&ShaderProgram> { self.programs.get(&id) }
+    pub fn get_mut(&mut self, id: u32) -> Option<&mut ShaderProgram> { self.programs.get_mut(&id) }
+    pub fn find_by_name(&self, name: &str) -> Option<&ShaderProgram> { self.programs.values().find(|p| p.name == name) }
+    pub fn count(&self) -> usize { self.programs.len() }
+    pub fn valid_count(&self) -> usize { self.programs.values().filter(|p| p.is_valid()).count() }
+    pub fn set_active(&mut self, id: u32) { self.active_program = Some(id); }
+    pub fn remove(&mut self, id: u32) -> bool { self.programs.remove(&id).is_some() }
+}
+
+impl Default for ShaderProgramRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Type System ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderDataType {
+    Void,
+    Bool, BVec2, BVec3, BVec4,
+    Int, IVec2, IVec3, IVec4,
+    UInt, UVec2, UVec3, UVec4,
+    Float, Vec2, Vec3, Vec4,
+    Mat2, Mat3, Mat4,
+    Mat2x3, Mat2x4, Mat3x2, Mat3x4, Mat4x2, Mat4x3,
+    Sampler2D, Sampler3D, SamplerCube, Sampler2DArray, SamplerShadow,
+    Image2D, Image3D, ImageCube,
+    Struct(String),
+    Array(Box<ShaderDataType>, Option<u32>),
+}
+
+impl ShaderDataType {
+    pub fn byte_size(&self) -> u32 {
+        match self {
+            ShaderDataType::Bool | ShaderDataType::Int | ShaderDataType::UInt | ShaderDataType::Float => 4,
+            ShaderDataType::BVec2 | ShaderDataType::IVec2 | ShaderDataType::UVec2 | ShaderDataType::Vec2 => 8,
+            ShaderDataType::BVec3 | ShaderDataType::IVec3 | ShaderDataType::UVec3 | ShaderDataType::Vec3 => 12,
+            ShaderDataType::BVec4 | ShaderDataType::IVec4 | ShaderDataType::UVec4 | ShaderDataType::Vec4 => 16,
+            ShaderDataType::Mat2 => 16, ShaderDataType::Mat3 => 36, ShaderDataType::Mat4 => 64,
+            ShaderDataType::Array(inner, Some(n)) => inner.byte_size() * n,
+            _ => 0,
+        }
+    }
+    pub fn is_sampler(&self) -> bool { matches!(self, ShaderDataType::Sampler2D | ShaderDataType::Sampler3D | ShaderDataType::SamplerCube | ShaderDataType::Sampler2DArray | ShaderDataType::SamplerShadow) }
+    pub fn is_matrix(&self) -> bool { matches!(self, ShaderDataType::Mat2 | ShaderDataType::Mat3 | ShaderDataType::Mat4 | ShaderDataType::Mat2x3 | ShaderDataType::Mat2x4 | ShaderDataType::Mat3x2 | ShaderDataType::Mat3x4 | ShaderDataType::Mat4x2 | ShaderDataType::Mat4x3) }
+    pub fn is_vector(&self) -> bool { matches!(self, ShaderDataType::Vec2 | ShaderDataType::Vec3 | ShaderDataType::Vec4 | ShaderDataType::IVec2 | ShaderDataType::IVec3 | ShaderDataType::IVec4 | ShaderDataType::UVec2 | ShaderDataType::UVec3 | ShaderDataType::UVec4 | ShaderDataType::BVec2 | ShaderDataType::BVec3 | ShaderDataType::BVec4) }
+    pub fn glsl_name(&self) -> &'static str {
+        match self {
+            ShaderDataType::Void => "void", ShaderDataType::Bool => "bool",
+            ShaderDataType::Int => "int", ShaderDataType::UInt => "uint",
+            ShaderDataType::Float => "float", ShaderDataType::Vec2 => "vec2",
+            ShaderDataType::Vec3 => "vec3", ShaderDataType::Vec4 => "vec4",
+            ShaderDataType::Mat4 => "mat4", ShaderDataType::Mat3 => "mat3",
+            ShaderDataType::Mat2 => "mat2", ShaderDataType::Sampler2D => "sampler2D",
+            ShaderDataType::SamplerCube => "samplerCube",
+            _ => "unknown",
+        }
+    }
+}
+
+// ── Shader Variable ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderVariable {
+    pub name: String,
+    pub data_type: ShaderDataType,
+    pub qualifier: ShaderQualifier,
+    pub location: Option<u32>,
+    pub binding: Option<u32>,
+    pub set: Option<u32>,
+    pub is_builtin: bool,
+    pub comment: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderQualifier { In, Out, InOut, Uniform, Const, Buffer, Shared }
+
+impl ShaderVariable {
+    pub fn uniform(name: impl Into<String>, data_type: ShaderDataType) -> Self {
+        Self { name: name.into(), data_type, qualifier: ShaderQualifier::Uniform, location: None, binding: None, set: None, is_builtin: false, comment: String::new() }
+    }
+    pub fn input(name: impl Into<String>, data_type: ShaderDataType, location: u32) -> Self {
+        Self { name: name.into(), data_type, qualifier: ShaderQualifier::In, location: Some(location), binding: None, set: None, is_builtin: false, comment: String::new() }
+    }
+    pub fn output(name: impl Into<String>, data_type: ShaderDataType, location: u32) -> Self {
+        Self { name: name.into(), data_type, qualifier: ShaderQualifier::Out, location: Some(location), binding: None, set: None, is_builtin: false, comment: String::new() }
+    }
+    pub fn with_binding(mut self, binding: u32, set: u32) -> Self { self.binding = Some(binding); self.set = Some(set); self }
+    pub fn is_uniform(&self) -> bool { self.qualifier == ShaderQualifier::Uniform }
+    pub fn is_input(&self) -> bool { self.qualifier == ShaderQualifier::In }
+    pub fn is_output(&self) -> bool { self.qualifier == ShaderQualifier::Out }
+    pub fn size_bytes(&self) -> u32 { self.data_type.byte_size() }
+}
+
+// ── Shader Function ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderFunction {
+    pub name: String,
+    pub return_type: ShaderDataType,
+    pub parameters: Vec<ShaderVariable>,
+    pub body: String,
+    pub is_builtin: bool,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub comment: String,
+}
+
+impl ShaderFunction {
+    pub fn new(name: impl Into<String>, return_type: ShaderDataType) -> Self {
+        Self { name: name.into(), return_type, parameters: Vec::new(), body: String::new(), is_builtin: false, line_start: 0, line_end: 0, comment: String::new() }
+    }
+    pub fn add_param(&mut self, param: ShaderVariable) { self.parameters.push(param); }
+    pub fn param_count(&self) -> usize { self.parameters.len() }
+    pub fn is_main(&self) -> bool { self.name == "main" }
+    pub fn signature(&self) -> String {
+        let params: Vec<_> = self.parameters.iter().map(|p| format!("{} {}", p.data_type.glsl_name(), p.name)).collect();
+        format!("{} {}({})", self.return_type.glsl_name(), self.name, params.join(", "))
+    }
+}
+
+// ── Shader Struct Type ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderStruct {
+    pub name: String,
+    pub fields: Vec<ShaderVariable>,
+    pub comment: String,
+    pub std140_layout: bool,
+}
+
+impl ShaderStruct {
+    pub fn new(name: impl Into<String>) -> Self { Self { name: name.into(), fields: Vec::new(), comment: String::new(), std140_layout: false } }
+    pub fn add_field(&mut self, field: ShaderVariable) { self.fields.push(field); }
+    pub fn size_bytes(&self) -> u32 { self.fields.iter().map(|f| f.size_bytes()).sum() }
+    pub fn std140_size(&self) -> u32 {
+        let mut size = 0u32;
+        for f in &self.fields {
+            let field_size = f.size_bytes();
+            let align = field_size.max(4).next_power_of_two().min(16);
+            size = (size + align - 1) & !(align - 1);
+            size += field_size;
+        }
+        (size + 15) & !15
+    }
+    pub fn field_count(&self) -> usize { self.fields.len() }
+    pub fn has_field(&self, name: &str) -> bool { self.fields.iter().any(|f| f.name == name) }
+    pub fn generate_glsl(&self) -> String {
+        let mut s = format!("struct {} {{\n", self.name);
+        for f in &self.fields { s += &format!("    {} {};\n", f.data_type.glsl_name(), f.name); }
+        s += "};\n";
+        s
+    }
+}
+
+// ── Shader Diagnostic ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderDiagnostic {
+    pub kind: DiagnosticKind,
+    pub message: String,
+    pub line: u32,
+    pub column: u32,
+    pub file: String,
+    pub code: u32,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DiagnosticKind { Error, Warning, Info, Hint }
+
+impl ShaderDiagnostic {
+    pub fn error(msg: impl Into<String>, line: u32) -> Self {
+        Self { kind: DiagnosticKind::Error, message: msg.into(), line, column: 0, file: String::new(), code: 0, suggestion: None }
+    }
+    pub fn warning(msg: impl Into<String>, line: u32) -> Self {
+        Self { kind: DiagnosticKind::Warning, message: msg.into(), line, column: 0, file: String::new(), code: 0, suggestion: None }
+    }
+    pub fn with_suggestion(mut self, s: impl Into<String>) -> Self { self.suggestion = Some(s.into()); self }
+    pub fn is_error(&self) -> bool { self.kind == DiagnosticKind::Error }
+    pub fn is_warning(&self) -> bool { self.kind == DiagnosticKind::Warning }
+    pub fn format(&self) -> String {
+        let prefix = match self.kind { DiagnosticKind::Error => "error", DiagnosticKind::Warning => "warning", DiagnosticKind::Info => "info", DiagnosticKind::Hint => "hint" };
+        format!("[{}] {}:{} — {}", prefix, self.file, self.line, self.message)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DiagnosticList {
+    pub items: Vec<ShaderDiagnostic>,
+}
+
+impl DiagnosticList {
+    pub fn new() -> Self { Self::default() }
+    pub fn push(&mut self, d: ShaderDiagnostic) { self.items.push(d); }
+    pub fn errors(&self) -> Vec<&ShaderDiagnostic> { self.items.iter().filter(|d| d.is_error()).collect() }
+    pub fn warnings(&self) -> Vec<&ShaderDiagnostic> { self.items.iter().filter(|d| d.is_warning()).collect() }
+    pub fn has_errors(&self) -> bool { self.items.iter().any(|d| d.is_error()) }
+    pub fn error_count(&self) -> usize { self.items.iter().filter(|d| d.is_error()).count() }
+    pub fn warning_count(&self) -> usize { self.items.iter().filter(|d| d.is_warning()).count() }
+    pub fn clear(&mut self) { self.items.clear(); }
+    pub fn total(&self) -> usize { self.items.len() }
+}
+
+// ── Shader Preprocessor ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderPreprocessor {
+    pub defines: HashMap<String, String>,
+    pub include_paths: Vec<String>,
+    pub max_include_depth: u32,
+    pub strip_comments: bool,
+    pub expand_macros: bool,
+}
+
+impl ShaderPreprocessor {
+    pub fn new() -> Self {
+        Self { defines: HashMap::new(), include_paths: Vec::new(), max_include_depth: 10, strip_comments: true, expand_macros: true }
+    }
+    pub fn define(&mut self, key: impl Into<String>, value: impl Into<String>) { self.defines.insert(key.into(), value.into()); }
+    pub fn undefine(&mut self, key: &str) { self.defines.remove(key); }
+    pub fn add_include_path(&mut self, path: impl Into<String>) { self.include_paths.push(path.into()); }
+    pub fn preprocess(&self, source: &str) -> String {
+        let mut output = String::with_capacity(source.len());
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#define") {
+                output.push_str(line);
+            } else if trimmed.starts_with("//") && self.strip_comments {
+                // skip
+            } else {
+                let mut processed = line.to_string();
+                if self.expand_macros {
+                    for (k, v) in &self.defines { processed = processed.replace(k.as_str(), v.as_str()); }
+                }
+                output.push_str(&processed);
+            }
+            output.push('\n');
+        }
+        output
+    }
+    pub fn is_defined(&self, key: &str) -> bool { self.defines.contains_key(key) }
+    pub fn define_count(&self) -> usize { self.defines.len() }
+}
+
+impl Default for ShaderPreprocessor {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Uniform Block ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct UniformBlock {
+    pub name: String,
+    pub binding: u32,
+    pub set: u32,
+    pub fields: Vec<ShaderVariable>,
+    pub std140: bool,
+    pub dynamic_offset: bool,
+}
+
+impl UniformBlock {
+    pub fn new(name: impl Into<String>, binding: u32) -> Self {
+        Self { name: name.into(), binding, set: 0, fields: Vec::new(), std140: true, dynamic_offset: false }
+    }
+    pub fn add_field(&mut self, f: ShaderVariable) { self.fields.push(f); }
+    pub fn size_bytes(&self) -> u32 {
+        let mut size = 0u32;
+        for f in &self.fields {
+            let fs = f.size_bytes();
+            let align = fs.max(4).next_power_of_two().min(16);
+            size = (size + align - 1) & !(align - 1);
+            size += fs;
+        }
+        (size + 15) & !15
+    }
+    pub fn generate_glsl(&self) -> String {
+        let mut s = format!("layout(std140, binding={}) uniform {} {{\n", self.binding, self.name);
+        for f in &self.fields { s += &format!("    {} {};\n", f.data_type.glsl_name(), f.name); }
+        s += "};\n";
+        s
+    }
+    pub fn field_count(&self) -> usize { self.fields.len() }
+}
+
+// ── Shader Pipeline State ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct PipelineState {
+    pub blend_enabled: bool,
+    pub blend_src: BlendFactor,
+    pub blend_dst: BlendFactor,
+    pub blend_op: BlendOp,
+    pub depth_test: bool,
+    pub depth_write: bool,
+    pub depth_func: CompareFunc,
+    pub cull_mode: CullMode,
+    pub front_face: FrontFace,
+    pub scissor_test: bool,
+    pub stencil_test: bool,
+    pub polygon_mode: PolygonMode,
+    pub line_width: f32,
+    pub point_size: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlendFactor { Zero, One, SrcAlpha, OneMinusSrcAlpha, DstAlpha, OneMinusDstAlpha, SrcColor, OneMinusSrcColor, ConstantAlpha }
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlendOp { Add, Subtract, ReverseSubtract, Min, Max }
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompareFunc { Never, Less, Equal, LessEqual, Greater, NotEqual, GreaterEqual, Always }
+#[derive(Clone, Debug, PartialEq)]
+pub enum CullMode { None, Front, Back, FrontAndBack }
+#[derive(Clone, Debug, PartialEq)]
+pub enum FrontFace { Clockwise, CounterClockwise }
+#[derive(Clone, Debug, PartialEq)]
+pub enum PolygonMode { Fill, Line, Point }
+
+impl Default for PipelineState {
+    fn default() -> Self {
+        Self { blend_enabled: false, blend_src: BlendFactor::SrcAlpha, blend_dst: BlendFactor::OneMinusSrcAlpha, blend_op: BlendOp::Add, depth_test: true, depth_write: true, depth_func: CompareFunc::Less, cull_mode: CullMode::Back, front_face: FrontFace::CounterClockwise, scissor_test: false, stencil_test: false, polygon_mode: PolygonMode::Fill, line_width: 1.0, point_size: 1.0 }
+    }
+}
+
+impl PipelineState {
+    pub fn transparent() -> Self { Self { blend_enabled: true, depth_write: false, ..Default::default() } }
+    pub fn additive() -> Self { Self { blend_enabled: true, blend_src: BlendFactor::One, blend_dst: BlendFactor::One, blend_op: BlendOp::Add, depth_write: false, ..Default::default() } }
+    pub fn wireframe() -> Self { Self { polygon_mode: PolygonMode::Line, cull_mode: CullMode::None, ..Default::default() } }
+    pub fn opaque() -> Self { Self::default() }
+    pub fn is_transparent(&self) -> bool { self.blend_enabled }
+    pub fn needs_sort(&self) -> bool { self.blend_enabled && !self.depth_write }
+}
+
+// ── Shader Compiler Constants ─────────────────────────────────────────────────
+
+pub const SHADER_MAX_UNIFORMS: usize = 128;
+pub const SHADER_MAX_ATTRIBUTES: usize = 32;
+pub const SHADER_MAX_VARYINGS: usize = 32;
+pub const SHADER_MAX_TEXTURE_UNITS: usize = 32;
+pub const SHADER_MAX_UNIFORM_BLOCK_SIZE: u32 = 65536;
+pub const SHADER_MAX_INCLUDE_DEPTH: u32 = 16;
+pub const SHADER_VERSION_GLSL: &str = "450";
+pub const SHADER_VERSION_WGSL: &str = "1.0";
+pub const SHADER_MAX_SOURCE_LINES: usize = 10000;
+pub const SHADER_MAX_FUNCTIONS: usize = 256;
+pub const SHADER_MAX_STRUCTS: usize = 64;
+pub const SHADER_MAX_PROGRAMS: usize = 1024;
+pub const SHADER_CACHE_SIZE: usize = 256;
+pub const SHADER_MAX_PUSH_CONSTANT_SIZE: u32 = 128;
+
+pub fn shader_compiler_info() -> &'static str { "ShaderCompiler v1.0 — GLSL/WGSL, preprocessor, reflection, pipeline state" }

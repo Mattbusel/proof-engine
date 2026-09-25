@@ -4435,7 +4435,7 @@ mod tests_road_extended {
 
     #[test]
     fn test_pavement_performance() {
-        let mut model = PavementPerformanceModel::new(1, 1.5, 500_000);
+        let mut model = PavementPerformanceModel::new(1, 1.5, 500_000.0);
         model.age_years = 10.0;
         let iri = model.iri_at_age(10.0);
         assert!(iri > 1.5);
@@ -4907,10 +4907,10 @@ mod tests_terrain_road_final {
     #[test]
     fn test_roundabout_capacity() {
         let mut ra = Roundabout::new(1, RoundaboutType::SingleLane, 28.0);
-        ra.add_entry(RoundaboutEntry { entry_id: 0, bearing_deg: 0.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 400, pedestrian_crossing: true });
-        ra.add_entry(RoundaboutEntry { entry_id: 1, bearing_deg: 90.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 350, pedestrian_crossing: true });
-        ra.add_entry(RoundaboutEntry { entry_id: 2, bearing_deg: 180.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 380, pedestrian_crossing: true });
-        ra.add_entry(RoundaboutEntry { entry_id: 3, bearing_deg: 270.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 320, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { approach_volume: 400.0, entry_width: 4.0, entry_radius: 20.0, flare_length: 20.0, inscribed_diameter: 28.0, entry_id: 0, bearing_deg: 0.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 400, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { approach_volume: 400.0, entry_width: 4.0, entry_radius: 20.0, flare_length: 20.0, inscribed_diameter: 28.0, entry_id: 1, bearing_deg: 90.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 350, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { approach_volume: 400.0, entry_width: 4.0, entry_radius: 20.0, flare_length: 20.0, inscribed_diameter: 28.0, entry_id: 2, bearing_deg: 180.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 380, pedestrian_crossing: true });
+        ra.add_entry(RoundaboutEntry { approach_volume: 400.0, entry_width: 4.0, entry_radius: 20.0, flare_length: 20.0, inscribed_diameter: 28.0, entry_id: 3, bearing_deg: 270.0, lane_count: 1, entry_width_m: 4.0, flare_length_m: 20.0, approach_speed_kph: 50.0, design_flow_vph: 320, pedestrian_crossing: true });
         assert!(ra.is_4_way());
         assert!(ra.capacity_estimate_vph() > 0.0);
     }

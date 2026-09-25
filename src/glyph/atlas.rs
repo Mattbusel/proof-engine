@@ -163,6 +163,9 @@ fn load_system_font() -> Option<FontVec> {
     None
 }
 
+/// Pixels of distance-field spread around each glyph.
+const SDF_SPREAD: f32 = 6.0;
+
 impl FontAtlas {
     pub fn build(px_size: f32) -> Self {
         let chars: Vec<char> = ATLAS_CHARS.chars().collect();
@@ -185,10 +188,27 @@ impl FontAtlas {
             Some(scaled.h_advance(id).ceil() as u32)
         }).max().unwrap_or(px_size as u32) + 4;
 
+        // Gutter between cells, in pixels.
+        //
+        // The atlas is converted to a signed distance field across the whole
+        // image, so every glyph's field spreads SDF_SPREAD pixels in all
+        // directions. Packed edge to edge, that field leaks into the
+        // neighbouring cell and shows up in game as faint marks around every
+        // character and as solid rules breaking into dashes. The gutter has to
+        // be wider than the spread for the leak to die out before it reaches
+        // the next glyph.
+        const GUTTER: u32 = 8;
+        debug_assert!(
+            GUTTER as f32 > SDF_SPREAD,
+            "the gutter must outlast the distance field spread"
+        );
+
         let cols = 32u32;
         let rows = (chars.len() as u32 + cols - 1) / cols;
-        let w = cols * cell_w;
-        let h = rows * cell_h;
+        let stride_w = cell_w + GUTTER;
+        let stride_h = cell_h + GUTTER;
+        let w = cols * stride_w;
+        let h = rows * stride_h;
         let mut pixels = vec![0u8; (w * h) as usize];
         let mut uvs    = HashMap::new();
         let baseline_offset = ascent.ceil() as i32 + 1;
@@ -196,8 +216,8 @@ impl FontAtlas {
         for (i, ch) in chars.iter().enumerate() {
             let col = (i as u32 % cols) as i32;
             let row = (i as u32 / cols) as i32;
-            let cx  = col * cell_w as i32;
-            let cy  = row * cell_h as i32;
+            let cx  = col * stride_w as i32;
+            let cy  = row * stride_h as i32;
 
             let glyph = font.glyph_id(*ch).with_scale_and_position(
                 scale,
@@ -216,15 +236,19 @@ impl FontAtlas {
                     }
                 });
             }
+            // Span the glyph box only. The gutter exists to absorb the
+            // distance field, so sampling into it would defeat the point.
+            // The extra half-texel inset keeps LINEAR filtering off the seam.
+            let (hx, hy) = (0.5 / w as f32, 0.5 / h as f32);
             uvs.insert(*ch, GlyphUv {
-                u0: cx as f32 / w as f32,
-                v0: cy as f32 / h as f32,
-                u1: (cx + cell_w as i32) as f32 / w as f32,
-                v1: (cy + cell_h as i32) as f32 / h as f32,
+                u0: cx as f32 / w as f32 + hx,
+                v0: cy as f32 / h as f32 + hy,
+                u1: (cx + cell_w as i32) as f32 / w as f32 - hx,
+                v1: (cy + cell_h as i32) as f32 / h as f32 - hy,
             });
         }
         // Convert to SDF for resolution-independent rendering
-        let sdf_spread = 6.0; // pixels of distance field spread
+        let sdf_spread = SDF_SPREAD;
         log::info!("FontAtlas: computing SDF ({}x{}, spread={})...", w, h, sdf_spread);
         let sdf_pixels = bitmap_to_sdf(&pixels, w, h, sdf_spread);
         log::info!("FontAtlas: SDF complete");
@@ -252,11 +276,12 @@ impl FontAtlas {
                     if idx < pixels.len() { pixels[idx] = 180; }
                 }
             }
+            let (hx, hy) = (0.5 / w as f32, 0.5 / h as f32);
             uvs.insert(*c, GlyphUv {
-                u0: cx as f32 / w as f32,
-                v0: cy as f32 / h as f32,
-                u1: (cx + cw as i32) as f32 / w as f32,
-                v1: (cy + ch as i32) as f32 / h as f32,
+                u0: cx as f32 / w as f32 + hx,
+                v0: cy as f32 / h as f32 + hy,
+                u1: (cx + cw as i32) as f32 / w as f32 - hx,
+                v1: (cy + ch as i32) as f32 / h as f32 - hy,
             });
         }
         Self { width: w, height: h, pixels, uvs, cell_w: cw, cell_h: ch, is_sdf: false }

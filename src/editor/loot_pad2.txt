@@ -1,0 +1,637 @@
+
+// ── Loot Pool & Weight System ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct WeightedLootPool {
+    pub id: u32,
+    pub name: String,
+    pub entries: Vec<WeightedEntry>,
+    pub total_weight: f32,
+    pub min_rolls: u32,
+    pub max_rolls: u32,
+    pub guaranteed_items: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WeightedEntry {
+    pub item_id: u32,
+    pub weight: f32,
+    pub min_qty: u32,
+    pub max_qty: u32,
+    pub condition: Option<String>,
+    pub unique_drop: bool,
+}
+
+impl WeightedLootPool {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), entries: Vec::new(), total_weight: 0.0, min_rolls: 1, max_rolls: 1, guaranteed_items: Vec::new() }
+    }
+    pub fn add_entry(&mut self, item_id: u32, weight: f32, min_qty: u32, max_qty: u32) {
+        self.total_weight += weight;
+        self.entries.push(WeightedEntry { item_id, weight, min_qty, max_qty, condition: None, unique_drop: false });
+    }
+    pub fn normalize(&mut self) {
+        if self.total_weight <= 0.0 { return; }
+        for e in &mut self.entries { e.weight /= self.total_weight; }
+        self.total_weight = 1.0;
+    }
+    pub fn pick(&self, roll: f32) -> Option<&WeightedEntry> {
+        let mut acc = 0.0;
+        for e in &self.entries {
+            acc += e.weight / self.total_weight.max(1.0);
+            if roll <= acc { return Some(e); }
+        }
+        self.entries.last()
+    }
+    pub fn remove_entry(&mut self, item_id: u32) {
+        if let Some(pos) = self.entries.iter().position(|e| e.item_id == item_id) {
+            let w = self.entries[pos].weight;
+            self.total_weight -= w;
+            self.entries.remove(pos);
+        }
+    }
+    pub fn entry_count(&self) -> usize { self.entries.len() }
+    pub fn guaranteed_count(&self) -> usize { self.guaranteed_items.len() }
+    pub fn add_guaranteed(&mut self, item_id: u32) { if !self.guaranteed_items.contains(&item_id) { self.guaranteed_items.push(item_id); } }
+    pub fn set_rolls(&mut self, min: u32, max: u32) { self.min_rolls = min; self.max_rolls = max; }
+    pub fn average_rolls(&self) -> f32 { (self.min_rolls + self.max_rolls) as f32 / 2.0 }
+    pub fn expected_items_per_open(&self) -> f32 { self.average_rolls() + self.guaranteed_items.len() as f32 }
+}
+
+impl Default for WeightedLootPool {
+    fn default() -> Self { Self::new(0, "default") }
+}
+
+// ── Chest & Container System ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootChest {
+    pub id: u32,
+    pub name: String,
+    pub chest_type: ChestType,
+    pub pool_id: u32,
+    pub position: (i32, i32, i32),
+    pub locked: bool,
+    pub lock_tier: u32,
+    pub opened: bool,
+    pub respawn_time_secs: Option<f32>,
+    pub level_requirement: u32,
+    pub is_mimic: bool,
+    pub faction: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChestType {
+    Wooden,
+    Iron,
+    Gold,
+    Enchanted,
+    Boss,
+    Secret,
+    Quest,
+    Daily,
+    Event,
+}
+
+impl LootChest {
+    pub fn new(id: u32, name: impl Into<String>, chest_type: ChestType, pool_id: u32) -> Self {
+        Self { id, name: name.into(), chest_type, pool_id, position: (0, 0, 0), locked: false, lock_tier: 0, opened: false, respawn_time_secs: None, level_requirement: 1, is_mimic: false, faction: String::new() }
+    }
+    pub fn locked(mut self, tier: u32) -> Self { self.locked = true; self.lock_tier = tier; self }
+    pub fn at(mut self, x: i32, y: i32, z: i32) -> Self { self.position = (x, y, z); self }
+    pub fn open(&mut self) -> bool { if self.opened { return false; } self.opened = true; true }
+    pub fn can_open(&self, player_level: u32, has_key: bool) -> bool {
+        !self.opened && player_level >= self.level_requirement && (!self.locked || has_key)
+    }
+    pub fn is_boss_chest(&self) -> bool { self.chest_type == ChestType::Boss }
+    pub fn is_secret(&self) -> bool { self.chest_type == ChestType::Secret }
+    pub fn respawns(&self) -> bool { self.respawn_time_secs.is_some() }
+}
+
+// ── Loot Table Analyzer ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootTableAnalyzer {
+    pub table_id: u32,
+    pub simulations: u32,
+    pub results: HashMap<u32, u32>,
+    pub value_histogram: Vec<(f32, u32)>,
+    pub worst_case: f32,
+    pub best_case: f32,
+    pub median: f32,
+}
+
+impl LootTableAnalyzer {
+    pub fn new(table_id: u32) -> Self {
+        Self { table_id, simulations: 0, results: HashMap::new(), value_histogram: Vec::new(), worst_case: f32::MAX, best_case: 0.0, median: 0.0 }
+    }
+    pub fn record_run(&mut self, item_id: u32, value: f32) {
+        *self.results.entry(item_id).or_insert(0) += 1;
+        self.simulations += 1;
+        if value < self.worst_case { self.worst_case = value; }
+        if value > self.best_case { self.best_case = value; }
+    }
+    pub fn drop_rate(&self, item_id: u32) -> f32 {
+        if self.simulations == 0 { return 0.0; }
+        *self.results.get(&item_id).unwrap_or(&0) as f32 / self.simulations as f32
+    }
+    pub fn unique_drops(&self) -> usize { self.results.len() }
+    pub fn top_n_drops(&self, n: usize) -> Vec<(u32, u32)> {
+        let mut v: Vec<_> = self.results.iter().map(|(&id, &c)| (id, c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.into_iter().take(n).collect()
+    }
+    pub fn reset(&mut self) {
+        self.simulations = 0; self.results.clear(); self.value_histogram.clear();
+        self.worst_case = f32::MAX; self.best_case = 0.0; self.median = 0.0;
+    }
+}
+
+// ── NPC Loot Assignment ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct NpcLootProfile {
+    pub npc_id: u32,
+    pub npc_name: String,
+    pub level: u32,
+    pub pool_ids: Vec<u32>,
+    pub gold_min: u32,
+    pub gold_max: u32,
+    pub xp_reward: u32,
+    pub drop_chance: f32,
+    pub elite_modifier: f32,
+    pub boss_modifier: f32,
+}
+
+impl NpcLootProfile {
+    pub fn new(npc_id: u32, npc_name: impl Into<String>, level: u32) -> Self {
+        Self { npc_id, npc_name: npc_name.into(), level, pool_ids: Vec::new(), gold_min: 1, gold_max: 10, xp_reward: level * 10, drop_chance: 0.3, elite_modifier: 2.0, boss_modifier: 5.0 }
+    }
+    pub fn add_pool(&mut self, pool_id: u32) { if !self.pool_ids.contains(&pool_id) { self.pool_ids.push(pool_id); } }
+    pub fn gold_range(&self) -> (u32, u32) { (self.gold_min, self.gold_max) }
+    pub fn effective_drop_chance(&self, is_elite: bool, is_boss: bool) -> f32 {
+        let mult = if is_boss { self.boss_modifier } else if is_elite { self.elite_modifier } else { 1.0 };
+        (self.drop_chance * mult).clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NpcLootRegistry {
+    pub profiles: HashMap<u32, NpcLootProfile>,
+}
+
+impl NpcLootRegistry {
+    pub fn new() -> Self { Self { profiles: HashMap::new() } }
+    pub fn register(&mut self, profile: NpcLootProfile) { self.profiles.insert(profile.npc_id, profile); }
+    pub fn get(&self, npc_id: u32) -> Option<&NpcLootProfile> { self.profiles.get(&npc_id) }
+    pub fn count(&self) -> usize { self.profiles.len() }
+    pub fn npcs_for_pool(&self, pool_id: u32) -> Vec<&NpcLootProfile> {
+        self.profiles.values().filter(|p| p.pool_ids.contains(&pool_id)).collect()
+    }
+}
+
+impl Default for NpcLootRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Randomized Affix System ───────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemAffix {
+    pub id: u32,
+    pub name: String,
+    pub affix_type: AffixType,
+    pub tier: u32,
+    pub stat: String,
+    pub min_value: f32,
+    pub max_value: f32,
+    pub weight: f32,
+    pub item_types: Vec<ItemType>,
+    pub min_ilvl: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AffixType { Prefix, Suffix, Implicit, Corrupted }
+
+#[derive(Clone, Debug)]
+pub struct ItemAffixRoll {
+    pub affix_id: u32,
+    pub rolled_value: f32,
+    pub is_perfect: bool,
+}
+
+impl ItemAffix {
+    pub fn new(id: u32, name: impl Into<String>, affix_type: AffixType, stat: impl Into<String>, min: f32, max: f32) -> Self {
+        Self { id, name: name.into(), affix_type, tier: 1, stat: stat.into(), min_value: min, max_value: max, weight: 100.0, item_types: Vec::new(), min_ilvl: 1 }
+    }
+    pub fn roll(&self, rng_val: f32) -> ItemAffixRoll {
+        let v = self.min_value + (self.max_value - self.min_value) * rng_val.clamp(0.0, 1.0);
+        let is_perfect = v >= self.max_value * 0.95;
+        ItemAffixRoll { affix_id: self.id, rolled_value: v, is_perfect }
+    }
+    pub fn range(&self) -> f32 { self.max_value - self.min_value }
+    pub fn is_prefix(&self) -> bool { self.affix_type == AffixType::Prefix }
+    pub fn is_suffix(&self) -> bool { self.affix_type == AffixType::Suffix }
+}
+
+#[derive(Clone, Debug)]
+pub struct AffixRegistry {
+    pub affixes: Vec<ItemAffix>,
+}
+
+impl AffixRegistry {
+    pub fn new() -> Self { Self { affixes: Vec::new() } }
+    pub fn register(&mut self, a: ItemAffix) { self.affixes.push(a); }
+    pub fn for_item_type(&self, item_type: &ItemType, ilvl: u32) -> Vec<&ItemAffix> {
+        self.affixes.iter().filter(|a| (a.item_types.is_empty() || a.item_types.contains(item_type)) && ilvl >= a.min_ilvl).collect()
+    }
+    pub fn by_type(&self, at: &AffixType) -> Vec<&ItemAffix> {
+        self.affixes.iter().filter(|a| &a.affix_type == at).collect()
+    }
+    pub fn total_weight_for(&self, item_type: &ItemType, ilvl: u32) -> f32 {
+        self.for_item_type(item_type, ilvl).iter().map(|a| a.weight).sum()
+    }
+}
+
+impl Default for AffixRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Quest Loot Integration ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct QuestRewardPool {
+    pub quest_id: u32,
+    pub quest_name: String,
+    pub choice_items: Vec<u32>,
+    pub forced_items: Vec<u32>,
+    pub gold_reward: u32,
+    pub xp_reward: u32,
+    pub reputation_rewards: HashMap<String, i32>,
+}
+
+impl QuestRewardPool {
+    pub fn new(quest_id: u32, quest_name: impl Into<String>) -> Self {
+        Self { quest_id, quest_name: quest_name.into(), choice_items: Vec::new(), forced_items: Vec::new(), gold_reward: 0, xp_reward: 0, reputation_rewards: HashMap::new() }
+    }
+    pub fn add_choice(&mut self, item_id: u32) { self.choice_items.push(item_id); }
+    pub fn add_forced(&mut self, item_id: u32) { self.forced_items.push(item_id); }
+    pub fn add_rep(&mut self, faction: impl Into<String>, amount: i32) { self.reputation_rewards.insert(faction.into(), amount); }
+    pub fn has_choices(&self) -> bool { !self.choice_items.is_empty() }
+    pub fn total_items(&self) -> usize { self.choice_items.len() + self.forced_items.len() }
+}
+
+#[derive(Clone, Debug)]
+pub struct QuestLootManager {
+    pub pools: HashMap<u32, QuestRewardPool>,
+}
+
+impl QuestLootManager {
+    pub fn new() -> Self { Self { pools: HashMap::new() } }
+    pub fn add_pool(&mut self, pool: QuestRewardPool) { self.pools.insert(pool.quest_id, pool); }
+    pub fn get(&self, quest_id: u32) -> Option<&QuestRewardPool> { self.pools.get(&quest_id) }
+    pub fn total_quests(&self) -> usize { self.pools.len() }
+}
+
+impl Default for QuestLootManager {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Seasonal & Rotating Loot ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SeasonalLootSet {
+    pub season_id: u32,
+    pub season_name: String,
+    pub start_month: u32,
+    pub end_month: u32,
+    pub exclusive_items: Vec<u32>,
+    pub boosted_pools: Vec<u32>,
+    pub boost_multiplier: f32,
+    pub active: bool,
+}
+
+impl SeasonalLootSet {
+    pub fn new(season_id: u32, name: impl Into<String>) -> Self {
+        Self { season_id, season_name: name.into(), start_month: 1, end_month: 12, exclusive_items: Vec::new(), boosted_pools: Vec::new(), boost_multiplier: 1.5, active: false }
+    }
+    pub fn add_exclusive(&mut self, id: u32) { self.exclusive_items.push(id); }
+    pub fn boost_pool(&mut self, id: u32) { self.boosted_pools.push(id); }
+    pub fn is_active_month(&self, month: u32) -> bool { month >= self.start_month && month <= self.end_month }
+    pub fn activate(&mut self) { self.active = true; }
+    pub fn deactivate(&mut self) { self.active = false; }
+}
+
+#[derive(Clone, Debug)]
+pub struct RotatingLootShop {
+    pub shop_id: u32,
+    pub name: String,
+    pub current_items: Vec<ShopItem>,
+    pub rotation_interval_secs: f32,
+    pub last_rotation: f32,
+    pub currency_type: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShopItem {
+    pub item_id: u32,
+    pub price: u32,
+    pub stock: Option<u32>,
+    pub purchased_count: u32,
+    pub exclusive: bool,
+}
+
+impl RotatingLootShop {
+    pub fn new(shop_id: u32, name: impl Into<String>) -> Self {
+        Self { shop_id, name: name.into(), current_items: Vec::new(), rotation_interval_secs: 86400.0, last_rotation: 0.0, currency_type: "gold".into() }
+    }
+    pub fn add_item(&mut self, item_id: u32, price: u32, stock: Option<u32>) {
+        self.current_items.push(ShopItem { item_id, price, stock, purchased_count: 0, exclusive: false });
+    }
+    pub fn purchase(&mut self, item_id: u32) -> bool {
+        if let Some(item) = self.current_items.iter_mut().find(|i| i.item_id == item_id) {
+            if let Some(stock) = item.stock { if item.purchased_count >= stock { return false; } }
+            item.purchased_count += 1; true
+        } else { false }
+    }
+    pub fn needs_rotation(&self, current_time: f32) -> bool {
+        current_time - self.last_rotation >= self.rotation_interval_secs
+    }
+    pub fn rotate(&mut self, new_items: Vec<ShopItem>, current_time: f32) {
+        self.current_items = new_items;
+        self.last_rotation = current_time;
+    }
+    pub fn item_count(&self) -> usize { self.current_items.len() }
+    pub fn available_items(&self) -> Vec<&ShopItem> {
+        self.current_items.iter().filter(|i| i.stock.map(|s| i.purchased_count < s).unwrap_or(true)).collect()
+    }
+}
+
+// ── Item Comparison & Rating ──────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ItemRating {
+    pub item_id: u32,
+    pub power_score: f32,
+    pub utility_score: f32,
+    pub rarity_score: f32,
+    pub overall: f32,
+}
+
+impl ItemRating {
+    pub fn new(item_id: u32, power: f32, utility: f32, rarity: f32) -> Self {
+        let overall = power * 0.5 + utility * 0.3 + rarity * 0.2;
+        Self { item_id, power_score: power, utility_score: utility, rarity_score: rarity, overall }
+    }
+    pub fn grade(&self) -> &'static str {
+        if self.overall >= 90.0 { "S" }
+        else if self.overall >= 75.0 { "A" }
+        else if self.overall >= 60.0 { "B" }
+        else if self.overall >= 45.0 { "C" }
+        else if self.overall >= 30.0 { "D" }
+        else { "F" }
+    }
+    pub fn is_recommended(&self) -> bool { self.overall >= 60.0 }
+}
+
+#[derive(Clone, Debug)]
+pub struct ItemRatingDatabase {
+    pub ratings: HashMap<u32, ItemRating>,
+}
+
+impl ItemRatingDatabase {
+    pub fn new() -> Self { Self { ratings: HashMap::new() } }
+    pub fn add(&mut self, rating: ItemRating) { self.ratings.insert(rating.item_id, rating); }
+    pub fn get(&self, item_id: u32) -> Option<&ItemRating> { self.ratings.get(&item_id) }
+    pub fn top_items(&self, n: usize) -> Vec<&ItemRating> {
+        let mut v: Vec<_> = self.ratings.values().collect();
+        v.sort_by(|a, b| b.overall.partial_cmp(&a.overall).unwrap_or(std::cmp::Ordering::Equal));
+        v.into_iter().take(n).collect()
+    }
+    pub fn grade_distribution(&self) -> HashMap<&'static str, usize> {
+        let mut dist = HashMap::new();
+        for r in self.ratings.values() { *dist.entry(r.grade()).or_insert(0) += 1; }
+        dist
+    }
+}
+
+impl Default for ItemRatingDatabase {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Loot Economy Balance ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct EconomySnapshot {
+    pub timestamp: u64,
+    pub total_gold_in_circulation: u64,
+    pub total_items_in_economy: u32,
+    pub average_item_value: f32,
+    pub inflation_index: f32,
+    pub price_floor: HashMap<u32, f32>,
+    pub price_ceiling: HashMap<u32, f32>,
+}
+
+impl EconomySnapshot {
+    pub fn new(timestamp: u64) -> Self {
+        Self { timestamp, total_gold_in_circulation: 0, total_items_in_economy: 0, average_item_value: 0.0, inflation_index: 1.0, price_floor: HashMap::new(), price_ceiling: HashMap::new() }
+    }
+    pub fn set_price_bounds(&mut self, item_id: u32, floor: f32, ceil: f32) {
+        self.price_floor.insert(item_id, floor);
+        self.price_ceiling.insert(item_id, ceil);
+    }
+    pub fn effective_price(&self, item_id: u32, base_price: f32) -> f32 {
+        let adjusted = base_price * self.inflation_index;
+        let floor = self.price_floor.get(&item_id).copied().unwrap_or(0.0);
+        let ceil = self.price_ceiling.get(&item_id).copied().unwrap_or(f32::MAX);
+        adjusted.clamp(floor, ceil)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EconomyTracker {
+    pub snapshots: VecDeque<EconomySnapshot>,
+    pub max_snapshots: usize,
+    pub current: EconomySnapshot,
+}
+
+impl EconomyTracker {
+    pub fn new() -> Self {
+        Self { snapshots: VecDeque::new(), max_snapshots: 100, current: EconomySnapshot::new(0) }
+    }
+    pub fn snapshot(&mut self, timestamp: u64) {
+        let snap = self.current.clone();
+        if self.snapshots.len() >= self.max_snapshots { self.snapshots.pop_front(); }
+        self.snapshots.push_back(snap);
+        self.current = EconomySnapshot::new(timestamp);
+    }
+    pub fn gold_trend(&self) -> f32 {
+        if self.snapshots.len() < 2 { return 0.0; }
+        let old = self.snapshots.front().unwrap().total_gold_in_circulation as f32;
+        let new = self.snapshots.back().unwrap().total_gold_in_circulation as f32;
+        if old == 0.0 { return 0.0; }
+        (new - old) / old * 100.0
+    }
+}
+
+impl Default for EconomyTracker {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Additional constants ──────────────────────────────────────────────────────
+pub const LOOT_AFFIX_MAX_PER_ITEM: u32 = 6;
+pub const LOOT_AFFIX_PREFIX_MAX: u32 = 3;
+pub const LOOT_AFFIX_SUFFIX_MAX: u32 = 3;
+pub const LOOT_CHEST_MAX_CONTENTS: u32 = 20;
+pub const LOOT_SHOP_MAX_ITEMS: usize = 12;
+pub const LOOT_ECONOMY_SNAPSHOT_INTERVAL: u64 = 3600;
+pub const LOOT_SEASON_COUNT: u32 = 4;
+pub const LOOT_QUEST_MAX_CHOICES: usize = 5;
+pub const LOOT_POOL_MAX_ENTRIES: usize = 512;
+pub const LOOT_NPC_MAX_POOLS: usize = 8;
+pub const LOOT_AFFIX_TIER_MAX: u32 = 6;
+pub const LOOT_WEIGHT_PRECISION: f32 = 0.0001;
+
+pub fn loot_economy_info() -> String {
+    format!("LootEconomy — snapshots, inflation tracking, price bounds, seasonal events")
+}
+
+pub fn describe_rarity(rarity: &ItemRarity) -> &'static str {
+    match rarity {
+        ItemRarity::Common => "A common item found everywhere.",
+        ItemRarity::Uncommon => "A slightly above-average find.",
+        ItemRarity::Rare => "Rare and valuable.",
+        ItemRarity::Epic => "Epic quality, sought by many.",
+        ItemRarity::Legendary => "Legendary — few exist.",
+        ItemRarity::Mythic => "Mythic power, almost unattainable.",
+        ItemRarity::BossExclusive => "Only obtainable from elite bosses.",
+    }
+}
+
+pub fn item_slot_name(index: u32) -> &'static str {
+    match index {
+        0 => "Head", 1 => "Shoulders", 2 => "Chest", 3 => "Hands",
+        4 => "Legs", 5 => "Feet", 6 => "Main Hand", 7 => "Off Hand",
+        8 => "Ring 1", 9 => "Ring 2", 10 => "Amulet", 11 => "Trinket",
+        _ => "Unknown",
+    }
+}
+
+pub fn format_gold(amount: u64) -> String {
+    let g = amount / 10000;
+    let s = (amount % 10000) / 100;
+    let c = amount % 100;
+    format!("{}g {}s {}c", g, s, c)
+}
+
+pub fn weighted_roll(weights: &[f32], roll: f32) -> usize {
+    let total: f32 = weights.iter().sum();
+    if total <= 0.0 { return 0; }
+    let mut acc = 0.0;
+    for (i, &w) in weights.iter().enumerate() {
+        acc += w / total;
+        if roll <= acc { return i; }
+    }
+    weights.len() - 1
+}
+
+pub fn item_level_to_power(ilvl: u32) -> f32 {
+    if ilvl == 0 { return 1.0; }
+    (ilvl as f32 / 10.0).powf(1.5) * 10.0
+}
+
+pub fn power_to_item_level(power: f32) -> u32 {
+    if power <= 0.0 { return 0; }
+    ((power / 10.0).powf(1.0 / 1.5) * 10.0) as u32
+}
+
+// ── Loot Tier Progression ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct LootTier {
+    pub tier: u32,
+    pub name: String,
+    pub min_ilvl: u32,
+    pub max_ilvl: u32,
+    pub color: [u8; 4],
+    pub pools: Vec<u32>,
+}
+
+impl LootTier {
+    pub fn new(tier: u32, name: impl Into<String>, min_ilvl: u32, max_ilvl: u32) -> Self {
+        Self { tier, name: name.into(), min_ilvl, max_ilvl, color: [255, 255, 255, 255], pools: Vec::new() }
+    }
+    pub fn contains_ilvl(&self, ilvl: u32) -> bool { ilvl >= self.min_ilvl && ilvl <= self.max_ilvl }
+    pub fn with_color(mut self, r: u8, g: u8, b: u8) -> Self { self.color = [r, g, b, 255]; self }
+    pub fn add_pool(&mut self, pool_id: u32) { self.pools.push(pool_id); }
+}
+
+#[derive(Clone, Debug)]
+pub struct LootTierList {
+    pub tiers: Vec<LootTier>,
+}
+
+impl LootTierList {
+    pub fn new() -> Self { Self { tiers: Vec::new() } }
+    pub fn add_tier(&mut self, tier: LootTier) { self.tiers.push(tier); }
+    pub fn tier_for_ilvl(&self, ilvl: u32) -> Option<&LootTier> {
+        self.tiers.iter().find(|t| t.contains_ilvl(ilvl))
+    }
+    pub fn highest_tier(&self) -> Option<&LootTier> { self.tiers.iter().max_by_key(|t| t.tier) }
+    pub fn tier_count(&self) -> usize { self.tiers.len() }
+}
+
+impl Default for LootTierList {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Prestige Loot System ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct PrestigeReward {
+    pub prestige_level: u32,
+    pub item_ids: Vec<u32>,
+    pub cosmetic_ids: Vec<u32>,
+    pub title: String,
+    pub permanent_bonus: HashMap<String, f32>,
+    pub unlocked: bool,
+}
+
+impl PrestigeReward {
+    pub fn new(prestige_level: u32, title: impl Into<String>) -> Self {
+        Self { prestige_level, item_ids: Vec::new(), cosmetic_ids: Vec::new(), title: title.into(), permanent_bonus: HashMap::new(), unlocked: false }
+    }
+    pub fn add_item(mut self, id: u32) -> Self { self.item_ids.push(id); self }
+    pub fn add_bonus(mut self, stat: impl Into<String>, value: f32) -> Self { self.permanent_bonus.insert(stat.into(), value); self }
+    pub fn unlock(&mut self) { self.unlocked = true; }
+}
+
+#[derive(Clone, Debug)]
+pub struct PrestigeSystem {
+    pub current_level: u32,
+    pub max_level: u32,
+    pub rewards: Vec<PrestigeReward>,
+    pub accumulated_bonuses: HashMap<String, f32>,
+}
+
+impl PrestigeSystem {
+    pub fn new(max_level: u32) -> Self {
+        Self { current_level: 0, max_level, rewards: Vec::new(), accumulated_bonuses: HashMap::new() }
+    }
+    pub fn add_reward(&mut self, reward: PrestigeReward) { self.rewards.push(reward); }
+    pub fn prestige(&mut self) -> bool {
+        if self.current_level >= self.max_level { return false; }
+        self.current_level += 1;
+        if let Some(r) = self.rewards.iter_mut().find(|r| r.prestige_level == self.current_level) {
+            r.unlock();
+            for (k, v) in &r.permanent_bonus { *self.accumulated_bonuses.entry(k.clone()).or_insert(0.0) += v; }
+        }
+        true
+    }
+    pub fn total_bonus(&self, stat: &str) -> f32 { self.accumulated_bonuses.get(stat).copied().unwrap_or(0.0) }
+    pub fn can_prestige(&self) -> bool { self.current_level < self.max_level }
+}
+
+impl Default for PrestigeSystem {
+    fn default() -> Self { Self::new(10) }
+}

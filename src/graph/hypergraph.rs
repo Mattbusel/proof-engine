@@ -289,7 +289,7 @@ mod tests {
         // 3 + 2 = 5 edges
         assert_eq!(bip.edge_count(), 5);
 
-        let hg2 = Hypergraph::from_bipartite(&bip);
+        let hg2 = Hypergraph::<String>::from_bipartite(&bip);
         assert_eq!(hg2.node_count(), 3);
         assert_eq!(hg2.hyperedge_count(), 2);
     }

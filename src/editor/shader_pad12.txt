@@ -1,0 +1,244 @@
+
+// ── Instanced Rendering ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct InstanceData {
+    pub model_matrix: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    pub custom0: [f32; 4],
+    pub custom1: [f32; 4],
+}
+
+impl InstanceData {
+    pub fn new() -> Self { Self { model_matrix: [[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]], color: [1.0; 4], custom0: [0.0; 4], custom1: [0.0; 4] } }
+    pub fn with_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self { self.color = [r, g, b, a]; self }
+}
+
+impl Default for InstanceData {
+    fn default() -> Self { Self::new() }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceBatch {
+    pub id: u32,
+    pub mesh_id: u32,
+    pub material_id: u32,
+    pub instances: Vec<InstanceData>,
+    pub max_instances: u32,
+    pub visible_count: u32,
+    pub cull_enabled: bool,
+}
+
+impl InstanceBatch {
+    pub fn new(id: u32, mesh_id: u32, material_id: u32, max: u32) -> Self {
+        Self { id, mesh_id, material_id, instances: Vec::new(), max_instances: max, visible_count: 0, cull_enabled: true }
+    }
+    pub fn add(&mut self, data: InstanceData) -> bool {
+        if self.instances.len() >= self.max_instances as usize { return false; }
+        self.instances.push(data); self.visible_count += 1; true
+    }
+    pub fn clear(&mut self) { self.instances.clear(); self.visible_count = 0; }
+    pub fn count(&self) -> usize { self.instances.len() }
+    pub fn is_full(&self) -> bool { self.instances.len() >= self.max_instances as usize }
+    pub fn utilization(&self) -> f32 { if self.max_instances == 0 { 0.0 } else { self.instances.len() as f32 / self.max_instances as f32 } }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstanceBatchManager {
+    pub batches: HashMap<u32, InstanceBatch>,
+    pub next_id: u32,
+    pub total_instances: u32,
+}
+
+impl InstanceBatchManager {
+    pub fn new() -> Self { Self { batches: HashMap::new(), next_id: 1, total_instances: 0 } }
+    pub fn create_batch(&mut self, mesh_id: u32, material_id: u32, max: u32) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.batches.insert(id, InstanceBatch::new(id, mesh_id, material_id, max));
+        id
+    }
+    pub fn add_instance(&mut self, batch_id: u32, data: InstanceData) -> bool {
+        if let Some(b) = self.batches.get_mut(&batch_id) { if b.add(data) { self.total_instances += 1; return true; } }
+        false
+    }
+    pub fn clear_batch(&mut self, batch_id: u32) {
+        if let Some(b) = self.batches.get_mut(&batch_id) { self.total_instances -= b.count() as u32; b.clear(); }
+    }
+    pub fn clear_all(&mut self) { for b in self.batches.values_mut() { b.clear(); } self.total_instances = 0; }
+    pub fn batch_count(&self) -> usize { self.batches.len() }
+    pub fn total_draw_calls(&self) -> usize { self.batches.values().filter(|b| b.count() > 0).count() }
+}
+
+impl Default for InstanceBatchManager {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Occlusion Culling ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct OcclusionQuery {
+    pub id: u32,
+    pub object_id: u32,
+    pub visible: bool,
+    pub pixel_count: u32,
+    pub pending: bool,
+    pub frame_issued: u64,
+}
+
+impl OcclusionQuery {
+    pub fn new(id: u32, object_id: u32) -> Self { Self { id, object_id, visible: true, pixel_count: 0, pending: false, frame_issued: 0 } }
+    pub fn issue(&mut self, frame: u64) { self.pending = true; self.frame_issued = frame; }
+    pub fn resolve(&mut self, pixels: u32) { self.pixel_count = pixels; self.visible = pixels > 0; self.pending = false; }
+    pub fn is_occluded(&self) -> bool { !self.visible }
+    pub fn is_stale(&self, current_frame: u64) -> bool { current_frame - self.frame_issued > 2 }
+}
+
+#[derive(Clone, Debug)]
+pub struct OcclusionCullSystem {
+    pub queries: HashMap<u32, OcclusionQuery>,
+    pub next_id: u32,
+    pub enabled: bool,
+    pub latency_frames: u32,
+    pub culled_this_frame: u32,
+    pub visible_this_frame: u32,
+    pub frame: u64,
+}
+
+impl OcclusionCullSystem {
+    pub fn new() -> Self { Self { queries: HashMap::new(), next_id: 1, enabled: true, latency_frames: 1, culled_this_frame: 0, visible_this_frame: 0, frame: 0 } }
+    pub fn register(&mut self, object_id: u32) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        self.queries.insert(id, OcclusionQuery::new(id, object_id));
+        id
+    }
+    pub fn begin_frame(&mut self) { self.frame += 1; self.culled_this_frame = 0; self.visible_this_frame = 0; }
+    pub fn is_visible(&self, query_id: u32) -> bool { self.queries.get(&query_id).map(|q| q.visible).unwrap_or(true) }
+    pub fn resolve(&mut self, query_id: u32, pixels: u32) {
+        if let Some(q) = self.queries.get_mut(&query_id) {
+            q.resolve(pixels);
+            if q.visible { self.visible_this_frame += 1; } else { self.culled_this_frame += 1; }
+        }
+    }
+    pub fn cull_rate(&self) -> f32 {
+        let total = self.culled_this_frame + self.visible_this_frame;
+        if total == 0 { 0.0 } else { self.culled_this_frame as f32 / total as f32 }
+    }
+    pub fn query_count(&self) -> usize { self.queries.len() }
+}
+
+impl Default for OcclusionCullSystem {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Render State Tracker ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct RenderStateTracker {
+    pub current_shader: Option<u32>,
+    pub current_material: Option<u32>,
+    pub current_vao: Option<u32>,
+    pub current_fbo: Option<u32>,
+    pub blend_enabled: bool,
+    pub depth_test_enabled: bool,
+    pub cull_enabled: bool,
+    pub scissor_enabled: bool,
+    pub state_changes: u32,
+    pub shader_switches: u32,
+    pub material_switches: u32,
+    pub texture_uploads: u32,
+    pub frame: u64,
+}
+
+impl RenderStateTracker {
+    pub fn new() -> Self { Self { depth_test_enabled: true, cull_enabled: true, ..Default::default() } }
+    pub fn begin_frame(&mut self) { self.state_changes = 0; self.shader_switches = 0; self.material_switches = 0; self.texture_uploads = 0; self.frame += 1; }
+    pub fn bind_shader(&mut self, id: u32) -> bool {
+        if self.current_shader == Some(id) { return false; }
+        self.current_shader = Some(id); self.shader_switches += 1; self.state_changes += 1; true
+    }
+    pub fn bind_material(&mut self, id: u32) -> bool {
+        if self.current_material == Some(id) { return false; }
+        self.current_material = Some(id); self.material_switches += 1; self.state_changes += 1; true
+    }
+    pub fn redundancy_rate(&self) -> f32 { 0.0 }
+    pub fn reset_bindings(&mut self) { self.current_shader = None; self.current_material = None; self.current_vao = None; self.current_fbo = None; }
+}
+
+// ── Shadow Map Atlas ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShadowMapAtlasEntry {
+    pub light_id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+    pub valid: bool,
+    pub last_updated_frame: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShadowMapAtlas {
+    pub atlas_size: u32,
+    pub entries: Vec<ShadowMapAtlasEntry>,
+    pub next_x: u32,
+    pub next_y: u32,
+    pub current_row_height: u32,
+}
+
+impl ShadowMapAtlas {
+    pub fn new(atlas_size: u32) -> Self { Self { atlas_size, entries: Vec::new(), next_x: 0, next_y: 0, current_row_height: 0 } }
+    pub fn allocate(&mut self, light_id: u32, size: u32) -> Option<(u32, u32)> {
+        if self.next_x + size > self.atlas_size { self.next_x = 0; self.next_y += self.current_row_height; self.current_row_height = 0; }
+        if self.next_y + size > self.atlas_size { return None; }
+        let x = self.next_x; let y = self.next_y;
+        self.current_row_height = self.current_row_height.max(size);
+        self.next_x += size;
+        self.entries.push(ShadowMapAtlasEntry { light_id, x, y, size, valid: true, last_updated_frame: 0 });
+        Some((x, y))
+    }
+    pub fn find(&self, light_id: u32) -> Option<&ShadowMapAtlasEntry> { self.entries.iter().find(|e| e.light_id == light_id) }
+    pub fn entry_count(&self) -> usize { self.entries.len() }
+    pub fn reset(&mut self) { self.entries.clear(); self.next_x = 0; self.next_y = 0; self.current_row_height = 0; }
+    pub fn utilization(&self) -> f32 { if self.atlas_size == 0 { 0.0 } else { self.next_y as f32 / self.atlas_size as f32 } }
+}
+
+// ── More final constants ──────────────────────────────────────────────────────
+
+pub const INSTANCE_BATCH_DEFAULT_MAX: u32 = 1024;
+pub const OCCLUSION_QUERY_MAX: usize = 4096;
+pub const SHADOW_ATLAS_DEFAULT_SIZE: u32 = 4096;
+pub const RENDER_STATE_TRACKER_FRAME_BUDGET: u32 = 1000;
+pub const INSTANCE_DATA_SIZE_BYTES: usize = 128;
+
+pub fn glsl_mat4_from_rows(rows: [[f32; 4]; 4]) -> String {
+    format!("mat4({:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4}, {:.4},{:.4},{:.4},{:.4})",
+        rows[0][0], rows[0][1], rows[0][2], rows[0][3],
+        rows[1][0], rows[1][1], rows[1][2], rows[1][3],
+        rows[2][0], rows[2][1], rows[2][2], rows[2][3],
+        rows[3][0], rows[3][1], rows[3][2], rows[3][3])
+}
+pub fn glsl_vec4(r: f32, g: f32, b: f32, a: f32) -> String { format!("vec4({:.4}, {:.4}, {:.4}, {:.4})", r, g, b, a) }
+pub fn glsl_vec3(x: f32, y: f32, z: f32) -> String { format!("vec3({:.4}, {:.4}, {:.4})", x, y, z) }
+pub fn glsl_vec2(x: f32, y: f32) -> String { format!("vec2({:.4}, {:.4})", x, y) }
+pub fn glsl_float(v: f32) -> String { format!("{:.6}", v) }
+pub fn glsl_int(v: i32) -> String { format!("{}", v) }
+pub fn glsl_bool(v: bool) -> &'static str { if v { "true" } else { "false" } }
+pub fn glsl_define(name: &str, value: &str) -> String { format!("#define {} {}", name, value) }
+pub fn glsl_ifdef_block(name: &str, code: &str) -> String { format!("#ifdef {}\n{}\n#endif // {}", name, code, name) }
+pub fn glsl_version_string(ver: u32, es: bool) -> String { if es { format!("#version {} es", ver) } else { format!("#version {}", ver) } }
+pub fn glsl_precision_header() -> &'static str { "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n" }
+
+pub fn shader_compiler_all_constants() -> HashMap<&'static str, u64> {
+    let mut m = HashMap::new();
+    m.insert("SHADER_MAX_UNIFORMS", SHADER_MAX_UNIFORMS as u64);
+    m.insert("SHADER_MAX_ATTRIBUTES", SHADER_MAX_ATTRIBUTES as u64);
+    m.insert("SHADER_MAX_PROGRAMS", SHADER_MAX_PROGRAMS as u64);
+    m.insert("TEXTURE_MAX_SIZE", TEXTURE_MAX_SIZE as u64);
+    m.insert("BUFFER_ALIGNMENT", BUFFER_ALIGNMENT as u64);
+    m.insert("SHADOW_ATLAS_DEFAULT_SIZE", SHADOW_ATLAS_DEFAULT_SIZE as u64);
+    m.insert("INSTANCE_BATCH_DEFAULT_MAX", INSTANCE_BATCH_DEFAULT_MAX as u64);
+    m.insert("OCCLUSION_QUERY_MAX", OCCLUSION_QUERY_MAX as u64);
+    m.insert("BLOOM_MAX_DOWNSAMPLE_PASSES", BLOOM_MAX_DOWNSAMPLE_PASSES as u64);
+    m.insert("SSAO_KERNEL_SIZE_MAX", SSAO_KERNEL_SIZE_MAX as u64);
+    m
+}

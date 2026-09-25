@@ -1,0 +1,33 @@
+
+// ── Additional map utility types ─────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct MapEventTrigger {
+    pub id: u32,
+    pub position: (i32, i32),
+    pub radius: u32,
+    pub event_id: String,
+    pub one_shot: bool,
+    pub triggered: bool,
+}
+
+impl MapEventTrigger {
+    pub fn new(id: u32, position: (i32, i32), radius: u32, event_id: impl Into<String>) -> Self {
+        Self { id, position, radius, event_id: event_id.into(), one_shot: true, triggered: false }
+    }
+    pub fn in_range(&self, x: i32, y: i32) -> bool {
+        let dx = x - self.position.0; let dy = y - self.position.1;
+        (dx*dx + dy*dy) as u32 <= self.radius * self.radius
+    }
+    pub fn trigger(&mut self) -> bool {
+        if self.triggered && self.one_shot { return false; }
+        self.triggered = true; true
+    }
+    pub fn reset(&mut self) { self.triggered = false; }
+}
+
+pub const MAP_MAX_EVENT_TRIGGERS: usize = 512;
+pub const MAP_CHUNK_LOAD_RADIUS: u32 = 3;
+pub const MAP_CHUNK_UNLOAD_RADIUS: u32 = 5;
+pub const MAP_MIN_ROAD_WIDTH: u32 = 1;
+pub const MAP_MAX_ROAD_WIDTH: u32 = 8;

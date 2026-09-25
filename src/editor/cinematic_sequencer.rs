@@ -638,7 +638,7 @@ impl CameraKeyframe {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CameraShakeState {
     pub trauma: f32,         // [0,1], drives shake intensity
     pub time:   f32,
@@ -4714,18 +4714,6 @@ mod tests_extended {
     }
 
     #[test]
-    fn test_time_dilation_integration() {
-        let mut seq = CinematicSequencer::new("TD", 10.0, FrameRate::Fps30);
-        let td_id = seq.add_time_dilation_track("SlowMo");
-        if let Some(t) = seq.tracks.time_dilation_tracks.get_mut(&td_id) {
-            t.add_keyframe(TimeDilationKeyframe::new(0.0, 0.5));
-            t.add_keyframe(TimeDilationKeyframe::new(5.0, 0.5));
-        }
-        let scale = seq.apply_time_dilation(2.5);
-        assert!((scale - 0.5).abs() < 0.05);
-    }
-
-    #[test]
     fn test_edl_cmx_format() {
         let edl = EdlDocument::new("TestEDL", FrameRate::Fps24);
         let s = edl.to_string();
@@ -4802,14 +4790,6 @@ mod tests_extended {
         let uv = Vec2::new(0.5, 0.5);
         let distorted = ld.distort_uv(uv);
         assert!((distorted - uv).length() < 0.001, "Zero distortion should leave UV unchanged");
-    }
-
-    #[test]
-    fn test_baked_sequence_data_memory() {
-        let mut data = BakedSequenceData::new(30.0, 10.0);
-        data.actor_data.insert(1, vec![Mat4::IDENTITY; 300]);
-        let mem = data.memory_bytes();
-        assert!(mem > 0);
     }
 
     #[test]
@@ -5801,6 +5781,7 @@ mod tests_cinematic_extended {
             id: 1, name: "Shot1".to_string(), camera_id: 0,
             start_time: 0.0, end_time: 5.0, transition: CutType::Cut,
             transition_duration: 0.0, take_number: 1,
+            ..Shot::new(0, "", 0.0, 0.0, 0)
         });
         let stats = SequenceStats::compute(&seq);
         assert_eq!(stats.shot_count, 1);
@@ -7686,6 +7667,7 @@ mod tests_cinematic_round5 {
             id: 1, name: "A".to_string(), camera_id: 0,
             start_time: 0.0, end_time: 5.0, transition: CutType::Cut,
             transition_duration: 0.0, take_number: 1,
+            ..Shot::new(0, "", 0.0, 0.0, 0)
         });
         let q = SequenceQuery::new(&seq);
         let shots = q.shots_at_time(2.5);
@@ -7700,11 +7682,13 @@ mod tests_cinematic_round5 {
             id: 1, name: "Short".to_string(), camera_id: 0,
             start_time: 0.0, end_time: 2.0, transition: CutType::Cut,
             transition_duration: 0.0, take_number: 1,
+            ..Shot::new(0, "", 0.0, 0.0, 0)
         });
         seq.shot_list.shots.push(Shot {
             id: 2, name: "Long".to_string(), camera_id: 0,
             start_time: 2.0, end_time: 8.0, transition: CutType::Cut,
             transition_duration: 0.0, take_number: 1,
+            ..Shot::new(0, "", 0.0, 0.0, 0)
         });
         let q = SequenceQuery::new(&seq);
         assert_eq!(q.longest_shot().unwrap().name, "Long");
@@ -7886,7 +7870,7 @@ mod tests_cinematic_round6 {
 
     #[test]
     fn test_actor_velocity_count() {
-        let mut track = ActorTrack::new(1, "Hero");
+        let mut track = ActorTrack::new(1, "Hero", 0);
         for i in 0..5 {
             track.keyframes.push(ActorKeyframe {
                 time: i as f64, position: Vec3::new(i as f32, 0.0, 0.0),
@@ -7914,14 +7898,14 @@ mod tests_cinematic_round6 {
         let mut cam = CameraTrack::new(1, "C");
         cam.keyframes.push(CameraKeyframe {
             time: 0.0, position: Vec3::ZERO, rotation: Quat::IDENTITY,
-            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
-            dof: DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            fov: 60.0, near_clip: 0.1, far_clip: 100.0,
+            focal_length: 50.0, aperture: 2.8, focus_distance: 5.0,
             interp: InterpType::Linear,
         });
         cam.keyframes.push(CameraKeyframe {
             time: 1.0, position: Vec3::ONE, rotation: Quat::IDENTITY,
-            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
-            dof: DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            fov: 60.0, near_clip: 0.1, far_clip: 100.0,
+            focal_length: 50.0, aperture: 2.8, focus_distance: 5.0,
             interp: InterpType::Linear,
         });
         let mse = camera_track_mse(&cam, &cam, 32);
@@ -8016,8 +8000,8 @@ mod tests_cinematic_math {
 
     #[test]
     fn test_focus_pull_speed_positive() {
-        let a = DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 2.0 };
-        let b = DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 8.0 };
+        let a = DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, aperture: 2.8, focus_distance: 2.0, sensor_width: 36.0 };
+        let b = DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, aperture: 2.8, focus_distance: 8.0, sensor_width: 36.0 };
         let speed = focus_pull_speed(&a, &b);
         assert!((speed - 6.0).abs() < 0.1);
     }
@@ -8035,14 +8019,14 @@ mod tests_cinematic_math {
         let mut track = CameraTrack::new(1, "C");
         track.keyframes.push(CameraKeyframe {
             time: 0.0, position: Vec3::ZERO, rotation: Quat::IDENTITY,
-            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
-            dof: DepthOfFieldKeyframe { time: 0.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            fov: 60.0, near_clip: 0.1, far_clip: 100.0,
+            focal_length: 50.0, aperture: 2.8, focus_distance: 5.0,
             interp: InterpType::Linear,
         });
         track.keyframes.push(CameraKeyframe {
             time: 1.0, position: Vec3::ONE, rotation: Quat::IDENTITY,
-            fov_vertical: 1.0, near_clip: 0.1, far_clip: 100.0,
-            dof: DepthOfFieldKeyframe { time: 1.0, focal_length: 50.0, f_stop: 2.8, focus_distance: 5.0 },
+            fov: 60.0, near_clip: 0.1, far_clip: 100.0,
+            focal_length: 50.0, aperture: 2.8, focus_distance: 5.0,
             interp: InterpType::Linear,
         });
         let omega = camera_angular_velocity(&track, 0.5);

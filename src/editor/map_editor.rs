@@ -5094,8 +5094,8 @@ impl ExtLootTable {
 
     pub fn roll_deterministic(&self, seed: u64, roll_index: u32) -> Vec<(&str, u32)> {
         let mut result = Vec::new();
-        let mut rng = seed ^ (roll_index as u64 * 6364136223846793005 + 1442695040888963407);
-        rng ^= rng >> 33; rng *= 0xff51afd7ed558ccd; rng ^= rng >> 33;
+        let mut rng = seed ^ (roll_index as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        rng ^= rng >> 33; rng = rng.wrapping_mul(0xff51afd7ed558ccd); rng ^= rng >> 33;
         let total = self.total_weight();
         if total <= 0.0 { return result; }
         let pick = (rng as f32 / u64::MAX as f32) * total;

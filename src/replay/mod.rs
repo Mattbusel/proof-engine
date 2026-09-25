@@ -14,7 +14,7 @@
 //! Any external randomness (system time, thread ID, etc.) breaks determinism.
 //!
 //! ## File format (little-endian binary)
-//! ```
+//! ```text
 //! Header (128 bytes):
 //!   magic:      [u8; 4]   = b"PRFE"
 //!   version:    u16

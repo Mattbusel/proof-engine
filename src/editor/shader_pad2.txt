@@ -1,0 +1,418 @@
+
+// ── Shader AST Nodes ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum ShaderExpr {
+    Literal(ShaderLiteral),
+    Ident(String),
+    Binary { op: BinaryOp, lhs: Box<ShaderExpr>, rhs: Box<ShaderExpr> },
+    Unary { op: UnaryOp, expr: Box<ShaderExpr> },
+    Call { name: String, args: Vec<ShaderExpr> },
+    Index { array: Box<ShaderExpr>, index: Box<ShaderExpr> },
+    Field { object: Box<ShaderExpr>, field: String },
+    Ternary { cond: Box<ShaderExpr>, then: Box<ShaderExpr>, else_: Box<ShaderExpr> },
+    Cast { to: ShaderDataType, expr: Box<ShaderExpr> },
+    Assign { target: Box<ShaderExpr>, value: Box<ShaderExpr> },
+}
+
+#[derive(Clone, Debug)]
+pub enum ShaderLiteral {
+    Int(i64), Float(f64), Bool(bool), String(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BinaryOp {
+    Add, Sub, Mul, Div, Mod,
+    Eq, Ne, Lt, Gt, Le, Ge,
+    And, Or, BitAnd, BitOr, BitXor,
+    Shl, Shr,
+    AddAssign, SubAssign, MulAssign, DivAssign,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnaryOp { Neg, Not, BitNot, PreInc, PreDec, PostInc, PostDec }
+
+impl BinaryOp {
+    pub fn is_comparison(&self) -> bool { matches!(self, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge) }
+    pub fn is_logical(&self) -> bool { matches!(self, BinaryOp::And | BinaryOp::Or) }
+    pub fn is_arithmetic(&self) -> bool { matches!(self, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod) }
+    pub fn glsl_symbol(&self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+", BinaryOp::Sub => "-", BinaryOp::Mul => "*", BinaryOp::Div => "/",
+            BinaryOp::Mod => "%", BinaryOp::Eq => "==", BinaryOp::Ne => "!=", BinaryOp::Lt => "<",
+            BinaryOp::Gt => ">", BinaryOp::Le => "<=", BinaryOp::Ge => ">=", BinaryOp::And => "&&",
+            BinaryOp::Or => "||", BinaryOp::BitAnd => "&", BinaryOp::BitOr => "|", BinaryOp::BitXor => "^",
+            BinaryOp::Shl => "<<", BinaryOp::Shr => ">>", BinaryOp::AddAssign => "+=",
+            BinaryOp::SubAssign => "-=", BinaryOp::MulAssign => "*=", BinaryOp::DivAssign => "/=",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ShaderStmt {
+    Decl { var: ShaderVariable, initializer: Option<ShaderExpr> },
+    Expr(ShaderExpr),
+    If { cond: ShaderExpr, then: Vec<ShaderStmt>, else_: Option<Vec<ShaderStmt>> },
+    For { init: Option<Box<ShaderStmt>>, cond: Option<ShaderExpr>, update: Option<ShaderExpr>, body: Vec<ShaderStmt> },
+    While { cond: ShaderExpr, body: Vec<ShaderStmt> },
+    Return(Option<ShaderExpr>),
+    Break,
+    Continue,
+    Discard,
+    Block(Vec<ShaderStmt>),
+}
+
+// ── Shader Code Generator ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCodeGen {
+    pub target: CodeGenTarget,
+    pub indent_size: usize,
+    pub use_precision_qualifiers: bool,
+    pub emit_line_directives: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CodeGenTarget { Glsl450, Glsl300Es, Wgsl, Hlsl50, Msl20 }
+
+impl ShaderCodeGen {
+    pub fn new(target: CodeGenTarget) -> Self { Self { target, indent_size: 4, use_precision_qualifiers: false, emit_line_directives: false } }
+    pub fn glsl450() -> Self { Self::new(CodeGenTarget::Glsl450) }
+    pub fn wgsl() -> Self { Self::new(CodeGenTarget::Wgsl) }
+    pub fn version_directive(&self) -> String {
+        match self.target {
+            CodeGenTarget::Glsl450 => "#version 450\n".into(),
+            CodeGenTarget::Glsl300Es => "#version 300 es\nprecision highp float;\n".into(),
+            CodeGenTarget::Wgsl => "// WGSL\n".into(),
+            CodeGenTarget::Hlsl50 => "// HLSL 5.0\n".into(),
+            CodeGenTarget::Msl20 => "#include <metal_stdlib>\nusing namespace metal;\n".into(),
+        }
+    }
+    pub fn emit_uniform(&self, var: &ShaderVariable) -> String {
+        match self.target {
+            CodeGenTarget::Glsl450 | CodeGenTarget::Glsl300Es => {
+                let layout = var.binding.map(|b| format!("layout(binding={}) ", b)).unwrap_or_default();
+                format!("{}uniform {} {};", layout, var.data_type.glsl_name(), var.name)
+            }
+            _ => format!("// uniform {} {}", var.data_type.glsl_name(), var.name),
+        }
+    }
+    pub fn emit_input(&self, var: &ShaderVariable) -> String {
+        let loc = var.location.map(|l| format!("layout(location={}) ", l)).unwrap_or_default();
+        format!("{}in {} {};", loc, var.data_type.glsl_name(), var.name)
+    }
+    pub fn emit_output(&self, var: &ShaderVariable) -> String {
+        let loc = var.location.map(|l| format!("layout(location={}) ", l)).unwrap_or_default();
+        format!("{}out {} {};", loc, var.data_type.glsl_name(), var.name)
+    }
+    pub fn emit_struct(&self, s: &ShaderStruct) -> String { s.generate_glsl() }
+    pub fn emit_function_sig(&self, f: &ShaderFunction) -> String { f.signature() }
+    pub fn is_glsl(&self) -> bool { matches!(self.target, CodeGenTarget::Glsl450 | CodeGenTarget::Glsl300Es) }
+}
+
+impl Default for ShaderCodeGen {
+    fn default() -> Self { Self::glsl450() }
+}
+
+// ── Shader Optimizer ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderOptimizer {
+    pub level: OptimizationLevel,
+    pub fold_constants: bool,
+    pub dead_code_elimination: bool,
+    pub inline_functions: bool,
+    pub common_subexpr_elim: bool,
+    pub loop_unroll_threshold: u32,
+    pub vectorize: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OptimizationLevel { None, Low, Medium, High, Aggressive }
+
+impl ShaderOptimizer {
+    pub fn new(level: OptimizationLevel) -> Self {
+        let (fold, dce, inline, cse, unroll, vec) = match level {
+            OptimizationLevel::None => (false, false, false, false, 0, false),
+            OptimizationLevel::Low => (true, true, false, false, 4, false),
+            OptimizationLevel::Medium => (true, true, true, true, 8, false),
+            OptimizationLevel::High => (true, true, true, true, 16, true),
+            OptimizationLevel::Aggressive => (true, true, true, true, 64, true),
+        };
+        Self { level, fold_constants: fold, dead_code_elimination: dce, inline_functions: inline, common_subexpr_elim: cse, loop_unroll_threshold: unroll, vectorize: vec }
+    }
+    pub fn none() -> Self { Self::new(OptimizationLevel::None) }
+    pub fn release() -> Self { Self::new(OptimizationLevel::High) }
+    pub fn debug() -> Self { Self::new(OptimizationLevel::None) }
+    pub fn any_optimization_enabled(&self) -> bool { self.level != OptimizationLevel::None }
+}
+
+impl Default for ShaderOptimizer {
+    fn default() -> Self { Self::new(OptimizationLevel::Medium) }
+}
+
+// ── Shader Cache ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderCacheEntry {
+    pub source_hash: u64,
+    pub defines_hash: u64,
+    pub compiled_bytes: Vec<u8>,
+    pub target: CodeGenTarget,
+    pub created_at: u64,
+    pub hit_count: u32,
+}
+
+impl ShaderCacheEntry {
+    pub fn new(source_hash: u64, defines_hash: u64, bytes: Vec<u8>, target: CodeGenTarget) -> Self {
+        Self { source_hash, defines_hash, compiled_bytes: bytes, target, created_at: 0, hit_count: 0 }
+    }
+    pub fn is_stale(&self, source_hash: u64, defines_hash: u64) -> bool {
+        self.source_hash != source_hash || self.defines_hash != defines_hash
+    }
+    pub fn record_hit(&mut self) { self.hit_count += 1; }
+    pub fn size_bytes(&self) -> usize { self.compiled_bytes.len() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderCache {
+    pub entries: HashMap<String, ShaderCacheEntry>,
+    pub max_size: usize,
+    pub total_hits: u64,
+    pub total_misses: u64,
+    pub eviction_policy: CacheEvictionPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CacheEvictionPolicy { Lru, Fifo, LeastHits }
+
+impl ShaderCache {
+    pub fn new(max_size: usize) -> Self { Self { entries: HashMap::new(), max_size, total_hits: 0, total_misses: 0, eviction_policy: CacheEvictionPolicy::Lru } }
+    pub fn get(&mut self, key: &str) -> Option<&ShaderCacheEntry> {
+        if let Some(e) = self.entries.get_mut(key) { e.record_hit(); self.total_hits += 1; Some(e) } else { self.total_misses += 1; None }
+    }
+    pub fn insert(&mut self, key: String, entry: ShaderCacheEntry) {
+        if self.entries.len() >= self.max_size { self.evict(); }
+        self.entries.insert(key, entry);
+    }
+    fn evict(&mut self) {
+        if let Some(key) = self.entries.keys().next().cloned() { self.entries.remove(&key); }
+    }
+    pub fn hit_rate(&self) -> f32 {
+        let total = self.total_hits + self.total_misses;
+        if total == 0 { 0.0 } else { self.total_hits as f32 / total as f32 }
+    }
+    pub fn clear(&mut self) { self.entries.clear(); }
+    pub fn size(&self) -> usize { self.entries.len() }
+    pub fn total_bytes(&self) -> usize { self.entries.values().map(|e| e.size_bytes()).sum() }
+}
+
+impl Default for ShaderCache {
+    fn default() -> Self { Self::new(SHADER_CACHE_SIZE) }
+}
+
+// ── Shader Template System ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderTemplate {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub vertex_template: String,
+    pub fragment_template: String,
+    pub parameters: Vec<ShaderTemplateParam>,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub is_builtin: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderTemplateParam {
+    pub name: String,
+    pub param_type: TemplateParamType,
+    pub default_value: String,
+    pub description: String,
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TemplateParamType { Bool, Int, Float, String, Color, Texture, Vec2, Vec3, Vec4 }
+
+impl ShaderTemplate {
+    pub fn new(id: u32, name: impl Into<String>) -> Self {
+        Self { id, name: name.into(), description: String::new(), vertex_template: String::new(), fragment_template: String::new(), parameters: Vec::new(), category: "general".into(), tags: Vec::new(), is_builtin: false }
+    }
+    pub fn add_param(&mut self, param: ShaderTemplateParam) { self.parameters.push(param); }
+    pub fn instantiate(&self, params: &HashMap<String, String>) -> (String, String) {
+        let mut vert = self.vertex_template.clone();
+        let mut frag = self.fragment_template.clone();
+        for p in &self.parameters {
+            let val = params.get(&p.name).unwrap_or(&p.default_value);
+            let placeholder = format!("{{{{{}}}}}", p.name);
+            vert = vert.replace(&placeholder, val);
+            frag = frag.replace(&placeholder, val);
+        }
+        (vert, frag)
+    }
+    pub fn param_count(&self) -> usize { self.parameters.len() }
+    pub fn required_params(&self) -> Vec<&ShaderTemplateParam> { self.parameters.iter().filter(|p| p.required).collect() }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderTemplateLibrary {
+    pub templates: HashMap<u32, ShaderTemplate>,
+    pub next_id: u32,
+    pub categories: HashSet<String>,
+}
+
+impl ShaderTemplateLibrary {
+    pub fn new() -> Self { Self { templates: HashMap::new(), next_id: 1, categories: HashSet::new() } }
+    pub fn add(&mut self, mut t: ShaderTemplate) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        t.id = id;
+        self.categories.insert(t.category.clone());
+        self.templates.insert(id, t);
+        id
+    }
+    pub fn get(&self, id: u32) -> Option<&ShaderTemplate> { self.templates.get(&id) }
+    pub fn by_category(&self, cat: &str) -> Vec<&ShaderTemplate> { self.templates.values().filter(|t| t.category == cat).collect() }
+    pub fn find_by_name(&self, name: &str) -> Option<&ShaderTemplate> { self.templates.values().find(|t| t.name == name) }
+    pub fn count(&self) -> usize { self.templates.len() }
+}
+
+impl Default for ShaderTemplateLibrary {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Live Reload ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderFileWatcher {
+    pub watched_files: HashMap<String, ShaderWatchEntry>,
+    pub reload_queue: VecDeque<String>,
+    pub auto_reload: bool,
+    pub debounce_ms: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderWatchEntry {
+    pub path: String,
+    pub last_modified: u64,
+    pub shader_ids: Vec<u32>,
+    pub reload_count: u32,
+}
+
+impl ShaderFileWatcher {
+    pub fn new() -> Self { Self { watched_files: HashMap::new(), reload_queue: VecDeque::new(), auto_reload: true, debounce_ms: 500 } }
+    pub fn watch(&mut self, path: impl Into<String>, shader_id: u32) {
+        let p = path.into();
+        self.watched_files.entry(p.clone()).or_insert(ShaderWatchEntry { path: p, last_modified: 0, shader_ids: Vec::new(), reload_count: 0 }).shader_ids.push(shader_id);
+    }
+    pub fn mark_modified(&mut self, path: &str) {
+        if let Some(entry) = self.watched_files.get_mut(path) {
+            entry.reload_count += 1;
+            if !self.reload_queue.contains(&path.to_string()) { self.reload_queue.push_back(path.to_string()); }
+        }
+    }
+    pub fn next_reload(&mut self) -> Option<String> { self.reload_queue.pop_front() }
+    pub fn shader_ids_for(&self, path: &str) -> Vec<u32> { self.watched_files.get(path).map(|e| e.shader_ids.clone()).unwrap_or_default() }
+    pub fn unwatch(&mut self, path: &str) { self.watched_files.remove(path); }
+    pub fn watched_count(&self) -> usize { self.watched_files.len() }
+}
+
+impl Default for ShaderFileWatcher {
+    fn default() -> Self { Self::new() }
+}
+
+// ── Shader Variant System ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderVariant {
+    pub id: u32,
+    pub base_program_id: u32,
+    pub keywords: Vec<String>,
+    pub compiled_id: Option<u32>,
+    pub is_fallback: bool,
+}
+
+impl ShaderVariant {
+    pub fn new(id: u32, base_id: u32) -> Self { Self { id, base_program_id: base_id, keywords: Vec::new(), compiled_id: None, is_fallback: false } }
+    pub fn with_keyword(mut self, kw: impl Into<String>) -> Self { self.keywords.push(kw.into()); self }
+    pub fn matches_keywords(&self, keywords: &[&str]) -> bool { keywords.iter().all(|kw| self.keywords.iter().any(|k| k == kw)) }
+    pub fn keyword_hash(&self) -> u64 {
+        let mut sorted = self.keywords.clone(); sorted.sort();
+        sorted.iter().fold(0u64, |h, k| h.wrapping_mul(31).wrapping_add(k.bytes().map(|b| b as u64).sum::<u64>()))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShaderVariantCollection {
+    pub base_id: u32,
+    pub variants: Vec<ShaderVariant>,
+    pub fallback_id: Option<u32>,
+    pub next_id: u32,
+}
+
+impl ShaderVariantCollection {
+    pub fn new(base_id: u32) -> Self { Self { base_id, variants: Vec::new(), fallback_id: None, next_id: 1 } }
+    pub fn add_variant(&mut self, keywords: Vec<String>) -> u32 {
+        let id = self.next_id; self.next_id += 1;
+        let mut v = ShaderVariant::new(id, self.base_id);
+        v.keywords = keywords;
+        self.variants.push(v);
+        id
+    }
+    pub fn find_best_match(&self, keywords: &[&str]) -> Option<&ShaderVariant> {
+        let mut best: Option<&ShaderVariant> = None;
+        let mut best_matches = 0;
+        for v in &self.variants {
+            let matches = keywords.iter().filter(|kw| v.keywords.iter().any(|k| k == *kw)).count();
+            if matches > best_matches { best_matches = matches; best = Some(v); }
+        }
+        best.or_else(|| self.fallback_id.and_then(|id| self.variants.iter().find(|v| v.id == id)))
+    }
+    pub fn variant_count(&self) -> usize { self.variants.len() }
+    pub fn set_fallback(&mut self, id: u32) { self.fallback_id = Some(id); }
+}
+
+// ── Shader include resolver ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ShaderIncludeResolver {
+    pub virtual_fs: HashMap<String, String>,
+    pub include_paths: Vec<String>,
+    pub resolved_cache: HashMap<String, String>,
+    pub max_size_bytes: usize,
+}
+
+impl ShaderIncludeResolver {
+    pub fn new() -> Self { Self { virtual_fs: HashMap::new(), include_paths: Vec::new(), resolved_cache: HashMap::new(), max_size_bytes: 1024 * 1024 } }
+    pub fn register_virtual(&mut self, path: impl Into<String>, content: impl Into<String>) { self.virtual_fs.insert(path.into(), content.into()); }
+    pub fn add_include_path(&mut self, path: impl Into<String>) { self.include_paths.push(path.into()); }
+    pub fn resolve(&self, include_path: &str) -> Option<&str> {
+        self.resolved_cache.get(include_path).map(|s| s.as_str()).or_else(|| self.virtual_fs.get(include_path).map(|s| s.as_str()))
+    }
+    pub fn cache_result(&mut self, include_path: String, content: String) { self.resolved_cache.insert(include_path, content); }
+    pub fn clear_cache(&mut self) { self.resolved_cache.clear(); }
+    pub fn virtual_file_count(&self) -> usize { self.virtual_fs.len() }
+}
+
+impl Default for ShaderIncludeResolver {
+    fn default() -> Self { Self::new() }
+}
+
+// ── More shader constants ─────────────────────────────────────────────────────
+
+pub const SHADER_VARIANT_MAX_KEYWORDS: usize = 16;
+pub const SHADER_TEMPLATE_MAX_PARAMS: usize = 32;
+pub const SHADER_WATCHER_DEBOUNCE_DEFAULT: u32 = 500;
+pub const SHADER_OPTIMIZER_UNROLL_DEFAULT: u32 = 8;
+pub const SHADER_AST_MAX_DEPTH: usize = 64;
+pub const SHADER_MAX_VARIANTS_PER_PROGRAM: usize = 256;
+pub const SHADER_INCLUDE_RESOLVER_CACHE_MAX: usize = 512;
+pub const SHADER_CODEGEN_INDENT_DEFAULT: usize = 4;
+pub const SHADER_DIAGNOSTIC_MAX: usize = 1000;
+
+pub fn shader_targets() -> &'static [&'static str] { &["glsl450", "glsl300es", "wgsl", "hlsl50", "msl20"] }
+pub fn shader_target_count() -> usize { shader_targets().len() }
+pub fn is_gpu_shader_target(target: &CodeGenTarget) -> bool { !matches!(target, CodeGenTarget::Wgsl) || true }
