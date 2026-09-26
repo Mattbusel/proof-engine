@@ -116,7 +116,8 @@
   .k { color: #ff9a4a; } .s { color: #a9d7a0; } .c { color: #6f7b82; } .n { color: #6cc9d8; } .f { color: #f1dfb8; }
 
   /* quick start steps */
-  .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 36px; }
+  .steps { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 28px; margin-top: 36px; }
+  .steps .code pre { font-size: 13px; }
   .step h3 span { color: var(--hot); margin-right: 10px; }
   .step p { color: var(--ink-2); margin: 0 0 14px; font-size: 16px; }
   .note { font-size: 15px; color: var(--dim); margin-top: 8px; }
@@ -137,6 +138,8 @@
   .tblwrap { overflow-x: auto; }
 
   .pipe { margin-top: 36px; }
+  .vids { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 36px; }
+  .vids .figcap b { font-family: var(--mono); }
   .pipe img { width: 100%; height: auto; display: block; }
 
   footer { border-top: 1px solid var(--rule); padding: 44px 0 60px; font-size: 15px; color: var(--dim); }
@@ -148,6 +151,7 @@
     .split.rev > :first-child { order: 2; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .steps { grid-template-columns: minmax(0, 1fr); }
+    .vids { grid-template-columns: minmax(0, 1fr); }
     section { padding: 76px 0; }
   }
   @media (max-width: 600px) {
@@ -269,40 +273,50 @@ cargo run --release --example lorenz</pre>
       </div>
       <div class="step">
         <h3><span>02</span>Use it as a library</h3>
-        <p>One glyph that breathes, one strange attractor pulling on it.</p>
+        <p>5,000 points start on one short line and follow the Lorenz equations. Also in the repo as <code>examples/quickstart.rs</code>.</p>
         <div class="code">
-          <div class="bar"><span>Cargo.toml</span><button type="button" data-copy-from="c2">Copy</button></div>
-<pre id="c2">[dependencies]
-proof-engine = <span class="s">"0.2"</span></pre>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">Copy</button></div>
+<pre id="c2">cargo new lorenz-demo &amp;&amp; cd lorenz-demo
+cargo add proof-engine</pre>
         </div>
         <div class="code">
           <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">Copy</button></div>
-<pre id="c3"><span class="k">use</span> proof_engine::prelude::*;
+<pre id="c3"><span class="k">use</span> proof_engine::math::attractors::rk4_step;
+<span class="k">use</span> proof_engine::prelude::*;
+<span class="k">use</span> proof_engine::render::ui_layer::UiParticle;
 
 <span class="k">fn</span> <span class="f">main</span>() {
     <span class="k">let mut</span> engine = ProofEngine::<span class="f">new</span>(EngineConfig::<span class="f">default</span>());
 
-    engine.<span class="f">spawn_glyph</span>(Glyph {
-        character: <span class="s">'@'</span>,
-        position: Vec3::ZERO,
-        color: Vec4::<span class="f">new</span>(<span class="n">0.0</span>, <span class="n">1.0</span>, <span class="n">0.8</span>, <span class="n">1.0</span>),
-        emission: <span class="n">1.2</span>,
-        life_function: <span class="f">Some</span>(MathFunction::Breathing { rate: <span class="n">0.4</span>, depth: <span class="n">0.15</span> }),
-        ..Default::<span class="f">default</span>()
-    });
+    <span class="c">// 5,000 points in a line 2 units long, each 0.0004 from the next.</span>
+    <span class="k">let mut</span> points: Vec&lt;Vec3&gt; = (<span class="n">0</span>..<span class="n">5000</span>)
+        .<span class="f">map</span>(|i| Vec3::<span class="f">new</span>(<span class="n">1.0</span> + i <span class="k">as</span> f32 * <span class="n">4e-4</span>, <span class="n">1.0</span>, <span class="n">1.0</span>))
+        .<span class="f">collect</span>();
 
-    engine.<span class="f">add_field</span>(ForceField::StrangeAttractor {
-        attractor_type: AttractorType::Lorenz,
-        scale: <span class="n">0.2</span>,
-        strength: <span class="n">0.4</span>,
-        center: Vec3::ZERO,
+    engine.<span class="f">run_ui</span>(<span class="k">move</span> |engine, dt| {
+        <span class="c">// Advance every point along the Lorenz equations.</span>
+        <span class="k">for</span> p <span class="k">in</span> points.<span class="f">iter_mut</span>() {
+            *p = <span class="f">rk4_step</span>(AttractorType::Lorenz, *p, dt);
+        }
+        <span class="c">// Draw them: x across, z up, centred in the window.</span>
+        <span class="k">let</span> (w, h) = engine.<span class="f">render_size</span>();
+        <span class="k">let</span> (cx, cy, s) = (w <span class="k">as</span> f32 / <span class="n">2.0</span>, h <span class="k">as</span> f32 / <span class="n">2.0</span>, h <span class="k">as</span> f32 / <span class="n">60.0</span>);
+        <span class="k">let</span> color = Vec4::<span class="f">new</span>(<span class="n">0.5</span>, <span class="n">1.2</span>, <span class="n">1.6</span>, <span class="n">1.0</span>);
+        <span class="k">let</span> dots = points
+            .<span class="f">iter</span>()
+            .<span class="f">map</span>(|p| UiParticle::<span class="f">new</span>(cx + p.x * s, cy - (p.z - <span class="n">25.0</span>) * s, <span class="n">3.0</span>, <span class="n">3.0</span>, <span class="s">'●'</span>, color))
+            .<span class="f">collect</span>();
+        engine.ui.<span class="f">draw_particles</span>(dots);
     });
-
-    engine.<span class="f">run</span>(|_engine, _dt| {});
 }</pre>
         </div>
+        <p class="note"><code>cargo run --release</code>. For about ten seconds the points travel as one streak; then chaos pulls them apart into the butterfly.</p>
       </div>
     </div>
+    <figure style="margin-top:36px">
+      <div class="frame"><img src="assets/quickstart-steps.jpg" width="1710" height="420" alt="Four frames of the quickstart program at 1, 13.5, 16 and 18.5 seconds: a speck, a thin arc, loops splitting apart, and the full Lorenz butterfly." loading="lazy"></div>
+      <p class="figcap"><b>FIG. 3B</b>That program, frames written by the engine at 1, 13.5, 16 and 18.5 seconds.</p>
+    </figure>
   </div>
 </section>
 
@@ -328,8 +342,22 @@ proof-engine = <span class="s">"0.2"</span></pre>
 <section id="demos" aria-labelledby="demos-h">
   <div class="wrap">
     <p class="kicker">Demos</p>
-    <h2 id="demos-h">Twenty demos, one command each.</h2>
+    <h2 id="demos-h">Twenty-one demos, one command each.</h2>
     <div class="prose"><p>Every one is <code>cargo run --release --example &lt;name&gt;</code>. Close the window, or press Esc where the demo says so, to quit. These are the ones to start with.</p></div>
+    <div class="vids">
+      <figure>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/galaxy-poster.jpg" width="960" height="540" aria-label="The galaxy example: glyph stars on four spiral arms turning as the camera circles"><source src="assets/galaxy.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>galaxy</b>3,000 glyphs, each on its own orbit.</p>
+      </figure>
+      <figure>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="Seven strange attractors turning slowly, 1,500 points each"><source src="assets/strange-attractors.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>strange_attractors</b>Seven chaotic systems, RK4, colour is speed.</p>
+      </figure>
+      <figure>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/math-rain-poster.jpg" width="960" height="540" aria-label="Columns of green mathematical symbols falling"><source src="assets/math-rain.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>math_rain</b>Column speeds from a sine, flicker from a logistic map.</p>
+      </figure>
+    </div>
     <div class="split start" style="margin-top:36px">
       <figure>
         <div class="frame"><img src="assets/convergence.jpg" width="1400" height="520" alt="Two particle-built fighters; the red one is coming apart after a hit" loading="lazy"></div>
@@ -346,6 +374,10 @@ proof-engine = <span class="s">"0.2"</span></pre>
       <tbody>
         <tr><td>sky</td><td>A day over a mountain range, every sky cell a Nishita scattering integral. Space pauses, Up/Down change speed.</td></tr>
         <tr><td>lorenz</td><td>40,000 points on the Lorenz attractor, integrated with RK4 and drawn into the HDR world pass. Left/Right turn the view.</td></tr>
+        <tr><td>galaxy</td><td>About 3,000 glyphs on four spiral arms, each on its own orbit, with a hot core and drifting nebula dust.</td></tr>
+        <tr><td>strange_attractors</td><td>Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras side by side, 1,500 points each. Space pauses.</td></tr>
+        <tr><td>math_rain</td><td>Digital rain of mathematical symbols; speeds from a sine, flicker from a logistic map.</td></tr>
+        <tr><td>quickstart</td><td>The program above: 5,000 points that chaos tears apart into the Lorenz butterfly.</td></tr>
         <tr><td>convergence</td><td>Two particle-built fighters in an arena with an orbiting camera; hits knock matter loose.</td></tr>
         <tr><td>supernova</td><td>A star pulses, collapses, explodes and settles into a Lorenz nebula.</td></tr>
         <tr><td>hello_glyph</td><td>The smallest program: one breathing <code>@</code> and a gravity field.</td></tr>
@@ -364,7 +396,7 @@ proof-engine = <span class="s">"0.2"</span></pre>
       <h2 id="cap-h">Record the engine&rsquo;s own frames.</h2>
       <div class="prose">
         <p>Any program built on Proof Engine can write its own frames, read straight back off the GPU after post-processing, with no code changes. <code>PROOF_HIDDEN=1</code> keeps the window invisible and unfocused, so it runs while you use the machine.</p>
-        <p>The sky, Lorenz and convergence frames on this page were all written this way.</p>
+        <p>Every demo frame and video on this page was written this way.</p>
       </div>
     </div>
     <div>

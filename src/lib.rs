@@ -2,31 +2,76 @@
 
 //! # Proof Engine
 //!
-//! A mathematical rendering engine for Rust.
-//! Every visual is the output of a mathematical function.
-//! Every animation is a continuous function over time.
-//! Every particle follows a real equation.
+//! A Rust engine for real-time graphics where every point, glyph and
+//! particle on screen is moved by a real equation: an ODE, a force field, a
+//! spring, a noise function.
 //!
-//! ## Philosophy
+//! <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/strange_attractors.gif" width="100%" alt="Seven strange attractors, each 1,500 points integrated with RK4">
 //!
-//! Proof Engine does not render graphics. It renders mathematics.
+//! ## The math runs without a window
 //!
-//! A traditional renderer draws shapes and colors that represent game state.
-//! Proof Engine computes mathematical functions and the visual IS the output.
-//! A Lorenz attractor looks like a Lorenz attractor because particles are
-//! following the actual differential equations in real time.
+//! The integrators, attractors, fields and [`MathFunction`]s are plain Rust
+//! and can be used on their own. This example runs as a doc test:
 //!
-//! ## Quick Start
+//! ```rust
+//! use proof_engine::math::attractors::{rk4_step, AttractorType};
+//! use proof_engine::prelude::Vec3;
+//!
+//! // Two Lorenz states that start 0.0001 apart...
+//! let mut a = Vec3::new(1.0, 1.0, 1.0);
+//! let mut b = Vec3::new(1.0001, 1.0, 1.0);
+//! for _ in 0..6000 {
+//!     a = rk4_step(AttractorType::Lorenz, a, 0.005);
+//!     b = rk4_step(AttractorType::Lorenz, b, 0.005);
+//! }
+//! // ...are far apart after 30 simulated seconds: that is chaos.
+//! assert!((a - b).length() > 1.0);
+//! ```
+//!
+//! ## Open a window and draw
+//!
+//! The `quickstart` example, in full. It needs a GPU with OpenGL 3.3, so it
+//! is compiled here but not run:
 //!
 //! ```rust,no_run
+//! use proof_engine::math::attractors::rk4_step;
 //! use proof_engine::prelude::*;
+//! use proof_engine::render::ui_layer::UiParticle;
 //!
-//! let config = EngineConfig::default();
-//! let mut engine = ProofEngine::new(config);
-//! engine.run(|engine, _dt| {
-//!     // game logic
+//! let mut engine = ProofEngine::new(EngineConfig::default());
+//! let mut points: Vec<Vec3> = (0..5000)
+//!     .map(|i| Vec3::new(1.0 + i as f32 * 4e-4, 1.0, 1.0))
+//!     .collect();
+//!
+//! engine.run_ui(move |engine, dt| {
+//!     for p in points.iter_mut() {
+//!         *p = rk4_step(AttractorType::Lorenz, *p, dt);
+//!     }
+//!     let (w, h) = engine.render_size();
+//!     let (cx, cy, s) = (w as f32 / 2.0, h as f32 / 2.0, h as f32 / 60.0);
+//!     let color = Vec4::new(0.5, 1.2, 1.6, 1.0);
+//!     let dots = points
+//!         .iter()
+//!         .map(|p| UiParticle::new(cx + p.x * s, cy - (p.z - 25.0) * s, 3.0, 3.0, '●', color))
+//!         .collect();
+//!     engine.ui.draw_particles(dots);
 //! });
 //! ```
+//!
+//! ## Where to look
+//!
+//! - [`ProofEngine`]: the window and main loop. [`ProofEngine::run`] for 3D
+//!   glyph scenes, [`ProofEngine::run_ui`] for screen-space games and plots.
+//! - [`EngineConfig`] and [`config::RenderConfig`]: window size, bloom,
+//!   tonemap, grain and every other post-processing setting.
+//! - [`Glyph`] and [`ProofEngine::spawn_glyph`]: the basic on-screen object.
+//! - [`ForceField`], [`MathFunction`] and [`math::attractors`]: the math.
+//! - [`render::ui_layer::UiParticle`]: fast screen-space points, as above.
+//! - [`prelude`]: the common imports in one line.
+//!
+//! Every example in the repository can save its own frames to disk with the
+//! `PROOF_SHOT` environment variables; see the
+//! [README](https://github.com/Mattbusel/proof-engine#capture-frames-from-any-program).
 
 pub mod math;
 pub mod glyph;
@@ -258,6 +303,11 @@ impl ProofEngine {
                 if c.after_draw(self) {
                     break;
                 }
+            }
+
+            // Honour a quit asked for during the update, as `run_ui` does.
+            if self.input.quit_requested {
+                break;
             }
 
             // Swap

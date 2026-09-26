@@ -1,20 +1,21 @@
 [package]
 name = "proof-engine"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Matthew Busel <matt@tensorust.com>"]
 license = "MIT"
-description = "A mathematical rendering engine for Rust. Every visual is the output of a mathematical function."
+description = "Real-time graphics from math: glyphs and particles moved by ODEs, strange attractors and force fields, drawn with HDR bloom on OpenGL."
 repository = "https://github.com/Mattbusel/proof-engine"
-homepage = "https://github.com/Mattbusel/proof-engine"
-keywords = ["game-engine", "rendering", "mathematics", "ascii", "opengl"]
-categories = ["game-engines", "graphics", "rendering"]
+homepage = "https://mattbusel.github.io/proof-engine/"
+documentation = "https://docs.rs/proof-engine"
+keywords = ["generative-art", "creative-coding", "attractor", "game-engine", "opengl"]
+categories = ["game-engines", "graphics", "rendering", "simulation", "mathematics"]
 readme = "README.md"
 # Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.
 exclude = ["*.png", "*.gif", "*.jpg", "assets/", "docs/", "*.py", ".github/", "ci/"]
 
 [dependencies]
-# OpenGL / windowing — glutin-winit bridges the two and handles version alignment
+# OpenGL and windowing: glutin-winit bridges the two and handles version alignment
 glutin     = "0.32"
 glutin-winit = "0.5"
 glow       = "0.16"
@@ -116,6 +117,9 @@ name = "sky"
 
 [[example]]
 name = "lorenz"
+
+[[example]]
+name = "quickstart"
 
 [[bin]]
 name = "proof_editor"

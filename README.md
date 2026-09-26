@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://mattbusel.github.io/proof-engine/"><img src="assets/banner.jpg" width="100%" alt="Proof Engine. Left: a sunset over mountains from the sky example, every cell a Rayleigh and Mie scattering integral. Right: 40,000 points on the Lorenz attractor from the lorenz example."></a>
+  <a href="https://mattbusel.github.io/proof-engine/"><img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/banner.jpg" width="100%" alt="Proof Engine. Left: a sunset over mountains from the sky example, every cell a Rayleigh and Mie scattering integral. Right: 40,000 points on the Lorenz attractor from the lorenz example."></a>
 </p>
 
 <p align="center">
@@ -10,36 +10,102 @@
   <a href="https://github.com/Mattbusel/proof-engine/actions/workflows/ci.yml"><img src="https://github.com/Mattbusel/proof-engine/actions/workflows/ci.yml/badge.svg" alt="CI" align="center"></a>
 </p>
 
-**Proof Engine is a Rust rendering and game engine where every visual is the output of a mathematical function.** Glyphs and particles are moved by real differential equations, force fields and spring systems, not by sprites, meshes or keyframed animation.
+**Proof Engine is a Rust library for making moving pictures out of math: you write the equations, it draws what they do, in real time, with bloom and HDR light.**
 
-A Lorenz attractor on screen looks like a Lorenz attractor because its particles are integrating the Lorenz equations. An entity is a cluster of glyphs held together by force cohesion; when it loses HP the binding weakens and it comes apart into an attractor instead of playing a death animation. If you like generative art, simulation or procedural games and want an engine built around that idea from the start, this is it.
+<p align="center"><img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/galaxy.gif" width="100%" alt="The galaxy example: about 3,000 glyphs on four spiral arms, each on its own circular orbit, with a hot core and dim red outer arms, seen at an angle as the camera circles."></p>
+<p align="center"><sub>The <code>galaxy</code> example, captured from the engine's own framebuffer with <code>PROOF_HIDDEN=1</code>.</sub></p>
 
-## Quick start
+## Install
+
+| You want to | Do this |
+| --- | --- |
+| Use it in your own Rust program | `cargo add proof-engine` |
+| Watch the demos first | `git clone https://github.com/Mattbusel/proof-engine && cd proof-engine && cargo run --release --example galaxy` |
+| Read the API | [docs.rs/proof-engine](https://docs.rs/proof-engine) |
 
 You need stable Rust and a GPU with OpenGL 3.3 or newer.
-
-```bash
-git clone https://github.com/Mattbusel/proof-engine.git
-cd proof-engine
-cargo run --release --example sky        # a day passing, every sky cell a scattering integral
-cargo run --release --example lorenz     # 40,000 points on the Lorenz attractor
-```
 
 - **Windows:** nothing else.
 - **macOS:** nothing else. macOS stops at OpenGL 4.1, so `apotheosis` (which uses 4.3 compute shaders) will not run there; every other demo does.
 - **Linux:** the audio backend needs the ALSA headers: `sudo apt install libasound2-dev pkg-config` (Debian/Ubuntu) or `sudo dnf install alsa-lib-devel` (Fedora).
 
-The first build compiles the whole engine and takes a few minutes. Use `--release`: the demos simulate tens of thousands of particles per frame and a debug build is too slow to judge them by.
+The first build compiles the whole engine and takes a few minutes. Always use `--release`; a debug build is far too slow for tens of thousands of particles a frame.
+
+## Use it in 3 steps
+
+**1. Make a project and add the engine.**
+
+```bash
+cargo new lorenz-demo && cd lorenz-demo
+cargo add proof-engine
+```
+
+**2. Replace `src/main.rs` with this.** 5,000 points start on one short line and follow the Lorenz equations. (It is also in the repo as [`examples/quickstart.rs`](https://github.com/Mattbusel/proof-engine/blob/main/examples/quickstart.rs).)
+
+```rust
+use proof_engine::math::attractors::rk4_step;
+use proof_engine::prelude::*;
+use proof_engine::render::ui_layer::UiParticle;
+
+fn main() {
+    let mut engine = ProofEngine::new(EngineConfig::default());
+
+    // 5,000 points in a line 2 units long, each 0.0004 from the next.
+    let mut points: Vec<Vec3> = (0..5000)
+        .map(|i| Vec3::new(1.0 + i as f32 * 4e-4, 1.0, 1.0))
+        .collect();
+
+    engine.run_ui(move |engine, dt| {
+        // Advance every point along the Lorenz equations.
+        for p in points.iter_mut() {
+            *p = rk4_step(AttractorType::Lorenz, *p, dt);
+        }
+        // Draw them: x across, z up, centred in the window.
+        let (w, h) = engine.render_size();
+        let (cx, cy, s) = (w as f32 / 2.0, h as f32 / 2.0, h as f32 / 60.0);
+        let color = Vec4::new(0.5, 1.2, 1.6, 1.0);
+        let dots = points
+            .iter()
+            .map(|p| UiParticle::new(cx + p.x * s, cy - (p.z - 25.0) * s, 3.0, 3.0, '●', color))
+            .collect();
+        engine.ui.draw_particles(dots);
+    });
+}
+```
+
+**3. Run it.**
+
+```bash
+cargo run --release
+```
+
+A window opens. For about ten seconds the points travel together as one short streak. Then chaos pulls them apart, and by twenty seconds they have drawn the Lorenz butterfly on their own. Close the window to quit.
+
+## Results
+
+These are real frames from that program, written by the engine itself (`PROOF_HIDDEN=1 PROOF_FIXED_DT=60 PROOF_SHOT=...`, see [Capture frames](#capture-frames-from-any-program)), cropped to the centre:
+
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/quickstart-steps.jpg" width="100%" alt="Four frames of the quickstart program. At 1 second a tiny speck; at 13.5 seconds a thin arc; at 16 seconds the points have split into loops; at 18.5 seconds they fill both wings of the Lorenz butterfly.">
+
+The same idea at a larger scale, one command each:
+
+| `strange_attractors` | `math_rain` |
+| --- | --- |
+| <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/strange_attractors.gif" width="100%" alt="Seven strange attractors, Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras, 1,500 points each, turning slowly."> | <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/math_rain.gif" width="100%" alt="A hundred columns of green mathematical symbols falling at different speeds, the leading glyph of each bright white-green."> |
+| Seven chaotic systems, 1,500 RK4-integrated points each. Colour is speed along the flow. | A hundred columns at speeds from `abs(sin(0.13 c))`; each column's symbols flicker by its own logistic map. |
+| **`lorenz`** | **`sky`** |
+| <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/lorenz.gif" width="100%" alt="40,000 points circling the two wings of the Lorenz attractor, teal where slow and amber where fast."> | <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/sky.gif" width="100%" alt="The sky example in late afternoon: a blue sky fading to white near the sun over brown mountains."> |
+| 40,000 points on the Lorenz attractor, drawn into the HDR pass so overlaps add up to real light. | Every sky cell is a Rayleigh and Mie scattering integral, recomputed every frame as the sun moves. |
 
 ## The sky is an integral
 
-<img src="assets/fig-sky-day.jpg" width="100%" alt="Six frames from the sky example between 11:22 and 18:05: blue midday, a white sun low on the right, orange mountains at sunset, and dark teal dusk.">
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/fig-sky-day.jpg" width="100%" alt="Six frames from the sky example between 11:22 and 18:05: blue midday, a white sun low on the right, orange mountains at sunset, and dark teal dusk.">
 
 The `sky` example divides the sky into 120 by 56 cells. For each cell, every frame, `nishita_sky::compute_sky_color` integrates Rayleigh and Mie single scattering along the view ray and along a second ray toward the sun. The blue at noon, the orange band at sunset and the dark teal after it all come out of the same integral as the sun moves. The mountains are sums of sines, lit by the sky just above the horizon. Space pauses, Up/Down change the speed of the day.
 
 ## Forty thousand points, one equation
 
-<img src="assets/fig-lorenz.jpg" width="100%" alt="The Lorenz attractor drawn by 40,000 points, cool teal where they move slowly and amber where they move fast, with the equations printed at the top left.">
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/fig-lorenz.jpg" width="100%" alt="The Lorenz attractor drawn by 40,000 points, cool teal where they move slowly and amber where they move fast, with the equations printed at the top left.">
 
 Every point in the `lorenz` example is a state `(x, y, z)` advanced each frame by the engine's own RK4 integrator. Nobody drew the two wings; that is where the equations send the points. Colour is speed along the flow, and the points are drawn into the HDR world pass, so overlapping points add up to real light before bloom and the tonemap.
 
@@ -73,27 +139,31 @@ The source tree also contains modules for more advanced lighting (a sparse voxel
 
 Every demo is `cargo run --release --example <name>`. Close the window (or press Esc where noted) to quit.
 
-<img src="assets/fig-convergence.jpg" width="100%" alt="The convergence demo: a blue particle-built fighter on the left, and a red one on the right coming apart into loose particles and rings after a hit.">
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/fig-convergence.jpg" width="100%" alt="The convergence demo: a blue particle-built fighter on the left, and a red one on the right coming apart into loose particles and rings after a hit.">
 
 | Example | What you see |
 | --- | --- |
 | `sky` | A day passing over a mountain range. Every sky cell is the Nishita Rayleigh + Mie scattering integral for its view direction, recomputed each frame. Space pauses, Up/Down change speed, Esc quits. |
 | `lorenz` | 40,000 points on the Lorenz attractor, integrated with RK4 and coloured by speed. Space pauses, Left/Right turn the view, Esc quits. |
+| `galaxy` | About 3,000 glyphs on four spiral arms, each on its own orbit, with a hot core, red outer arms and drifting nebula dust. The camera circles slowly. Esc quits. |
+| `strange_attractors` | Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras side by side, 1,500 points each. Space pauses, Esc quits. |
+| `math_rain` | Digital rain made of mathematical symbols; column speeds from a sine, symbol flicker from a logistic map. Esc quits. |
+| `quickstart` | The program from [Use it in 3 steps](#use-it-in-3-steps): 5,000 points that chaos tears apart into the Lorenz butterfly. |
 | `convergence` | Two particle-built fighters in a circular arena with an orbiting camera; combat loops forever and hits knock matter loose. |
 | `supernova` | A star pulses, collapses under a gravity field, explodes into debris and settles into a Lorenz-attractor nebula. |
-| `hello_glyph` | The smallest program: one breathing `@` and a gravity field. Start here when reading code. |
+| `hello_glyph` | The smallest program: one breathing `@` and a gravity field. |
 | `playground` | Interactive sandbox: place glyphs, fields and entities with the mouse, cycle attractors and palettes. |
 | `colossus` | GPU density entities: millions of particles derived in the vertex shader from sixteen bones. Needs a strong GPU. |
 | `apotheosis` | A particle-rendered character built on signed distance fields, about 10.8 million GPU particles. Needs OpenGL 4.3 and a strong GPU. |
 
-Also: `chaos_field`, `particle_demo`, `force_fields`, `amorphous_entity`, `particle_entity`, `full_combat`, `heartbeat`, `showcase`, `sculptor`, and three older 3D-glyph demos that currently need attention: `galaxy`, `math_rain` and `strange_attractors` draw a blown-out first second and then an empty scene.
+Also: `chaos_field`, `particle_demo`, `force_fields`, `amorphous_entity`, `particle_entity`, `full_combat`, `heartbeat`, `showcase` and `sculptor`.
 
 <details>
-<summary><b>Animated captures</b> (older GIFs, about 4 MB each)</summary>
+<summary><b>More captures</b>: <code>supernova</code>, and an older <code>convergence</code> recording (4 MB)</summary>
 
-![Convergence demo, animated](assets/convergence-demo.gif)
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/supernova.gif" width="70%" alt="The supernova example: a ring of hot glyphs, white, yellow and magenta, expanding after the explosion.">
 
-![Supernova demo](assets/supernova-demo.gif)
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/convergence-demo.gif" width="100%" alt="An older recording of the convergence demo: two particle-built fighters trading blows.">
 
 </details>
 
@@ -117,42 +187,9 @@ cargo run --release --example sky
 | `PROOF_HIDDEN` | `1` creates the window hidden and unfocused, so capturing does not interrupt whoever is using the machine. |
 | `PROOF_WINDOW` | Override the window size, as `WIDTHxHEIGHT`. |
 
-## Use as a library
-
-```toml
-[dependencies]
-proof-engine = "0.2"
-```
-
-```rust
-use proof_engine::prelude::*;
-
-fn main() {
-    let mut engine = ProofEngine::new(EngineConfig::default());
-
-    engine.spawn_glyph(Glyph {
-        character: '@',
-        position: Vec3::ZERO,
-        color: Vec4::new(0.0, 1.0, 0.8, 1.0),
-        emission: 1.2,
-        life_function: Some(MathFunction::Breathing { rate: 0.4, depth: 0.15 }),
-        ..Default::default()
-    });
-
-    engine.add_field(ForceField::StrangeAttractor {
-        attractor_type: AttractorType::Lorenz,
-        scale: 0.2,
-        strength: 0.4,
-        center: Vec3::ZERO,
-    });
-
-    engine.run(|_engine, _dt| {});
-}
-```
-
 ## The screen pipeline
 
-<img src="assets/pipeline.svg" width="100%" alt="The screen pipeline: the 3D glyph pass and the UI world pass draw into a half-float scene buffer; emission feeds a bloom pyramid; colour and bloom meet in the composite, then optional FXAA, the screen, and the UI HUD pass painted sharp on top.">
+<img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/pipeline.svg" width="100%" alt="The screen pipeline: the 3D glyph pass and the UI world pass draw into a half-float scene buffer; emission feeds a bloom pyramid; colour and bloom meet in the composite, then optional FXAA, the screen, and the UI HUD pass painted sharp on top.">
 
 The scene buffers are half-float, so a few hundred thousand overlapping emissive particles accumulate real light instead of clipping at white. The composite is the one place the range comes down, through ACES.
 
@@ -210,7 +247,7 @@ stays put; `vsync` waits for the display.
 
 ## Proof Editor
 
-![Proof Editor](assets/editor-screenshot.png)
+![Proof Editor](https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/editor-screenshot.png)
 
 Download `proof-editor.exe` (Windows) from the [releases page](https://github.com/Mattbusel/proof-engine/releases), or build it:
 
@@ -273,11 +310,11 @@ Roughly 660,000 lines of Rust across the engine (`src/`), the editor (`editor/`)
 
 ## Status
 
-Early (0.2) and moving fast. The public API is not stable and some subsystems are further along than others. CI builds every target and runs the unit, integration and doc tests on Linux, and builds the examples on Windows and macOS. About 4,800 library unit tests pass; the ones that do not yet are listed by name in [`ci/known-failing-tests.txt`](ci/known-failing-tests.txt), and each one fixed is a line deleted from that file. Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
+Early (0.2) and moving fast. The public API is not stable and some subsystems are further along than others. CI builds every target and runs the unit, integration and doc tests on Linux, and builds the examples on Windows and macOS. About 4,800 library unit tests pass; the ones that do not yet are listed by name in [`ci/known-failing-tests.txt`](https://github.com/Mattbusel/proof-engine/blob/main/ci/known-failing-tests.txt), and each one fixed is a line deleted from that file. Contributions: see [CONTRIBUTING.md](https://github.com/Mattbusel/proof-engine/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/Mattbusel/proof-engine/blob/main/LICENSE).
 
 ## Hire the author
 
