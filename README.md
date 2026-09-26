@@ -249,7 +249,7 @@ stays put; `vsync` waits for the display.
 
 ![Proof Editor](https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/editor-screenshot.png)
 
-Download `proof-editor.exe` (Windows) from the [releases page](https://github.com/Mattbusel/proof-engine/releases), or build it:
+Download [`proof-editor.exe`](https://github.com/Mattbusel/proof-engine/releases/download/v0.1.0/proof-editor.exe) (Windows, attached to the v0.1.0 release), or build it:
 
 ```bash
 cd proof-engine/editor
