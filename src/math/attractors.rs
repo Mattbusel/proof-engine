@@ -233,9 +233,13 @@ pub fn initial_state(attractor: AttractorType) -> Vec3 {
         AttractorType::Halvorsen   => Vec3::new(0.1,  0.0,  0.0),
         AttractorType::Aizawa      => Vec3::new(0.1,  0.0,  0.0),
         AttractorType::Thomas      => Vec3::new(0.1,  0.0,  0.0),
-        AttractorType::Dadras      => Vec3::new(0.1,  0.0,  0.0),
+        // (0.1, 0, 0) lies on the invariant line y = z = 0 and decays to the
+        // fixed point at the origin, so start from the usual seed instead.
+        AttractorType::Dadras      => Vec3::new(1.1,  2.1, -2.0),
         AttractorType::Sprott      => Vec3::new(1.0,  0.0,  0.5),
-        AttractorType::Rabinovich  => Vec3::new(0.05, 0.05, 0.5),
+        // (0.05, 0.05, 0.5) escapes to infinity within 2,000 steps; (-1, 0, 0.5)
+        // is the standard seed for these parameters and stays bounded.
+        AttractorType::Rabinovich  => Vec3::new(-1.0, 0.0,  0.5),
         AttractorType::Burke       => Vec3::new(0.6, -0.4,  0.4),
     }
 }
@@ -725,4 +729,21 @@ pub enum AttractorPalette {
     Ice,
     Neon,
     Greyscale,
+}
+
+#[cfg(test)]
+mod initial_state_tests {
+    use super::*;
+
+    /// Every seed must settle onto its attractor, not onto a fixed point or
+    /// off to infinity: the `strange_attractors` example and `AttractorSampler`
+    /// both start from `initial_state_warmed`.
+    #[test]
+    fn warmed_states_are_finite_and_off_the_origin() {
+        for &a in AttractorType::all() {
+            let s = initial_state_warmed(a);
+            assert!(s.is_finite(), "{} diverged: {s:?}", a.name());
+            assert!(s.length() > 0.05, "{} collapsed to the origin: {s:?}", a.name());
+        }
+    }
 }

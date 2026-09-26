@@ -1,147 +1,137 @@
-//! math_rain — mathematical symbols cascading like digital rain.
+//! math_rain: columns of mathematical symbols falling like digital rain.
 //!
-//! Thousands of equations, symbols, and numbers fall in columns,
-//! each character driven by its own math function. Some columns
-//! accelerate (exponential), some oscillate (sine), some are chaotic
-//! (logistic map). Color shifts from green to gold to white at the
-//! leading edge. Heavy bloom makes it glow.
+//! A hundred columns fall at speeds set by `|sin(0.13 c)|`, so neighbouring
+//! columns drift in and out of step. Each column's symbols are re-chosen by
+//! its own logistic map, `x -> r x (1 - x)` with `r` near 3.9, so which
+//! symbols flicker is chaotic rather than random. The leading glyphs are
+//! white-green and bright enough to bloom; the tail fades to dark green.
 //!
-//! Think Matrix, but the math is real.
+//! Positions come from the column equations every frame, so the rain runs
+//! steadily for as long as the window is open.
 //!
-//! Run: `cargo run --example math_rain`
+//! Esc quits.
+//!
+//! Run: `cargo run --release --example math_rain`
 
+use proof_engine::glyph::GlyphId;
 use proof_engine::prelude::*;
-use std::f32::consts::TAU;
 
 const COLUMNS: usize = 100;
 const CHARS_PER_COL: usize = 25;
 const COL_SPACING: f32 = 0.8;
 const ROW_SPACING: f32 = 0.7;
+/// Height of the band a column falls through before it wraps to the top.
+const SPAN: f32 = 72.0;
+const TOP: f32 = 30.0;
+
+struct Column {
+    x: f32,
+    speed: f32,
+    phase: f32,
+    /// Logistic map state and parameter for this column.
+    lx: f32,
+    r: f32,
+    glyphs: Vec<GlyphId>,
+}
 
 fn main() {
     env_logger::init();
 
     let mut engine = ProofEngine::new(EngineConfig {
-        window_title: "Proof Engine — Mathematical Rain".to_string(),
+        window_title: "Proof Engine: mathematical rain".to_string(),
         window_width: 1400,
         window_height: 900,
         render: proof_engine::config::RenderConfig {
             bloom_enabled: true,
-            bloom_intensity: 2.5,
-            film_grain: 0.03,
+            bloom_intensity: 1.2,
             ..Default::default()
         },
         ..Default::default()
     });
 
-    // ASCII + block elements that Consolas definitely renders
-    let symbols: Vec<char> = "0123456789ABCDEFabcdef+-*/=<>()[]{}|&^~%#@!?.,:;xXoO░▒▓█".chars().collect();
+    let symbols: Vec<char> = "0123456789ABCDEFabcdef+-*/=<>()[]{}|&^~%#@!?:;xXoO".chars().collect();
 
-    // Each column is a stream of falling characters
+    let mut columns: Vec<Column> = Vec::with_capacity(COLUMNS);
     for col in 0..COLUMNS {
-        let x = (col as f32 - COLUMNS as f32 / 2.0) * COL_SPACING;
-        let col_speed = 0.3 + (col as f32 * 0.13).sin().abs() * 0.7; // varying speeds
-        let col_phase = (col as f32 * 0.37).fract() * 20.0; // staggered start
+        let x = (col as f32 - COLUMNS as f32 / 2.0 + 0.5) * COL_SPACING;
+        let speed = 3.0 + (col as f32 * 0.13).sin().abs() * 6.0;
+        let phase = (col as f32 * 0.618_034).fract() * SPAN;
+        let mut glyphs = Vec::with_capacity(CHARS_PER_COL);
 
         for row in 0..CHARS_PER_COL {
-            let y = (CHARS_PER_COL as f32 / 2.0 - row as f32) * ROW_SPACING + col_phase;
-            let char_idx = (col * 31 + row * 7) % symbols.len();
-
-            // Leading characters (bottom of column) are brightest
+            // Row 0 is the leading edge, at the bottom of the column.
             let depth = row as f32 / CHARS_PER_COL as f32;
-            let is_leader = row < 3;
-
-            let (color, emission) = if is_leader {
-                // White-green bright leader
-                (Vec4::new(0.8, 1.0, 0.9, 1.0), 3.0)
-            } else if depth < 0.3 {
-                // Bright green
-                (Vec4::new(0.1, 0.9, 0.3, 0.9), 1.5)
-            } else if depth < 0.7 {
-                // Medium green
-                (Vec4::new(0.05, 0.5, 0.15, 0.6), 0.8)
+            let (color, emission) = if row == 0 {
+                (Vec4::new(0.85, 1.0, 0.9, 1.0), 1.8)
+            } else if row < 3 {
+                (Vec4::new(0.4, 1.0, 0.6, 1.0), 1.1)
             } else {
-                // Dim, fading tail
-                (Vec4::new(0.02, 0.2, 0.08, 0.3), 0.3)
+                // Exponential fade along the tail.
+                let f = (-depth * 2.4).exp();
+                (Vec4::new(0.05 * f, 0.85 * f, 0.3 * f, 0.35 + 0.6 * f), 0.2 + 0.6 * f)
             };
-
-            // Each character has its own mathematical behavior
-            let behavior = match (col + row) % 8 {
-                0 => MathFunction::Linear { slope: -col_speed, offset: y },
-                1 => MathFunction::Sine {
-                    amplitude: 0.3,
-                    frequency: 0.2 + depth * 0.3,
-                    phase: col as f32 * 0.5,
-                },
-                2 => MathFunction::Exponential {
-                    start: y,
-                    rate: -col_speed * 0.3,
-                    target: -15.0,
-                },
-                3 => MathFunction::LogisticMap {
-                    r: 3.5 + depth * 0.4,
-                    x0: (col as f32 * 0.17).fract(),
-                },
-                4 => MathFunction::Collatz {
-                    seed: (col * CHARS_PER_COL + row) as u64 + 1,
-                    scale: 0.05,
-                },
-                5 => MathFunction::Perlin {
-                    frequency: 0.3,
-                    octaves: 2,
-                    amplitude: 0.4,
-                },
-                6 => MathFunction::Breathing {
-                    rate: 0.3 + col_speed * 0.2,
-                    depth: 0.1,
-                },
-                _ => MathFunction::Linear { slope: -col_speed * 1.5, offset: y },
-            };
-
-            engine.spawn_glyph(Glyph {
-                character: symbols[char_idx],
-                position: Vec3::new(x, y, -depth * 0.5),
+            let id = engine.spawn_glyph(Glyph {
+                character: symbols[(col * 31 + row * 7) % symbols.len()],
+                position: Vec3::new(x, 0.0, -depth * 0.5),
                 color,
                 emission,
                 glow_color: Vec3::new(0.1, 0.8, 0.3),
-                glow_radius: if is_leader { 2.0 } else { 0.5 },
-                mass: 0.01,
-                layer: if is_leader { RenderLayer::Entity } else { RenderLayer::World },
+                glow_radius: if row == 0 { 1.2 } else { 0.3 },
+                layer: if row == 0 { RenderLayer::Entity } else { RenderLayer::World },
                 blend_mode: BlendMode::Additive,
-                life_function: Some(behavior),
                 ..Default::default()
             });
+            glyphs.push(id);
         }
-    }
 
-    // Occasional bright flashes — "equation solved" moments
-    for i in 0..20 {
-        let x = ((i as f32 * 3.7).sin()) * (COLUMNS as f32 * COL_SPACING * 0.4);
-        let y = ((i as f32 * 2.3).cos()) * 8.0;
-        engine.spawn_glyph(Glyph {
-            character: '=',
-            position: Vec3::new(x, y, 0.5),
-            color: Vec4::new(1.0, 1.0, 1.0, 0.0), // starts invisible
-            emission: 5.0,
-            glow_color: Vec3::new(0.5, 1.0, 0.7),
-            glow_radius: 4.0,
-            mass: 0.0,
-            layer: RenderLayer::Overlay,
-            blend_mode: BlendMode::Additive,
-            life_function: Some(MathFunction::Breathing {
-                rate: 0.05 + (i as f32 * 0.02),
-                depth: 0.8,
-            }),
-            ..Default::default()
+        columns.push(Column {
+            x,
+            speed,
+            phase,
+            lx: 0.1 + (col as f32 * 0.17).fract() * 0.8,
+            r: 3.82 + (col as f32 * 0.29).fract() * 0.17,
+            glyphs,
         });
     }
 
-    // Downward flow field
-    engine.add_field(ForceField::Flow {
-        direction: Vec3::new(0.0, -1.0, 0.0),
-        strength: 0.3,
-        turbulence: 0.05,
-    });
+    // Fit all hundred columns across the window.
+    let half_w = COLUMNS as f32 * COL_SPACING * 0.5;
+    let half_h = half_w * 900.0 / 1400.0;
+    let dist = half_h / (30.0_f32).to_radians().tan();
+    engine.camera.set_position_instant(Vec3::new(0.0, 0.0, dist));
 
-    engine.run(|_engine, _dt| {});
+    let mut time = 0.0_f32;
+    let mut flicker = 0.0_f32;
+
+    engine.run(move |engine, dt| {
+        if engine.input.just_pressed(Key::Escape) {
+            engine.input.quit_requested = true;
+        }
+        time += dt;
+        flicker += dt;
+        // Step every column's logistic map about twenty times a second.
+        let step_maps = flicker > 0.05;
+        if step_maps {
+            flicker = 0.0;
+        }
+
+        for c in columns.iter_mut() {
+            let head = TOP - (c.speed * time + c.phase).rem_euclid(SPAN);
+            if step_maps {
+                c.lx = c.r * c.lx * (1.0 - c.lx);
+            }
+            // The map's value picks one row to change and what it becomes.
+            let row_to_change = (c.lx * CHARS_PER_COL as f32) as usize % CHARS_PER_COL;
+            for (row, id) in c.glyphs.iter().enumerate() {
+                if let Some(g) = engine.scene.glyphs.get_mut(*id) {
+                    g.position.x = c.x;
+                    g.position.y = head + row as f32 * ROW_SPACING;
+                    if step_maps && (row == row_to_change || row == 0) {
+                        let k = ((c.lx * 9973.0) as usize + row * 7) % symbols.len();
+                        g.character = symbols[k];
+                    }
+                }
+            }
+        }
+    });
 }
