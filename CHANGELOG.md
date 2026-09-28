@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+### Added
+- Prebuilt demos on every GitHub release: `proof-lorenz.exe`, `proof-galaxy.exe`, `proof-sky.exe`, `proof-strange_attractors.exe` and `proof-editor.exe` as single Windows files, plus all ten demos and the editor zipped for Windows and packed for macOS and Linux. No Rust needed to watch them.
+
+### Changed
+- README cut to one screen: a direct Windows download, a "how math becomes a frame" diagram and the same frame captured at each render stage, four real examples and the three-step program. Install, demos, architecture, capture and editor reference moved to `docs/` unchanged.
+- Project site: search title and description, canonical URL, Open Graph and Twitter cards, JSON-LD, a download button and the new diagrams.
+
 ## 0.2.1
 
 ### Fixed

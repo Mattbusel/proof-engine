@@ -1,0 +1,171 @@
+name: Release
+
+# Push a tag like v0.2.2 to build the demos and the Proof Editor for Windows,
+# macOS and Linux and attach them to a GitHub Release, so people can watch
+# the engine run without installing Rust. Publishing to crates.io stays manual.
+#
+# Asset names carry no version, so these links always point at the newest
+# release:
+#   https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-windows-x64.zip
+#   https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-lorenz.exe
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  # Build-only dry run when this workflow itself changes (nothing is released).
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.2.2"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TAG: ${{ github.event_name == 'pull_request' && 'pr-test' || github.event.inputs.tag || github.ref_name }}
+  # The demos shipped as downloads. Each one is `cargo run --release --example <name>`.
+  DEMOS: sky lorenz galaxy strange_attractors math_rain quickstart supernova convergence playground hello_glyph
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: System libraries (ALSA for cpal)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # Link the C runtime statically on Windows so the .exe files run on a
+      # machine without the Visual C++ redistributable.
+      - name: Static CRT (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: Build demos
+        shell: bash
+        run: |
+          args=""
+          for d in $DEMOS; do args="$args --example $d"; done
+          cargo build --release --target ${{ matrix.target }} $args
+
+      - name: Build Proof Editor
+        shell: bash
+        working-directory: editor
+        run: cargo build --release --target ${{ matrix.target }} --target-dir ../target
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          out="proof-engine-demos-${{ matrix.name }}"
+          dir="target/${{ matrix.target }}/release"
+          mkdir -p "$out" dist
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          for d in $DEMOS; do
+            cp "$dir/examples/$d$ext" "$out/proof-$d$ext"
+          done
+          cp "$dir/proof-editor$ext" "$out/proof-editor$ext"
+          cp LICENSE "$out/LICENSE.txt"
+          cat > "$out/README.txt" <<'TXT'
+          Proof Engine demos
+          https://github.com/Mattbusel/proof-engine
+
+          Every picture these programs draw is computed from equations while
+          you watch. Double-click one (or run it from a terminal) to open a
+          window. Esc or the window's close button quits.
+
+            proof-lorenz              40,000 points on the Lorenz attractor
+            proof-sky                 a day passing, every sky cell a scattering integral
+            proof-galaxy              about 3,000 glyphs on four spiral arms
+            proof-strange_attractors  seven chaotic systems side by side
+            proof-math_rain           falling columns of math symbols
+            proof-quickstart          5,000 points pulled apart by chaos
+            proof-supernova           a star collapses and explodes
+            proof-convergence         two particle-built fighters in an arena
+            proof-playground          click to place glyphs and force fields
+            proof-hello_glyph         the smallest program: one glyph
+            proof-editor              the Proof Editor scene editor
+
+          Needs a GPU with OpenGL 3.3 or newer.
+          macOS: the files are not notarised. If macOS refuses to open one, run
+            xattr -dr com.apple.quarantine proof-engine-demos-macos-*
+          in Terminal once, from the folder you unpacked them into.
+          Linux: needs ALSA (libasound2), present on most desktops.
+          TXT
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "dist/$out.zip" "$out" > /dev/null
+            # The most-wanted demos also go up as single files.
+            for d in lorenz galaxy sky strange_attractors; do
+              cp "$out/proof-$d.exe" "dist/proof-$d.exe"
+            done
+            cp "$out/proof-editor.exe" dist/proof-editor.exe
+          else
+            tar czf "dist/$out.tar.gz" "$out"
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "Proof Engine $TAG" \
+              --notes "Download the demos for your system below and run them, no Rust needed. Windows: proof-engine-demos-windows-x64.zip, or proof-lorenz.exe on its own. See CHANGELOG.md for what changed."
+          fi
