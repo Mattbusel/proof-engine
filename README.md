@@ -304,6 +304,10 @@ Roughly 660,000 lines of Rust across the engine (`src/`), the editor (`editor/`)
 
 </details>
 
+## Screensaver
+
+`proof-saver` runs ten of the engine's strange attractors as a Windows screensaver (multi-monitor, frame-capped, with a settings dialog and the Control Panel preview), or as live art with `--window`. Install: download `proof-saver.zip` from the releases page, right-click `proof-saver.scr`, choose **Install**. Details and build steps: [docs/SCREENSAVER.md](docs/SCREENSAVER.md).
+
 ## Related
 
 [chaos-rpg](https://github.com/Mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine. `CHAOS_RPG_API_CONTRACT.md` documents what the engine has to support for it.

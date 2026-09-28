@@ -1,0 +1,36 @@
+[package]
+name = "proof-saver"
+version = "0.1.0"
+edition = "2021"
+description = "A Windows screensaver and live-art app built on Proof Engine: strange attractors integrated with RK4, drawn with HDR bloom."
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "proof-saver"
+path = "src/main.rs"
+
+[dependencies]
+proof-engine = { path = ".." }
+winit = "0.30"
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+strip = true
