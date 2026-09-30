@@ -112,22 +112,22 @@ linux-demos:
       set -e
       api="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
       url="$api/packages/generic/proof-engine/$CI_COMMIT_TAG/$PKG"
-      curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$PKG" "$url"
+      curl --fail -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$PKG" "$url"
       echo
       link="{\"name\":\"$PKG\",\"url\":\"$url\",\"link_type\":\"package\",\"direct_asset_path\":\"/$PKG\"}"
       status=$(curl -sS -o release.json -w '%{http_code}' -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/releases/$CI_COMMIT_TAG")
       if [ "$status" = "404" ]; then
         echo "No release for $CI_COMMIT_TAG yet: creating it with the Linux link."
         body="{\"tag_name\":\"$CI_COMMIT_TAG\",\"name\":\"proof-engine $CI_COMMIT_TAG\",\"description\":\"Linux demos for proof-engine $CI_COMMIT_TAG.\",\"assets\":{\"links\":[$link]}}"
-        curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$body" "$api/releases"
+        curl --fail -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$body" "$api/releases"
       elif [ "$status" = "200" ]; then
         # Re-running the job: replace an earlier link of the same name.
         old=$(grep -o "{\"id\":[0-9]*,\"name\":\"$PKG\"" release.json | grep -o '[0-9]\+' | head -n1 || true)
         if [ -n "$old" ]; then
-          curl --fail-with-body -sS -X DELETE -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/releases/$CI_COMMIT_TAG/assets/links/$old"
+          curl --fail -sS -X DELETE -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/releases/$CI_COMMIT_TAG/assets/links/$old"
           echo
         fi
-        curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$link" "$api/releases/$CI_COMMIT_TAG/assets/links"
+        curl --fail -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$link" "$api/releases/$CI_COMMIT_TAG/assets/links"
       else
         echo "Could not read the release (HTTP $status):"; cat release.json; exit 1
       fi
