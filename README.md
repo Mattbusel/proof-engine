@@ -28,6 +28,10 @@ Proof Engine is a real-time generative art and math visualization engine written
 
 No Rust needed for the downloads, just a GPU with OpenGL 3.3 or newer. Unsigned files: on Windows click *More info*, then *Run anyway*; the macOS and Linux notes are in [docs/INSTALL.md](docs/INSTALL.md).
 
+## Math screensaver
+
+Ten of the engine's strange attractors as a Windows screensaver, one after another, every point moved by its equations live. Download [**proof-screensaver.scr**](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-screensaver.scr), put it somewhere it can stay, then right-click it and choose **Install** (or copy it into `C:\Windows\System32` and pick *proof-screensaver* in Screen Saver Settings). **Settings...** there opens its own options. More, including uninstalling: [docs/SCREENSAVER.md](docs/SCREENSAVER.md).
+
 ## How it works
 
 <img src="docs/img/how-math-becomes-a-frame.svg" width="100%" alt="Animated diagram, how math becomes a frame, for one frame of the lorenz example. 1 Math: RK4 steps 40,000 Lorenz states on the CPU. 2 Glyphs: each state becomes one glyph instance, placed from x and z and coloured by its speed, all drawn in one instanced call. 3 Light: a half-float HDR buffer where overlaps add up past 1.0, trails keep 55 percent of the last frame, bloom blurs the glow. 4 Frame: exposure, ACES tonemap and vignette, then the HUD text painted sharp on top.">
@@ -107,6 +111,7 @@ Linux needs the ALSA headers first (`sudo apt install libasound2-dev pkg-config`
 | [How it works](docs/ARCHITECTURE.md) | The frame pipeline, `engine.fx`, lights, GPU density, sound, what each module holds |
 | [Capture frames](docs/CAPTURE.md) | `PROOF_SHOT` and `PROOF_HIDDEN`: record any program's frames without a window appearing |
 | [Proof Editor](docs/EDITOR.md) | The scene editor, its download and keys |
+| [Screensaver](docs/SCREENSAVER.md) | Proof Saver: install, settings, live-art mode, building the .scr |
 | [docs.rs](https://docs.rs/proof-engine) | The full API |
 | [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) | Release history and how to send a change |
 
