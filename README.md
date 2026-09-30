@@ -5,9 +5,9 @@
 <p align="center">A Rust graphics engine and a set of ready-to-run demos. For creative coders, generative artists, and anyone who wants to watch a strange attractor or a physical sky move.</p>
 
 <p align="center">
-  <a href="https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-lorenz.exe"><b>Download for Windows (.exe)</b></a> &nbsp;&middot;&nbsp;
+  <a href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-lorenz.exe"><b>Download for Windows (.exe)</b></a> &nbsp;&middot;&nbsp;
   <a href="#download">macOS and Linux</a> &nbsp;&middot;&nbsp;
-  <a href="https://mattbusel.github.io/proof-engine/">Site</a> &nbsp;&middot;&nbsp;
+  <a href="https://proof-engine-rs.vercel.app/">Site</a> &nbsp;&middot;&nbsp;
   <a href="https://docs.rs/proof-engine">docs.rs</a> &nbsp;&middot;&nbsp;
   <a href="https://crates.io/crates/proof-engine"><img src="https://img.shields.io/crates/v/proof-engine.svg" alt="crates.io version" align="center"></a>
 </p>
@@ -21,9 +21,9 @@ Proof Engine is a real-time generative art and math visualization engine written
 
 | System | Download |
 | --- | --- |
-| **Windows** | [**proof-lorenz.exe**](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-lorenz.exe): double-click it. Or [all 10 demos and the editor (.zip)](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-windows-x64.zip). |
-| **macOS** (Apple silicon / Intel) | [demos for arm64](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-macos-arm64.tar.gz) / [demos for x64](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-macos-x64.tar.gz) |
-| **Linux** (x86_64) | [proof-engine-demos-linux-x64.tar.gz](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-linux-x64.tar.gz) |
+| **Windows** | [**proof-lorenz.exe**](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-lorenz.exe): double-click it. Or [all 10 demos and the editor (.zip)](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip). |
+| **macOS** (Apple silicon / Intel) | [demos for arm64](https://gitlab.com/mattbusel/proof-engine/-/releases) / [demos for x64](https://gitlab.com/mattbusel/proof-engine/-/releases) |
+| **Linux** (x86_64) | [proof-engine-demos-linux-x64.tar.gz](https://gitlab.com/mattbusel/proof-engine/-/releases) |
 | **Your own Rust program** | `cargo add proof-engine` |
 
 No Rust needed for the downloads, just a GPU with OpenGL 3.3 or newer. Unsigned files: on Windows click *More info*, then *Run anyway*; the macOS and Linux notes are in [docs/INSTALL.md](docs/INSTALL.md).
@@ -110,7 +110,7 @@ Linux needs the ALSA headers first (`sudo apt install libasound2-dev pkg-config`
 | [docs.rs](https://docs.rs/proof-engine) | The full API |
 | [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) | Release history and how to send a change |
 
-[chaos-rpg](https://github.com/Mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine; [`CHAOS_RPG_API_CONTRACT.md`](CHAOS_RPG_API_CONTRACT.md) documents what it needs.
+[chaos-rpg](https://gitlab.com/mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine; [`CHAOS_RPG_API_CONTRACT.md`](CHAOS_RPG_API_CONTRACT.md) documents what it needs.
 
 ## License
 
@@ -118,4 +118,4 @@ MIT, see [LICENSE](LICENSE).
 
 ## Hire the author
 
-**Need this kind of engineering on your product?** I take on a small number of client builds: LLM features, iOS apps and performance work, fixed price. [Services and pricing](https://mattbusel.github.io/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
+**Need this kind of engineering on your product?** I take on a small number of client builds: LLM features, iOS apps and performance work, fixed price. [Services and pricing](https://mattbusel.vercel.app/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)

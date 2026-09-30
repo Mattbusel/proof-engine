@@ -6,7 +6,7 @@
 //! particle on screen is moved by a real equation: an ODE, a force field, a
 //! spring, a noise function.
 //!
-//! <img src="https://raw.githubusercontent.com/Mattbusel/proof-engine/main/assets/gifs/strange_attractors.gif" width="100%" alt="Seven strange attractors, each 1,500 points integrated with RK4">
+//! <img src="https://gitlab.com/mattbusel/proof-engine/-/raw/main/assets/gifs/strange_attractors.gif" width="100%" alt="Seven strange attractors, each 1,500 points integrated with RK4">
 //!
 //! ## The math runs without a window
 //!
@@ -71,7 +71,7 @@
 //!
 //! Every example in the repository can save its own frames to disk with the
 //! `PROOF_SHOT` environment variables; see the
-//! [README](https://github.com/Mattbusel/proof-engine#capture-frames-from-any-program).
+//! [README](https://gitlab.com/mattbusel/proof-engine#capture-frames-from-any-program).
 
 pub mod math;
 pub mod glyph;

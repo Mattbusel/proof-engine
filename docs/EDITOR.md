@@ -5,7 +5,7 @@
 
 ![Proof Editor](../assets/editor-screenshot.png)
 
-Download [`proof-editor.exe`](https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-editor.exe) for Windows (it is also inside every demos archive on the [latest release](https://github.com/Mattbusel/proof-engine/releases/latest), for macOS and Linux too), or build it:
+Download [`proof-editor.exe`](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-editor.exe) for Windows (it is also inside every demos archive on the [latest release](https://gitlab.com/mattbusel/proof-engine/-/releases), for macOS and Linux too), or build it:
 
 ```bash
 cd proof-engine/editor

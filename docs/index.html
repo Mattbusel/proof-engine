@@ -5,24 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Proof Engine: real-time math graphics in Rust</title>
 <meta name="description" content="Proof Engine is a Rust engine that turns equations into moving pictures: strange attractors, force fields and a physical sky, drawn in HDR. Windows demos.">
-<link rel="canonical" href="https://mattbusel.github.io/proof-engine/">
+<link rel="canonical" href="https://proof-engine-rs.vercel.app/">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#05060a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Proof Engine">
 <meta property="og:title" content="Proof Engine: real-time math graphics in Rust">
 <meta property="og:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
-<meta property="og:image" content="https://mattbusel.github.io/proof-engine/assets/og-image.png">
+<meta property="og:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Proof Engine: a sunset computed from a scattering integral next to 40,000 points on the Lorenz attractor">
-<meta property="og:url" content="https://mattbusel.github.io/proof-engine/">
+<meta property="og:url" content="https://proof-engine-rs.vercel.app/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Proof Engine: real-time math graphics in Rust">
 <meta name="twitter:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
-<meta name="twitter:image" content="https://mattbusel.github.io/proof-engine/assets/og-image.png">
+<meta name="twitter:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Proof Engine","alternateName":"proof-engine","description":"A Rust library and set of demos for real-time graphics from math: glyphs and particles moved by differential equations, strange attractors and force fields, drawn with HDR bloom on OpenGL.","url":"https://mattbusel.github.io/proof-engine/","codeRepository":"https://github.com/Mattbusel/proof-engine","programmingLanguage":"Rust","license":"https://opensource.org/licenses/MIT","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","downloadUrl":"https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-windows-x64.zip","image":"https://mattbusel.github.io/proof-engine/assets/og-image.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Matthew Busel","url":"https://github.com/Mattbusel"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Proof Engine","alternateName":"proof-engine","description":"A Rust library and set of demos for real-time graphics from math: glyphs and particles moved by differential equations, strange attractors and force fields, drawn with HDR bloom on OpenGL.","url":"https://proof-engine-rs.vercel.app/","codeRepository":"https://gitlab.com/mattbusel/proof-engine","programmingLanguage":"Rust","license":"https://opensource.org/licenses/MIT","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","downloadUrl":"https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip","image":"https://proof-engine-rs.vercel.app/assets/og-image.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Matthew Busel","url":"https://gitlab.com/mattbusel"}}
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2305060a'/%3E%3Crect x='5' y='5' width='6' height='6' fill='%23ff9a4a'/%3E%3C/svg%3E">
 <style>
@@ -196,7 +196,7 @@
       <a href="#start">Start</a>
       <a class="hide-s" href="#demos">Demos</a>
       <a class="hide-s" href="https://docs.rs/proof-engine">Docs</a>
-      <a href="https://github.com/Mattbusel/proof-engine">GitHub</a>
+      <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a>
     </nav>
   </div>
 </header>
@@ -213,9 +213,9 @@
     <p class="lede">A Rust rendering engine where every visual is the output of a mathematical function. Glyphs and particles are moved by differential equations and force fields, and drawn in HDR.</p>
     <div class="cta">
       <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">Copy</button></div>
-      <a class="btn primary" href="https://github.com/Mattbusel/proof-engine/releases/latest/download/proof-engine-demos-windows-x64.zip">Download demos for Windows</a>
-      <a class="btn" href="https://github.com/Mattbusel/proof-engine/blob/main/docs/INSTALL.md">macOS and Linux</a>
-      <a class="btn" href="https://github.com/Mattbusel/proof-engine">Source</a>
+      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Download demos for Windows</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS and Linux</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">Source</a>
     </div>
     <p class="figcap"><b>FIG. 1</b>The <code>sky</code> example from 16:20 to dusk, captured frame by frame with <code>PROOF_SHOT</code> and played forward and back. Every cell of that sky is a scattering integral.</p>
   </div>
@@ -278,7 +278,7 @@
         <p>The first build compiles the whole engine and takes a few minutes. Use <code>--release</code>; the demos simulate tens of thousands of particles a frame.</p>
         <div class="code">
           <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">Copy</button></div>
-<pre id="c1">git clone https://github.com/Mattbusel/proof-engine.git
+<pre id="c1">git clone https://gitlab.com/mattbusel/proof-engine.git
 cd proof-engine
 cargo run --release --example sky
 cargo run --release --example lorenz</pre>
@@ -436,8 +436,8 @@ cargo run --release --example sky</pre>
 
 <footer>
   <div class="wrap">
-    <span>Proof Engine is MIT licensed. Built by <a href="https://github.com/Mattbusel">Matthew Busel</a>.</span>
-    <span><a href="https://github.com/Mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://github.com/Mattbusel/proof-engine">GitHub</a></span>
+    <span>Proof Engine is MIT licensed. Built by <a href="https://gitlab.com/mattbusel">Matthew Busel</a>.</span>
+    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
   </div>
 </footer>
 
