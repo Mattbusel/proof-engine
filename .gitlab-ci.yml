@@ -1,0 +1,137 @@
+# GitLab CI for proof-engine.
+#
+# linux-demos: on every tag like v0.2.3, build the ten demos and the Proof
+# Editor for Linux x86_64 on Debian 11 (bullseye, glibc 2.31, so the files run
+# on most current distributions), pack them as
+# proof-engine-demos-linux-x64.tar.gz, put that in this project's generic
+# package registry and link it on the release for the tag. The name carries no
+# version, so this link always serves the newest one:
+#   https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-linux-x64.tar.gz
+#
+# Release flow: the Windows files (.exe, .zip, .scr) are built on Windows and
+# the release is created with them first (POST /projects/:id/releases with
+# ref=main, which also creates the tag). Creating the tag starts this job,
+# which adds the Linux link to that release. If the tag is pushed first and no
+# release exists yet, this job creates the release with the Linux link, and
+# the Windows files can be linked to it afterwards.
+#
+# Nothing here publishes to crates.io.
+
+stages:
+  - build
+
+linux-demos:
+  stage: build
+  image: rust:1-bullseye
+  timeout: 2h
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]/'
+  variables:
+    CARGO_INCREMENTAL: "0"
+    CARGO_TERM_COLOR: always
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo-home"
+    DEMOS: "sky lorenz galaxy strange_attractors math_rain quickstart supernova convergence playground hello_glyph"
+    OUT: "proof-engine-demos-linux-x64"
+    PKG: "proof-engine-demos-linux-x64.tar.gz"
+  cache:
+    key: linux-demos-cargo
+    paths:
+      - .cargo-home/registry/index/
+      - .cargo-home/registry/cache/
+  script:
+    # ALSA headers for cpal/rodio; X11, Wayland, xkbcommon and GL/EGL
+    # headers for winit and glutin (they load the libraries at run time).
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      pkg-config libasound2-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev curl ca-certificates
+    - rustc --version && cargo --version
+    - |
+      args=""
+      for d in $DEMOS; do args="$args --example $d"; done
+      cargo build --release $args
+    - (cd editor && cargo build --release --target-dir ../target)
+    - |
+      set -e
+      mkdir -p "$OUT"
+      for d in $DEMOS; do cp "target/release/examples/$d" "$OUT/proof-$d"; done
+      cp target/release/proof-editor "$OUT/proof-editor"
+      strip "$OUT"/proof-*
+      cp LICENSE "$OUT/LICENSE.txt"
+      cat > "$OUT/README.txt" <<'TXT'
+      Proof Engine demos for Linux x86_64
+      https://gitlab.com/mattbusel/proof-engine
+
+      Every picture these programs draw is computed from equations while
+      you watch. Run one from a terminal in a desktop session, for example
+        ./proof-lorenz
+      Esc or the window's close button quits.
+
+        proof-lorenz              40,000 points on the Lorenz attractor
+        proof-sky                 a day passing, every sky cell a scattering integral
+        proof-galaxy              about 3,000 glyphs on four spiral arms
+        proof-strange_attractors  seven chaotic systems side by side
+        proof-math_rain           falling columns of math symbols
+        proof-quickstart          5,000 points pulled apart by chaos
+        proof-supernova           a star collapses and explodes
+        proof-convergence         two particle-built fighters in an arena
+        proof-playground          click to place glyphs and force fields
+        proof-hello_glyph         the smallest program: one glyph
+        proof-editor              the Proof Editor scene editor
+
+      Needs X11 or Wayland, a GPU with OpenGL 3.3 or newer, and ALSA
+      (libasound2), present on most desktops. Built on Debian 11 (glibc 2.31).
+      TXT
+    # The files must not need OpenSSL (it differs between distributions).
+    - |
+      set -e
+      for f in "$OUT"/proof-*; do echo "== $f"; ldd "$f"; done | tee ldd.txt
+      if grep -i -E 'libssl|libcrypto' ldd.txt; then echo "a binary links OpenSSL"; exit 1; fi
+      if grep -q 'not found' ldd.txt; then echo "a library is missing"; exit 1; fi
+    # No display here: each program must say so and exit 1, not crash.
+    - |
+      set +e
+      for p in proof-lorenz proof-sky proof-editor; do
+        env -u DISPLAY -u WAYLAND_DISPLAY timeout 60 "./$OUT/$p" > nodisplay.txt 2>&1
+        code=$?
+        echo "== $p exited with $code"; cat nodisplay.txt
+        if [ "$code" -ne 1 ] || ! grep -q 'cannot open a window' nodisplay.txt; then
+          echo "$p did not fail cleanly without a display"; exit 1
+        fi
+      done
+      set -e
+    - tar czf "$PKG" "$OUT"
+    - sha256sum "$PKG" | tee "$PKG.sha256"
+    - ls -l "$PKG"
+    # Upload to the generic package registry and link it on the release.
+    - |
+      set -e
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
+      url="$api/packages/generic/proof-engine/$CI_COMMIT_TAG/$PKG"
+      curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$PKG" "$url"
+      echo
+      link="{\"name\":\"$PKG\",\"url\":\"$url\",\"link_type\":\"package\",\"direct_asset_path\":\"/$PKG\"}"
+      status=$(curl -sS -o release.json -w '%{http_code}' -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/releases/$CI_COMMIT_TAG")
+      if [ "$status" = "404" ]; then
+        echo "No release for $CI_COMMIT_TAG yet: creating it with the Linux link."
+        body="{\"tag_name\":\"$CI_COMMIT_TAG\",\"name\":\"proof-engine $CI_COMMIT_TAG\",\"description\":\"Linux demos for proof-engine $CI_COMMIT_TAG.\",\"assets\":{\"links\":[$link]}}"
+        curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$body" "$api/releases"
+      elif [ "$status" = "200" ]; then
+        # Re-running the job: replace an earlier link of the same name.
+        old=$(grep -o "{\"id\":[0-9]*,\"name\":\"$PKG\"" release.json | grep -o '[0-9]\+' | head -n1 || true)
+        if [ -n "$old" ]; then
+          curl --fail-with-body -sS -X DELETE -H "JOB-TOKEN: $CI_JOB_TOKEN" "$api/releases/$CI_COMMIT_TAG/assets/links/$old"
+          echo
+        fi
+        curl --fail-with-body -sS -H "JOB-TOKEN: $CI_JOB_TOKEN" -H "Content-Type: application/json" -d "$link" "$api/releases/$CI_COMMIT_TAG/assets/links"
+      else
+        echo "Could not read the release (HTTP $status):"; cat release.json; exit 1
+      fi
+      echo
+  artifacts:
+    paths:
+      - proof-engine-demos-linux-x64.tar.gz
+      - proof-engine-demos-linux-x64.tar.gz.sha256
+      - ldd.txt
+    expire_in: 30 days

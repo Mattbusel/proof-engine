@@ -23,7 +23,7 @@ Proof Engine is a real-time generative art and math visualization engine written
 | --- | --- |
 | **Windows** | [**proof-lorenz.exe**](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-lorenz.exe): double-click it. Or [all 10 demos and the editor (.zip)](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip). |
 | **macOS** (Apple silicon / Intel) | [demos for arm64](https://gitlab.com/mattbusel/proof-engine/-/releases) / [demos for x64](https://gitlab.com/mattbusel/proof-engine/-/releases) |
-| **Linux** (x86_64) | [proof-engine-demos-linux-x64.tar.gz](https://gitlab.com/mattbusel/proof-engine/-/releases) |
+| **Linux** (x86_64) | [proof-engine-demos-linux-x64.tar.gz](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-linux-x64.tar.gz) |
 | **Your own Rust program** | `cargo add proof-engine` |
 
 No Rust needed for the downloads, just a GPU with OpenGL 3.3 or newer. Unsigned files: on Windows click *More info*, then *Run anyway*; the macOS and Linux notes are in [docs/INSTALL.md](docs/INSTALL.md).

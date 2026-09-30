@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3
+
+### Added
+- Math screensaver: `proof-screensaver.scr` on every release, ten of the engine's strange attractors as a Windows screensaver (right-click it, **Install**). Source in `saver/` (not published to crates.io); details in [docs/SCREENSAVER.md](docs/SCREENSAVER.md). With `PROOF_HIDDEN=1` set it never shows a window, so `/s`, `/c` and `/p` can be tested on a machine someone is using.
+- Linux demos: a GitLab CI job builds the ten demos and the editor on Debian bullseye for every `v*` tag and attaches `proof-engine-demos-linux-x64.tar.gz` to the release.
+
+### Changed
+- With no display to open a window on (a Linux shell without X11 or Wayland, a CI runner), programs print `proof-engine: cannot open a window: ...` and exit with status 1 instead of panicking.
+- Windows downloads rebuilt at 0.2.3.
+
 ## 0.2.2
 
 ### Added

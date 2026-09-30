@@ -348,11 +348,24 @@ pub struct Pipeline {
     pub raw_window_events: Vec<winit::event::WindowEvent>,
 }
 
+/// Print why no window could be opened and exit with status 1.
+fn no_display(err: &dyn std::fmt::Display) -> ! {
+    eprintln!("proof-engine: cannot open a window: {err}");
+    eprintln!("It needs a desktop session (on Linux, X11 or Wayland with DISPLAY or WAYLAND_DISPLAY set) and a GPU with OpenGL 3.3 or newer.");
+    std::process::exit(1);
+}
+
 impl Pipeline {
     /// Initialize window, OpenGL 3.3 Core context, shader programs, font atlas, and PostFxPipeline.
     pub fn init(config: &EngineConfig) -> Self {
         // ── 1. winit EventLoop ────────────────────────────────────────────────
-        let event_loop = EventLoop::new().expect("EventLoop::new");
+        // No display (a Linux box without X11 or Wayland, a CI runner, an
+        // SSH session) is an ordinary situation, not a bug: say so and exit
+        // instead of panicking with a backtrace.
+        let event_loop = match EventLoop::new() {
+            Ok(el) => el,
+            Err(e) => no_display(&e),
+        };
 
         // ── 2. Window attributes (winit 0.30 API) ─────────────────────────────
         let window_attrs = Window::default_attributes()
@@ -376,7 +389,7 @@ impl Pipeline {
             .build(&event_loop, template, |mut configs| {
                 configs.next().expect("no suitable GL config found")
             })
-            .expect("DisplayBuilder::build failed");
+            .unwrap_or_else(|e| no_display(&e));
 
         let window = window.expect("window was not created");
         let display = gl_config.display();
