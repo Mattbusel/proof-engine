@@ -41,9 +41,12 @@ linux-demos:
   script:
     # ALSA headers for cpal/rodio; X11, Wayland, xkbcommon and GL/EGL
     # headers for winit and glutin (they load the libraries at run time).
-    - apt-get update
+    # Bullseye's security pool on deb.debian.org now answers 404 for files
+    # its index still lists, so install from the main bullseye archive only.
+    - sed -i '/bullseye-security/d' /etc/apt/sources.list; rm -f /etc/apt/sources.list.d/*security* || true
+    - apt-get update -o Acquire::Retries=3
     - >
-      apt-get install -y --no-install-recommends
+      apt-get install -y --no-install-recommends -o Acquire::Retries=3
       pkg-config libasound2-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev curl ca-certificates
     - rustc --version && cargo --version
