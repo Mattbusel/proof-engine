@@ -177,31 +177,20 @@ impl HeadlessRenderer {
         pixels
     }
 
-    /// Render to a file.  Writes raw RGBA pixel data with a minimal
-    /// uncompressed BMP-like header (since we don't depend on image crates).
+    /// Render to an image file. Despite the name, the extension picks the
+    /// format (`.png`, `.tga`, `.bmp`, `.jpg`, `.gif`). Write errors are
+    /// logged; use [`try_render_to_file`](Self::try_render_to_file) to get
+    /// them back.
     pub fn render_to_png(&mut self, scene: &SceneDesc, camera: &CameraDesc, path: &str) {
-        let pixels = self.render_to_buffer(scene, camera);
-        // Write a simple TGA file (uncompressed RGBA).
-        let mut tga = Vec::new();
-        // TGA header (18 bytes)
-        tga.push(0); // id length
-        tga.push(0); // color map type
-        tga.push(2); // image type: uncompressed true-color
-        tga.extend_from_slice(&[0, 0, 0, 0, 0]); // color map spec
-        tga.extend_from_slice(&[0, 0]); // x origin
-        tga.extend_from_slice(&[0, 0]); // y origin
-        tga.extend_from_slice(&(self.width as u16).to_le_bytes()); // width
-        tga.extend_from_slice(&(self.height as u16).to_le_bytes()); // height
-        tga.push(32); // bits per pixel
-        tga.push(0x28); // image descriptor (top-left origin, 8 alpha bits)
-        // Convert RGBA to BGRA for TGA
-        for chunk in pixels.chunks(4) {
-            tga.push(chunk[2]); // B
-            tga.push(chunk[1]); // G
-            tga.push(chunk[0]); // R
-            tga.push(chunk[3]); // A
+        if let Err(e) = self.try_render_to_file(scene, camera, path) {
+            log::warn!("headless render to {path} failed: {e}");
         }
-        let _ = std::fs::write(path, &tga);
+    }
+
+    /// Render to an image file, returning any encoding or write error.
+    pub fn try_render_to_file(&mut self, scene: &SceneDesc, camera: &CameraDesc, path: &str) -> std::io::Result<()> {
+        let pixels = self.render_to_buffer(scene, camera);
+        crate::export::save_rgba(path, self.width, self.height, &pixels)
     }
 
     /// Resize the render targets.
@@ -503,8 +492,10 @@ mod tests {
         // Verify file was created
         assert!(path.exists());
         let data = std::fs::read(&path).unwrap();
-        // TGA header is 18 bytes, then 4*4*4=64 bytes of pixel data
-        assert_eq!(data.len(), 18 + 64);
+        // A real TGA that decodes back to the green clear colour.
+        let img = image::load_from_memory_with_format(&data, image::ImageFormat::Tga).unwrap().to_rgba8();
+        assert_eq!(img.dimensions(), (4, 4));
+        assert_eq!(img.get_pixel(2, 2).0, [0, 255, 0, 255]);
         let _ = std::fs::remove_file(&path);
     }
 

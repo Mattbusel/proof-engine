@@ -1,6 +1,6 @@
 [package]
 name = "proof-engine"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 authors = ["Matthew Busel <matt@tensorust.com>"]
 license = "MIT"
@@ -24,20 +24,30 @@ raw-window-handle = "0.6"
 
 # Math
 glam  = "0.25"
-noise = "0.9"
+
+# Colour gradients and scientific palettes (viridis, magma, turbo, CSS strings)
+colorgrad = { version = "0.9", default-features = false, features = ["std", "preset", "named-colors"] }
+
+# Scripting: dynamical systems written in Rhai and hot reloaded (math::scripted)
+rhai = { version = "1.26", optional = true }
 
 # Font rasterization (pure Rust, no system deps)
 ab_glyph = "0.2"
 
-# Audio
-rodio = { version = "0.17", default-features = false, features = ["wav"] }
+# Audio: cpal for the device, hound for reading and writing WAV files
 cpal  = "0.15"
+hound = "3.5"
+
+# Image encoding and decoding: frame capture (PNG, JPEG, animated GIF) and
+# image assets
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tga"] }
 
 # Bytemuck for safe GPU buffer casting (glyph instances)
 bytemuck = { version = "1", features = ["derive"] }
 
 # Serialization (config)
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml  = "0.8"
 
 # Logging
@@ -46,6 +56,14 @@ env_logger = "0.11"
 
 # Bitflags (used by scene_io SceneFlags)
 bitflags = "2"
+
+[features]
+default = ["rhai-scripts"]
+# math::scripted: dynamical systems written in Rhai, hot reloaded from disk.
+# Rhai adds `Add` impls for String, so in a crate that also links it,
+# `String + &String` needs an explicit `.as_str()`. Turn this feature off
+# (default-features = false) if that bites.
+rhai-scripts = ["dep:rhai"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -120,6 +138,13 @@ name = "lorenz"
 
 [[example]]
 name = "quickstart"
+
+[[example]]
+name = "audio_bounce"
+
+[[example]]
+name = "scripted_attractor"
+required-features = ["rhai-scripts"]
 
 [[bin]]
 name = "proof_editor"

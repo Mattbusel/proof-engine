@@ -12,6 +12,9 @@ pub mod graph;
 pub mod effects;
 pub mod synthesis;
 pub mod spatial;
+pub mod wav;
+
+pub use output::OfflineRenderer;
 
 use glam::Vec3;
 

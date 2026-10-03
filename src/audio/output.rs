@@ -156,6 +156,26 @@ struct AudioState {
 }
 
 impl AudioState {
+    fn new(rx: Receiver<AudioEvent>, sample_rate: f32, seed: u32) -> Self {
+        AudioState {
+            sources:       Vec::with_capacity(128),
+            rx,
+            master_volume: 1.0,
+            music_volume:  1.0,
+            music_vibe:    MusicVibe::Silence,
+            sample_rate,
+            listener:      Vec3::ZERO,
+            time:          0.0,
+            seed,
+            // A stone room: mid-sized, fairly damped, all wet since the dry
+            // signal is mixed separately.
+            reverb:        Reverb::new(0.62, 0.45, 1.0, 0.0, 12.0, 0.8),
+            duck:          0.0,
+            scratch:       [0.0],
+            last_send:     -10.0,
+        }
+    }
+
     fn process_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
@@ -393,23 +413,7 @@ impl AudioOutput {
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let state = AudioState {
-            sources:       Vec::with_capacity(128),
-            rx,
-            master_volume: 1.0,
-            music_volume:  1.0,
-            music_vibe:    MusicVibe::Silence,
-            sample_rate:   rate as f32,
-            listener:      Vec3::ZERO,
-            time:          0.0,
-            seed:          0x9E37_79B9,
-            // A stone room: mid-sized, fairly damped, all wet since the dry
-            // signal is mixed separately.
-            reverb:        Reverb::new(0.62, 0.45, 1.0, 0.0, 12.0, 0.8),
-            duck:          0.0,
-            scratch:       [0.0],
-            last_send:     -10.0,
-        };
+        let state = AudioState::new(rx, rate as f32, 0x9E37_79B9);
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_stream_f32(&device, &config, state),
@@ -423,6 +427,90 @@ impl AudioOutput {
 
         log::info!("AudioOutput: {} Hz, {} ch", rate, channels);
         Some(Self { sample_rate: rate, channels, _stream: stream })
+    }
+}
+
+/// The engine's synthesiser with no audio device behind it.
+///
+/// It runs exactly the code the real-time thread runs (the same sources,
+/// filters, ducking, reverb and limiter), but you pull the samples out
+/// yourself. Use it to bounce sounds to a WAV file with
+/// [`crate::audio::wav::write_wav`], to render audio for a captured video,
+/// or to test sound design on a machine with no sound card.
+///
+/// ```rust
+/// use proof_engine::audio::{AudioEvent, OfflineRenderer};
+/// use proof_engine::audio::math_source::MathAudioSource;
+/// use proof_engine::prelude::Vec3;
+///
+/// let mut synth = OfflineRenderer::new(48_000);
+/// synth.emit(AudioEvent::SpawnSource {
+///     source: MathAudioSource::death_knell(Vec3::ZERO),
+///     position: Vec3::ZERO,
+/// });
+/// let stereo = synth.render(0.5);
+/// assert_eq!(stereo.len(), 2 * 24_000);
+/// assert!(stereo.iter().any(|s| s.abs() > 0.01));
+/// ```
+pub struct OfflineRenderer {
+    state: AudioState,
+    tx: std::sync::mpsc::Sender<AudioEvent>,
+    sample_rate: u32,
+}
+
+impl OfflineRenderer {
+    /// A silent synthesiser running at `sample_rate` Hz.
+    pub fn new(sample_rate: u32) -> Self {
+        Self::with_seed(sample_rate, 0x9E37_79B9)
+    }
+
+    /// As [`new`](Self::new), with the seed of the noise generators, for
+    /// renders that must differ from each other.
+    pub fn with_seed(sample_rate: u32, seed: u32) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sample_rate = sample_rate.max(1);
+        Self { state: AudioState::new(rx, sample_rate as f32, seed), tx, sample_rate }
+    }
+
+    /// Queue an event. It takes effect at the start of the next
+    /// [`render`](Self::render), as events do at the start of each buffer
+    /// on the real-time thread.
+    pub fn emit(&mut self, event: AudioEvent) {
+        let _ = self.tx.send(event);
+    }
+
+    /// Render `secs` seconds as interleaved stereo (left, right, left, ...),
+    /// each sample in `[-1, 1]`.
+    pub fn render(&mut self, secs: f32) -> Vec<f32> {
+        let frames = (secs.max(0.0) * self.sample_rate as f32).round() as usize;
+        self.render_frames(frames)
+    }
+
+    /// Render exactly `frames` stereo frames, interleaved.
+    pub fn render_frames(&mut self, frames: usize) -> Vec<f32> {
+        self.state.process_events();
+        let mut out = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            let (l, r) = self.state.next_sample();
+            out.push(l.clamp(-1.0, 1.0));
+            out.push(r.clamp(-1.0, 1.0));
+        }
+        out
+    }
+
+    /// The sample rate this renderer was made with.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Seconds of audio rendered so far.
+    pub fn time(&self) -> f32 {
+        self.state.time
+    }
+
+    /// Sources still sounding (effects that have not ended, plus music).
+    pub fn active_sources(&self) -> usize {
+        self.state.sources.len()
     }
 }
 
@@ -473,21 +561,7 @@ mod tests {
     /// An AudioState with no device behind it, fed by hand.
     fn offline_state() -> (AudioState, std::sync::mpsc::SyncSender<AudioEvent>) {
         let (tx, rx) = std::sync::mpsc::sync_channel(64);
-        let state = AudioState {
-            sources: Vec::new(),
-            rx,
-            master_volume: 1.0,
-            music_volume: 1.0,
-            music_vibe: MusicVibe::Silence,
-            sample_rate: 44100.0,
-            listener: Vec3::ZERO,
-            time: 0.0,
-            seed: 12345,
-            reverb: Reverb::new(0.62, 0.45, 1.0, 0.0, 12.0, 0.8),
-            duck: 0.0,
-            scratch: [0.0],
-            last_send: -10.0,
-        };
+        let state = AudioState::new(rx, 44100.0, 12345);
         (state, tx)
     }
 
@@ -600,6 +674,38 @@ mod tests {
         assert!(state.duck < 0.05, "the duck never released: {}", state.duck);
         let rms = |v: &[(f32, f32)]| (v.iter().map(|(l, _)| l * l).sum::<f32>() / v.len() as f32).sqrt();
         assert!(rms(&before) > 0.1, "music is inaudible");
+    }
+
+    #[test]
+    fn the_offline_renderer_matches_the_real_time_path() {
+        use crate::math::MathFunction;
+        let tone = MathAudioSource {
+            function: MathFunction::Constant(0.0),
+            frequency_range: (440.0, 440.0),
+            amplitude: 0.4,
+            waveform: MsWaveform::Sine,
+            lifetime: 0.2,
+            spatial: false,
+            ..Default::default()
+        };
+        // The same event through the test harness and the public renderer
+        // gives the same samples: it is one synthesiser, not a copy.
+        let (mut state, tx) = offline_state();
+        tx.send(AudioEvent::SpawnSource { source: tone.clone(), position: Vec3::ZERO }).unwrap();
+        let reference = render(&mut state, 0.3);
+        let mut off = OfflineRenderer::with_seed(44100, 12345);
+        off.emit(AudioEvent::SpawnSource { source: tone, position: Vec3::ZERO });
+        let out = off.render(0.3);
+        assert_eq!(out.len(), reference.len() * 2);
+        for (i, (l, r)) in reference.iter().enumerate() {
+            assert_eq!((out[2 * i], out[2 * i + 1]), (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0)));
+        }
+        assert!((off.time() - 0.3).abs() < 1e-3);
+        assert_eq!(off.active_sources(), 0, "the tone ended");
+        // A 440 Hz sine crosses zero about 2 * 440 times a second.
+        let left: Vec<f32> = out.iter().step_by(2).copied().take(4410).collect();
+        let crossings = left.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        assert!((40..=48).contains(&crossings), "{crossings} upward crossings in 0.1 s");
     }
 
     #[test]

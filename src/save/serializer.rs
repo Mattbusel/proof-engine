@@ -1,11 +1,13 @@
-//! Custom serialization layer for the save system.
+//! Serialization layer for the save system.
 //!
 //! `SerializedValue` is a JSON-compatible value enum. The `Serialize` and
-//! `Deserialize` traits let any game type opt into save/load support without
-//! pulling in serde.
+//! `Deserialize` traits let any game type opt into save/load support with a
+//! few lines of code and no derive macros.
 //!
-//! A simple hand-written JSON encoder/decoder is included so save files are
-//! human-readable without any extra dependencies.
+//! Save files are JSON, so they stay human-readable. The text itself is
+//! written and parsed by `serde_json`, which handles the corners a small
+//! hand-written parser gets wrong: non-ASCII text, surrogate pairs,
+//! trailing garbage and deeply nested input.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -179,78 +181,43 @@ impl SerializedValue {
 
     // ── JSON encoding ──────────────────────────────────────────────────────
 
-    /// Encode to a JSON string. Bytes are encoded as a base64-like hex string.
+    /// Encode to a compact JSON string.
+    ///
+    /// Map keys come out sorted, so the same value always gives the same
+    /// text. JSON has no NaN or infinity: NaN is written as `null` and
+    /// infinities as the largest finite double, `1e+308` / `-1e+308`. Bytes are written as a lowercase
+    /// hex string.
     pub fn to_json_string(&self) -> String {
-        let mut buf = String::with_capacity(64);
-        self.write_json(&mut buf);
-        buf
+        serde_json::to_string(&self.to_json_value()).expect("a JSON value always serializes")
     }
 
-    fn write_json(&self, buf: &mut String) {
+    /// Convert to a `serde_json::Value`, with the rules of
+    /// [`to_json_string`](Self::to_json_string).
+    pub fn to_json_value(&self) -> serde_json::Value {
+        use serde_json::Value as J;
         match self {
-            SerializedValue::Null => buf.push_str("null"),
-            SerializedValue::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
-            SerializedValue::Int(i) => buf.push_str(&i.to_string()),
+            SerializedValue::Null => J::Null,
+            SerializedValue::Bool(b) => J::Bool(*b),
+            SerializedValue::Int(i) => J::from(*i),
             SerializedValue::Float(f) => {
-                if f.is_nan() {
-                    buf.push_str("null"); // JSON has no NaN
-                } else if f.is_infinite() {
-                    buf.push_str(if *f > 0.0 { "1e308" } else { "-1e308" });
-                } else {
-                    buf.push_str(&format!("{f:?}"));
-                }
+                let f = if f.is_infinite() { f.signum() * 1e308 } else { *f };
+                // from_f64 refuses only NaN, which JSON cannot hold.
+                serde_json::Number::from_f64(f).map(J::Number).unwrap_or(J::Null)
             }
-            SerializedValue::Str(s) => {
-                buf.push('"');
-                for ch in s.chars() {
-                    match ch {
-                        '"' => buf.push_str("\\\""),
-                        '\\' => buf.push_str("\\\\"),
-                        '\n' => buf.push_str("\\n"),
-                        '\r' => buf.push_str("\\r"),
-                        '\t' => buf.push_str("\\t"),
-                        c if (c as u32) < 0x20 => {
-                            buf.push_str(&format!("\\u{:04x}", c as u32));
-                        }
-                        c => buf.push(c),
-                    }
-                }
-                buf.push('"');
-            }
+            SerializedValue::Str(s) => J::String(s.clone()),
             SerializedValue::Bytes(bytes) => {
-                // Encode as a JSON string containing lowercase hex
-                buf.push('"');
+                use std::fmt::Write;
+                let mut hex = String::with_capacity(bytes.len() * 2);
                 for b in bytes {
-                    buf.push_str(&format!("{b:02x}"));
+                    let _ = write!(hex, "{b:02x}");
                 }
-                buf.push('"');
+                J::String(hex)
             }
-            SerializedValue::List(items) => {
-                buf.push('[');
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        buf.push(',');
-                    }
-                    item.write_json(buf);
-                }
-                buf.push(']');
-            }
+            SerializedValue::List(items) => J::Array(items.iter().map(Self::to_json_value).collect()),
             SerializedValue::Map(m) => {
-                buf.push('{');
-                let mut first = true;
-                // Sort keys for deterministic output
                 let mut keys: Vec<&String> = m.keys().collect();
                 keys.sort();
-                for key in keys {
-                    if !first {
-                        buf.push(',');
-                    }
-                    first = false;
-                    SerializedValue::Str(key.clone()).write_json(buf);
-                    buf.push(':');
-                    m[key].write_json(buf);
-                }
-                buf.push('}');
+                J::Object(keys.into_iter().map(|k| (k.clone(), m[k].to_json_value())).collect())
             }
         }
     }
@@ -258,209 +225,37 @@ impl SerializedValue {
     // ── JSON decoding ──────────────────────────────────────────────────────
 
     /// Parse a JSON string into a `SerializedValue`.
+    ///
+    /// Integers that fit in an `i64` become `Int`; every other number
+    /// becomes `Float`. Hex strings stay `Str`, since JSON cannot say they
+    /// were bytes; `Vec<u8>` fields read them back through their own
+    /// `Deserialize`.
     pub fn from_json_str(s: &str) -> Result<Self, DeserializeError> {
-        let mut parser = JsonParser::new(s.trim());
-        let v = parser.parse_value()?;
-        parser.skip_whitespace();
-        Ok(v)
+        let v: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| DeserializeError::ParseError(e.to_string()))?;
+        Ok(Self::from_json_value(v))
+    }
+
+    /// Convert from a `serde_json::Value`.
+    pub fn from_json_value(v: serde_json::Value) -> Self {
+        use serde_json::Value as J;
+        match v {
+            J::Null => SerializedValue::Null,
+            J::Bool(b) => SerializedValue::Bool(b),
+            J::Number(n) => match n.as_i64() {
+                Some(i) => SerializedValue::Int(i),
+                None => SerializedValue::Float(n.as_f64().unwrap_or(f64::NAN)),
+            },
+            J::String(s) => SerializedValue::Str(s),
+            J::Array(items) => SerializedValue::List(items.into_iter().map(Self::from_json_value).collect()),
+            J::Object(m) => SerializedValue::Map(m.into_iter().map(|(k, v)| (k, Self::from_json_value(v))).collect()),
+        }
     }
 }
 
 impl Default for SerializedValue {
     fn default() -> Self {
         SerializedValue::Null
-    }
-}
-
-// ─────────────────────────────────────────────
-//  Minimal JSON parser
-// ─────────────────────────────────────────────
-
-struct JsonParser<'a> {
-    src: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> JsonParser<'a> {
-    fn new(s: &'a str) -> Self {
-        Self { src: s.as_bytes(), pos: 0 }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.src.len() && self.src[self.pos].is_ascii_whitespace() {
-            self.pos += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.src.get(self.pos).copied()
-    }
-
-    fn consume(&mut self) -> Option<u8> {
-        if self.pos < self.src.len() {
-            let b = self.src[self.pos];
-            self.pos += 1;
-            Some(b)
-        } else {
-            None
-        }
-    }
-
-    fn expect(&mut self, b: u8) -> Result<(), DeserializeError> {
-        match self.consume() {
-            Some(got) if got == b => Ok(()),
-            Some(got) => Err(DeserializeError::ParseError(format!(
-                "expected '{}' got '{}'",
-                b as char, got as char
-            ))),
-            None => Err(DeserializeError::ParseError("unexpected EOF".into())),
-        }
-    }
-
-    fn parse_value(&mut self) -> Result<SerializedValue, DeserializeError> {
-        self.skip_whitespace();
-        match self.peek() {
-            Some(b'n') => self.parse_null(),
-            Some(b't') | Some(b'f') => self.parse_bool(),
-            Some(b'"') => self.parse_string(),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
-            Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
-            Some(c) => Err(DeserializeError::ParseError(format!("unexpected char '{}'", c as char))),
-            None => Err(DeserializeError::ParseError("unexpected EOF".into())),
-        }
-    }
-
-    fn parse_null(&mut self) -> Result<SerializedValue, DeserializeError> {
-        self.expect(b'n')?;
-        self.expect(b'u')?;
-        self.expect(b'l')?;
-        self.expect(b'l')?;
-        Ok(SerializedValue::Null)
-    }
-
-    fn parse_bool(&mut self) -> Result<SerializedValue, DeserializeError> {
-        if self.peek() == Some(b't') {
-            self.expect(b't')?; self.expect(b'r')?; self.expect(b'u')?; self.expect(b'e')?;
-            Ok(SerializedValue::Bool(true))
-        } else {
-            self.expect(b'f')?; self.expect(b'a')?; self.expect(b'l')?; self.expect(b's')?; self.expect(b'e')?;
-            Ok(SerializedValue::Bool(false))
-        }
-    }
-
-    fn parse_string(&mut self) -> Result<SerializedValue, DeserializeError> {
-        self.expect(b'"')?;
-        let mut s = String::new();
-        loop {
-            match self.consume() {
-                Some(b'"') => break,
-                Some(b'\\') => {
-                    match self.consume() {
-                        Some(b'"') => s.push('"'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'/') => s.push('/'),
-                        Some(b'n') => s.push('\n'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b't') => s.push('\t'),
-                        Some(b'u') => {
-                            // Read 4 hex digits
-                            let mut hex = String::new();
-                            for _ in 0..4 {
-                                hex.push(self.consume().unwrap_or(b'0') as char);
-                            }
-                            let code = u32::from_str_radix(&hex, 16).unwrap_or(0xFFFD);
-                            s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
-                        }
-                        Some(c) => s.push(c as char),
-                        None => return Err(DeserializeError::ParseError("unterminated string".into())),
-                    }
-                }
-                Some(c) => s.push(c as char),
-                None => return Err(DeserializeError::ParseError("unterminated string".into())),
-            }
-        }
-        Ok(SerializedValue::Str(s))
-    }
-
-    fn parse_number(&mut self) -> Result<SerializedValue, DeserializeError> {
-        let start = self.pos;
-        if self.peek() == Some(b'-') { self.pos += 1; }
-        while matches!(self.peek(), Some(b'0'..=b'9')) { self.pos += 1; }
-        let is_float = matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E'));
-        if is_float {
-            if self.peek() == Some(b'.') {
-                self.pos += 1;
-                while matches!(self.peek(), Some(b'0'..=b'9')) { self.pos += 1; }
-            }
-            if matches!(self.peek(), Some(b'e') | Some(b'E')) {
-                self.pos += 1;
-                if matches!(self.peek(), Some(b'+') | Some(b'-')) { self.pos += 1; }
-                while matches!(self.peek(), Some(b'0'..=b'9')) { self.pos += 1; }
-            }
-        }
-        let slice = std::str::from_utf8(&self.src[start..self.pos])
-            .map_err(|e| DeserializeError::ParseError(e.to_string()))?;
-        if is_float {
-            let f: f64 = slice.parse()
-                .map_err(|e: std::num::ParseFloatError| DeserializeError::ParseError(e.to_string()))?;
-            Ok(SerializedValue::Float(f))
-        } else {
-            let i: i64 = slice.parse()
-                .map_err(|e: std::num::ParseIntError| DeserializeError::ParseError(e.to_string()))?;
-            Ok(SerializedValue::Int(i))
-        }
-    }
-
-    fn parse_array(&mut self) -> Result<SerializedValue, DeserializeError> {
-        self.expect(b'[')?;
-        let mut items = Vec::new();
-        self.skip_whitespace();
-        if self.peek() == Some(b']') {
-            self.pos += 1;
-            return Ok(SerializedValue::List(items));
-        }
-        loop {
-            items.push(self.parse_value()?);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => { self.pos += 1; }
-                Some(b']') => { self.pos += 1; break; }
-                Some(c) => return Err(DeserializeError::ParseError(format!("expected ',' or ']' got '{}'", c as char))),
-                None => return Err(DeserializeError::ParseError("unterminated array".into())),
-            }
-        }
-        Ok(SerializedValue::List(items))
-    }
-
-    fn parse_object(&mut self) -> Result<SerializedValue, DeserializeError> {
-        self.expect(b'{')?;
-        let mut map = HashMap::new();
-        self.skip_whitespace();
-        if self.peek() == Some(b'}') {
-            self.pos += 1;
-            return Ok(SerializedValue::Map(map));
-        }
-        loop {
-            self.skip_whitespace();
-            let key_val = self.parse_string()?;
-            let key = match key_val {
-                SerializedValue::Str(s) => s,
-                _ => return Err(DeserializeError::ParseError("expected string key".into())),
-            };
-            self.skip_whitespace();
-            self.expect(b':')?;
-            let value = self.parse_value()?;
-            map.insert(key, value);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => { self.pos += 1; }
-                Some(b'}') => { self.pos += 1; break; }
-                Some(c) => return Err(DeserializeError::ParseError(format!("expected ',' or '}}' got '{}'", c as char))),
-                None => return Err(DeserializeError::ParseError("unterminated object".into())),
-            }
-        }
-        Ok(SerializedValue::Map(map))
     }
 }
 
@@ -884,6 +679,50 @@ mod tests {
         let json = sv.to_json_string();
         let parsed = SerializedValue::from_json_str(&json).unwrap();
         assert_eq!(parsed.as_str(), Some("say \"hello\"\nnewline"));
+    }
+
+    #[test]
+    fn json_keeps_non_ascii_text_intact() {
+        // The old byte-at-a-time parser turned every UTF-8 byte into its
+        // own char, so "Zoë" came back as "ZoÃ«".
+        let name = "Zoë, 東京, \u{1F525}";
+        let sv = SerializedValue::Str(name.into());
+        let parsed = SerializedValue::from_json_str(&sv.to_json_string()).unwrap();
+        assert_eq!(parsed.as_str(), Some(name));
+        // Escaped surrogate pairs decode to the one character they encode.
+        let parsed = SerializedValue::from_json_str(r#""🔥""#).unwrap();
+        assert_eq!(parsed.as_str(), Some("\u{1F525}"));
+    }
+
+    #[test]
+    fn json_output_is_deterministic_and_handles_odd_floats() {
+        let mut m = HashMap::new();
+        for k in ["zeta", "alpha", "mid"] {
+            m.insert(k.to_string(), SerializedValue::Float(1.0));
+        }
+        m.insert("nan".into(), SerializedValue::Float(f64::NAN));
+        m.insert("inf".into(), SerializedValue::Float(f64::NEG_INFINITY));
+        m.insert("raw".into(), SerializedValue::Bytes(vec![0, 15, 255]));
+        let json = SerializedValue::Map(m).to_json_string();
+        assert_eq!(
+            json,
+            r#"{"alpha":1.0,"inf":-1e+308,"mid":1.0,"nan":null,"raw":"000fff","zeta":1.0}"#
+        );
+        // Floats stay floats through a round trip, ints stay ints.
+        let back = SerializedValue::from_json_str(&json).unwrap();
+        assert_eq!(back.get("alpha"), Some(&SerializedValue::Float(1.0)));
+        assert_eq!(SerializedValue::from_json_str("42").unwrap(), SerializedValue::Int(42));
+        assert_eq!(SerializedValue::from_json_str("1e3").unwrap(), SerializedValue::Float(1000.0));
+    }
+
+    #[test]
+    fn json_rejects_malformed_input() {
+        for bad in ["{\"a\":1} trailing", "[1,2", "{\"a\" 1}", "\"unterminated", "nul", ""] {
+            assert!(
+                matches!(SerializedValue::from_json_str(bad), Err(DeserializeError::ParseError(_))),
+                "{bad:?} should not parse"
+            );
+        }
     }
 
     #[test]

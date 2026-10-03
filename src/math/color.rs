@@ -498,33 +498,150 @@ impl Gradient {
 
 // ── Named gradients ───────────────────────────────────────────────────────────
 
+// The scientific colour maps come from the `colorgrad` crate, which carries
+// the published control points (matplotlib's viridis family, ColorBrewer,
+// Google's turbo, cubehelix and more) and fits a smooth basis spline through
+// them. The hand-picked five or six stops these used to have drifted
+// visibly from the real maps between the stops.
+
+/// The `colorgrad` crate, re-exported so its gradients can be passed to
+/// [`Gradient::from_colorgrad`] without a version mismatch.
+pub use colorgrad;
+
+/// Every name [`preset_gradient`] accepts.
+pub const PRESET_GRADIENTS: &[&str] = &[
+    // perceptually uniform, sequential
+    "viridis", "inferno", "magma", "plasma", "cividis", "turbo",
+    // cyclic and rainbow
+    "sinebow", "rainbow", "cubehelix", "warm", "cool",
+    // ColorBrewer diverging
+    "spectral", "rd_bu", "rd_yl_bu", "rd_yl_gn", "br_bg", "pr_gn", "pi_yg", "pu_or", "rd_gy",
+    // ColorBrewer sequential
+    "blues", "greens", "greys", "oranges", "purples", "reds",
+    "bu_gn", "bu_pu", "gn_bu", "or_rd", "pu_bu_gn", "pu_bu", "pu_rd", "rd_pu",
+    "yl_gn_bu", "yl_gn", "yl_or_br", "yl_or_rd",
+];
+
+/// Stops baked from a preset. Enough that piecewise-linear sampling stays
+/// within one 8-bit step of the spline.
+const PRESET_STOPS: usize = 64;
+
+/// A named colour map, baked into a [`Gradient`] (see [`PRESET_GRADIENTS`]).
+///
+/// Names are matched case-insensitively, and `-` or spaces may stand in for
+/// `_`, so `"RdYlBu"`-style names work as `"rd-yl-bu"`.
+///
+/// ```rust
+/// use proof_engine::math::color::preset_gradient;
+/// let turbo = preset_gradient("turbo").unwrap();
+/// let lut = turbo.bake_lut(256); // ready to upload as a 1D texture
+/// assert_eq!(lut.len(), 256);
+/// assert!(preset_gradient("no such map").is_none());
+/// ```
+pub fn preset_gradient(name: &str) -> Option<Gradient> {
+    use colorgrad::preset as p;
+    let key = name.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    let n = PRESET_STOPS;
+    Some(match key.as_str() {
+        "viridis" => Gradient::from_colorgrad(&p::viridis(), n),
+        "inferno" => Gradient::from_colorgrad(&p::inferno(), n),
+        "magma" => Gradient::from_colorgrad(&p::magma(), n),
+        "plasma" => Gradient::from_colorgrad(&p::plasma(), n),
+        "cividis" => Gradient::from_colorgrad(&p::cividis(), n),
+        "turbo" => Gradient::from_colorgrad(&p::turbo(), n),
+        "sinebow" => Gradient::from_colorgrad(&p::sinebow(), n),
+        "rainbow" => Gradient::from_colorgrad(&p::rainbow(), n),
+        "cubehelix" => Gradient::from_colorgrad(&p::cubehelix_default(), n),
+        "warm" => Gradient::from_colorgrad(&p::warm(), n),
+        "cool" => Gradient::from_colorgrad(&p::cool(), n),
+        "spectral" => Gradient::from_colorgrad(&p::spectral(), n),
+        "rd_bu" => Gradient::from_colorgrad(&p::rd_bu(), n),
+        "rd_yl_bu" => Gradient::from_colorgrad(&p::rd_yl_bu(), n),
+        "rd_yl_gn" => Gradient::from_colorgrad(&p::rd_yl_gn(), n),
+        "br_bg" => Gradient::from_colorgrad(&p::br_bg(), n),
+        "pr_gn" => Gradient::from_colorgrad(&p::pr_gn(), n),
+        "pi_yg" => Gradient::from_colorgrad(&p::pi_yg(), n),
+        "pu_or" => Gradient::from_colorgrad(&p::pu_or(), n),
+        "rd_gy" => Gradient::from_colorgrad(&p::rd_gy(), n),
+        "blues" => Gradient::from_colorgrad(&p::blues(), n),
+        "greens" => Gradient::from_colorgrad(&p::greens(), n),
+        "greys" | "grays" => Gradient::from_colorgrad(&p::greys(), n),
+        "oranges" => Gradient::from_colorgrad(&p::oranges(), n),
+        "purples" => Gradient::from_colorgrad(&p::purples(), n),
+        "reds" => Gradient::from_colorgrad(&p::reds(), n),
+        "bu_gn" => Gradient::from_colorgrad(&p::bu_gn(), n),
+        "bu_pu" => Gradient::from_colorgrad(&p::bu_pu(), n),
+        "gn_bu" => Gradient::from_colorgrad(&p::gn_bu(), n),
+        "or_rd" => Gradient::from_colorgrad(&p::or_rd(), n),
+        "pu_bu_gn" => Gradient::from_colorgrad(&p::pu_bu_gn(), n),
+        "pu_bu" => Gradient::from_colorgrad(&p::pu_bu(), n),
+        "pu_rd" => Gradient::from_colorgrad(&p::pu_rd(), n),
+        "rd_pu" => Gradient::from_colorgrad(&p::rd_pu(), n),
+        "yl_gn_bu" => Gradient::from_colorgrad(&p::yl_gn_bu(), n),
+        "yl_gn" => Gradient::from_colorgrad(&p::yl_gn(), n),
+        "yl_or_br" => Gradient::from_colorgrad(&p::yl_or_br(), n),
+        "yl_or_rd" => Gradient::from_colorgrad(&p::yl_or_rd(), n),
+        _ => return None,
+    })
+}
+
+impl Gradient {
+    /// Bake any `colorgrad` gradient into `samples` evenly spaced stops,
+    /// interpolated in [`GradientMode::LinearRgb`] between them.
+    ///
+    /// Colours keep the values `colorgrad` gives, the same 0 to 1 encoding
+    /// as [`Rgba::from_hex`].
+    pub fn from_colorgrad<G: colorgrad::Gradient + ?Sized>(g: &G, samples: usize) -> Gradient {
+        let (lo, hi) = g.domain();
+        let n = samples.max(2);
+        let mut out = Gradient::new(GradientMode::LinearRgb);
+        out.stops = (0..n)
+            .map(|i| {
+                let t = i as f32 / (n - 1) as f32;
+                let c = g.at(lo + (hi - lo) * t);
+                // Basis splines can overshoot by a rounding error.
+                let c = c.clamp();
+                ColorStop { t, color: Rgba::new(c.r, c.g, c.b, c.a) }
+            })
+            .collect();
+        out
+    }
+
+    /// Parse a CSS-style gradient, as written inside `linear-gradient()`:
+    /// colour names, hex, `rgb()`, `hsl()` and so on, with optional
+    /// percentage positions.
+    ///
+    /// ```rust
+    /// use proof_engine::math::color::Gradient;
+    /// let g = Gradient::from_css("#000, deeppink 40%, gold").unwrap();
+    /// let mid = g.sample(0.4);
+    /// assert!(mid.r > 0.99 && mid.g < 0.1);
+    /// assert!(Gradient::from_css("not a colour, at all").is_err());
+    /// ```
+    pub fn from_css(css: &str) -> Result<Gradient, String> {
+        let g = colorgrad::GradientBuilder::new()
+            .css(css)
+            .build::<colorgrad::LinearGradient>()
+            .map_err(|e| format!("bad gradient {css:?}: {e}"))?;
+        // Linear in RGB between its stops, so 256 samples reproduce it to
+        // within a quarter of a percent of the width, hard stops included.
+        Ok(Gradient::from_colorgrad(&g, 256))
+    }
+}
+
+/// Matplotlib's plasma.
 pub fn gradient_plasma() -> Gradient {
-    Gradient::new(GradientMode::Oklab)
-        .add_stop(0.0, Rgba::from_hex(0x0d0887))
-        .add_stop(0.2, Rgba::from_hex(0x6a00a8))
-        .add_stop(0.4, Rgba::from_hex(0xb12a90))
-        .add_stop(0.6, Rgba::from_hex(0xe16462))
-        .add_stop(0.8, Rgba::from_hex(0xfca636))
-        .add_stop(1.0, Rgba::from_hex(0xf0f921))
+    preset_gradient("plasma").expect("built-in preset")
 }
 
+/// Matplotlib's inferno.
 pub fn gradient_inferno() -> Gradient {
-    Gradient::new(GradientMode::Oklab)
-        .add_stop(0.0, Rgba::from_hex(0x000004))
-        .add_stop(0.25, Rgba::from_hex(0x420a68))
-        .add_stop(0.5,  Rgba::from_hex(0x932667))
-        .add_stop(0.75, Rgba::from_hex(0xdd513a))
-        .add_stop(0.9,  Rgba::from_hex(0xfca50a))
-        .add_stop(1.0,  Rgba::from_hex(0xfcffa4))
+    preset_gradient("inferno").expect("built-in preset")
 }
 
+/// Matplotlib's viridis.
 pub fn gradient_viridis() -> Gradient {
-    Gradient::new(GradientMode::Oklab)
-        .add_stop(0.0,  Rgba::from_hex(0x440154))
-        .add_stop(0.25, Rgba::from_hex(0x31688e))
-        .add_stop(0.5,  Rgba::from_hex(0x35b779))
-        .add_stop(0.75, Rgba::from_hex(0x90d743))
-        .add_stop(1.0,  Rgba::from_hex(0xfde725))
+    preset_gradient("viridis").expect("built-in preset")
 }
 
 pub fn gradient_fire() -> Gradient {
@@ -787,6 +904,55 @@ pub fn shade_black(c: Rgba, factor: f32) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn close(a: Rgba, hex: u32) -> bool {
+        let b = Rgba::from_hex(hex);
+        (a.r - b.r).abs() < 0.02 && (a.g - b.g).abs() < 0.02 && (a.b - b.b).abs() < 0.02
+    }
+
+    #[test]
+    fn presets_hit_the_published_end_points() {
+        // viridis runs from #440154 to #fde725, plasma from #0d0887 to
+        // #f0f921, inferno from #000004 to #fcffa4.
+        let v = gradient_viridis();
+        assert!(close(v.sample(0.0), 0x440154) && close(v.sample(1.0), 0xfde725));
+        let p = gradient_plasma();
+        assert!(close(p.sample(0.0), 0x0d0887) && close(p.sample(1.0), 0xf0f921));
+        let i = gradient_inferno();
+        assert!(close(i.sample(0.0), 0x000004) && close(i.sample(1.0), 0xfcffa4));
+        // viridis's published midpoint is the teal #21918c. The old
+        // five-stop version gave #35b779 there, 0.15 off in green; the
+        // colorgrad fit is within 0.06 on every channel.
+        let (m, want) = (v.sample(0.5), Rgba::from_hex(0x21918c));
+        let err = (m.r - want.r).abs().max((m.g - want.g).abs()).max((m.b - want.b).abs());
+        assert!(err < 0.06, "{m:?} is {err} from #21918c");
+    }
+
+    #[test]
+    fn every_listed_preset_resolves_and_is_well_formed() {
+        for name in PRESET_GRADIENTS {
+            let g = preset_gradient(name).unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!(g.stops.len(), PRESET_STOPS);
+            for c in g.bake_lut(17) {
+                for ch in [c.r, c.g, c.b, c.a] {
+                    assert!((0.0..=1.0).contains(&ch), "{name}: {ch}");
+                }
+            }
+        }
+        assert!(preset_gradient("Rd-Yl-Bu").is_some());
+        assert!(preset_gradient("nope").is_none());
+    }
+
+    #[test]
+    fn css_gradients_parse_with_positions_and_hard_stops() {
+        let g = Gradient::from_css("red, red 50%, blue 50%, blue").unwrap();
+        assert!(close(g.sample(0.25), 0xff0000));
+        assert!(close(g.sample(0.75), 0x0000ff));
+        let g = Gradient::from_css("#000, #fff").unwrap();
+        assert!((g.sample(0.5).r - 0.5).abs() < 0.01);
+        assert!(Gradient::from_css("").is_err() || Gradient::from_css("").unwrap().stops.len() >= 2);
+        assert!(Gradient::from_css("bogus, nonsense").is_err());
+    }
 
     fn approx_eq(a: f32, b: f32) -> bool { (a - b).abs() < 0.005 }
 

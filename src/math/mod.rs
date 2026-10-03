@@ -16,6 +16,8 @@ pub mod numerical;
 pub mod geometry;
 pub mod statistics;
 pub mod simulation;
+#[cfg(feature = "rhai-scripts")]
+pub mod scripted;
 
 pub use eval::MathFunction;
 pub use fields::{ForceField, Falloff, FieldTarget};

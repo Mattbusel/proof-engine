@@ -144,6 +144,7 @@ pub mod curves;
 pub mod nishita_sky;
 pub mod volumetric_fog;
 pub mod tiled_lighting;
+pub mod export;
 mod capture;
 
 pub use config::EngineConfig;
@@ -501,65 +502,34 @@ impl ProofEngine {
         self.pipeline.as_ref().map(|p| p.render_size()).unwrap_or((1600, 1000))
     }
 
-    /// Write the frame currently on screen to an uncompressed 24-bit BMP.
+    /// The frame currently in the back buffer, as RGBA8 with the top row
+    /// first, or `None` before the window exists.
     ///
-    /// The point of this is being able to see what the engine actually drew.
-    /// Asking the window manager for a picture of a hardware-accelerated window
-    /// is unreliable — it hands back whatever it last cached, which can be a
-    /// stale frame or a blank one — so the only trustworthy answer comes from
-    /// reading the framebuffer back off the GPU.
-    ///
-    /// BMP because it needs no compression and therefore no dependency; the
-    /// row order matches OpenGL's, so no flip is needed either.
-    pub fn save_frame(&self, path: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let Some(p) = self.pipeline.as_ref() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "no pipeline to read from",
-            ));
-        };
-        let (w, h, rgba) = p.read_frame();
+    /// Read straight off the GPU after post-processing, so it is exactly
+    /// what the pipeline drew. Asking the window manager for a picture of a
+    /// hardware-accelerated window is unreliable: it hands back whatever it
+    /// last cached, which can be a stale frame or a blank one.
+    pub fn frame_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let p = self.pipeline.as_ref()?;
+        let (w, h, mut rgba) = p.read_frame();
         if w == 0 || h == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "empty framebuffer",
-            ));
+            return None;
         }
+        export::flip_rows(w, h, &mut rgba);
+        Some((w, h, rgba))
+    }
 
-        // Each BMP row is padded to a multiple of four bytes.
-        let stride = ((w as usize * 3) + 3) & !3;
-        let pixels = stride * h as usize;
-        let mut out = Vec::with_capacity(54 + pixels);
-        out.extend_from_slice(b"BM");
-        out.extend_from_slice(&((54 + pixels) as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&54u32.to_le_bytes());
-        out.extend_from_slice(&40u32.to_le_bytes());
-        out.extend_from_slice(&(w as i32).to_le_bytes());
-        out.extend_from_slice(&(h as i32).to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes());
-        out.extend_from_slice(&24u16.to_le_bytes());
-        for _ in 0..6 {
-            out.extend_from_slice(&0u32.to_le_bytes());
-        }
-
-        for y in 0..h as usize {
-            let row = y * w as usize * 4;
-            for x in 0..w as usize {
-                let i = row + x * 4;
-                // BMP stores blue first.
-                out.push(rgba[i + 2]);
-                out.push(rgba[i + 1]);
-                out.push(rgba[i]);
-            }
-            for _ in 0..(stride - w as usize * 3) {
-                out.push(0);
-            }
-        }
-
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(&out)
+    /// Write the frame currently on screen to an image file.
+    ///
+    /// The extension picks the format (`.png`, `.jpg`, `.bmp`, `.tga`,
+    /// `.gif`); an unknown extension writes a BMP, as this always did
+    /// before. The image is opaque. See [`export`] for animated GIFs and for
+    /// saving buffers of your own.
+    pub fn save_frame(&self, path: &str) -> std::io::Result<()> {
+        let (w, h, rgba) = self.frame_pixels().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "no frame to read: the window is not open")
+        })?;
+        export::save_opaque(path, w, h, &rgba)
     }
 }
 

@@ -102,6 +102,36 @@ fn main() {
 
 Linux needs the ALSA headers first (`sudo apt install libasound2-dev pkg-config`). Always build with `--release`.
 
+## More you can do without opening a window
+
+**Record a GIF of any demo.** No screen recorder needed: the engine reads its own frames back and writes the GIF itself. The window stays hidden while it works.
+
+```bash
+PROOF_HIDDEN=1 PROOF_FIXED_DT=30 PROOF_SHOT=lorenz.gif PROOF_SHOT_AT=300 \
+PROOF_SHOT_COUNT=120 PROOF_SHOT_WIDTH=480 cargo run --release --example lorenz
+```
+
+Use `.png` or `.jpg` instead for a single picture. All the settings are in [docs/CAPTURE.md](docs/CAPTURE.md).
+
+**Try your own equations without recompiling.** Write the system in a few lines of [Rhai](https://rhai.rs), a small scripting language. Here is the whole Thomas attractor:
+
+```text
+let b = 0.208186;
+[sin(y) - b * x, sin(z) - b * y, sin(x) - b * z]
+```
+
+Then draw it, and keep it redrawing every time you save the file:
+
+```bash
+cargo run --release --example scripted_attractor -- examples/scripts/thomas.rhai thomas.png --dt 0.05 --map turbo --watch
+```
+
+If you save a typo, it tells you where and keeps the last picture that worked. In your own program, `math::scripted::ScriptedSystem` does the same inside the frame loop.
+
+**Colour with real colour maps.** `math::color::preset_gradient("viridis")` gives you any of 38 standard maps (viridis, magma, turbo, cubehelix, the ColorBrewer sets), and `Gradient::from_css("#000, deeppink 40%, gold")` takes a CSS gradient.
+
+**Render sound to a file.** `audio::OfflineRenderer` runs the engine's synthesiser with no sound card and `audio::wav::write_wav` saves it. Try `cargo run --release --example audio_bounce`.
+
 ## Documentation
 
 | Doc | What is in it |
@@ -116,6 +146,10 @@ Linux needs the ALSA headers first (`sudo apt install libasound2-dev pkg-config`
 | [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) | Release history and how to send a change |
 
 [chaos-rpg](https://gitlab.com/mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine; [`CHAOS_RPG_API_CONTRACT.md`](CHAOS_RPG_API_CONTRACT.md) documents what it needs.
+
+## Built with
+
+Windowing and OpenGL come from [winit](https://crates.io/crates/winit), [glutin](https://crates.io/crates/glutin) and [glow](https://crates.io/crates/glow); maths from [glam](https://crates.io/crates/glam); text from [ab_glyph](https://crates.io/crates/ab_glyph); sound output from [cpal](https://crates.io/crates/cpal). Image files and GIFs are handled by [image](https://crates.io/crates/image), WAV files by [hound](https://crates.io/crates/hound), colour maps by [colorgrad](https://crates.io/crates/colorgrad), scripts by [rhai](https://crates.io/crates/rhai) and save files by [serde_json](https://crates.io/crates/serde_json).
 
 ## License
 

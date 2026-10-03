@@ -638,7 +638,7 @@ impl Vm {
                     let b = self.pop(); let a = self.pop();
                     let sa = a.to_str_repr().ok_or_else(|| ScriptError::runtime(format!("concat on {}", a.type_name())))?;
                     let sb = b.to_str_repr().ok_or_else(|| ScriptError::runtime(format!("concat on {}", b.type_name())))?;
-                    self.push(Value::Str(Arc::new(sa + &sb)));
+                    self.push(Value::Str(Arc::new(sa + sb.as_str())));
                 }
 
                 Instruction::BitAnd => self.bitwise(|a, b| a & b)?,

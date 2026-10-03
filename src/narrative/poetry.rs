@@ -78,7 +78,7 @@ fn generate_line(theme: &str, target_syllables: usize, rng: &mut Rng) -> String 
     let mut text = line.join(" ");
     if !text.is_empty() {
         let first = text.remove(0).to_uppercase().to_string();
-        text = first + &text;
+        text = first + text.as_str();
     }
     text
 }

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0
+
+This release swaps several pieces the engine had written by hand for well-known open-source crates, fixes the bugs that turned up along the way, and adds what those crates make easy.
+
+### Added
+- **Animated GIFs straight from the engine.** Set `PROOF_SHOT=out.gif` with `PROOF_SHOT_COUNT` above 1 and any program records one looping GIF, timed from `PROOF_FIXED_DT`. `PROOF_SHOT_WIDTH` scales captures down, so a README-sized GIF needs no other tool.
+- **Captures in any common format.** `PROOF_SHOT` and `ProofEngine::save_frame` pick PNG, JPEG, BMP, TGA or GIF from the file extension. New `export` module (`save_rgba`, `load_rgba`, `scale_to_width`, `GifRecorder`) for saving pixel buffers of your own, and `ProofEngine::frame_pixels` to get the drawn frame as RGBA.
+- **Equations in a script, reloaded live.** `math::scripted::ScriptedSystem` runs a 3D system whose equations are a short [Rhai](https://rhai.rs) script, with RK4 stepping and `reload_if_changed` for editing while it runs. A broken edit is reported and the last good version keeps running. New headless example `scripted_attractor` draws any such script to a PNG and redraws on every save; sample scripts for Lorenz, Thomas and Aizawa are in `examples/scripts`.
+- **38 named colour maps.** `math::color::preset_gradient("turbo")` and friends: viridis, magma, inferno, plasma, cividis, turbo, sinebow, cubehelix and the ColorBrewer sets. `Gradient::from_css("#000, deeppink 40%, gold")` reads CSS gradient syntax.
+- **Sound without a sound card.** `audio::OfflineRenderer` runs the real synthesiser and hands back the samples; `audio::wav` reads and writes WAV files. New headless example `audio_bounce` renders a short piece to a WAV.
+- `SerializedValue::to_json_value` and `from_json_value` for working with save data as a `serde_json::Value`.
+
+### Fixed
+- Image assets: the loader claimed PNG, JPEG, BMP and TGA but returned a 1x1 magenta square for all of them. It now decodes them (and GIF), and a file it cannot read is a load error instead of a silent placeholder.
+- Sound assets: the loader claimed WAV, OGG, MP3 and FLAC but returned a second of silence for all of them. WAV now loads for real; other formats are reported as errors.
+- Save files: text with any non-ASCII character (an accented name, CJK, emoji) came back garbled, because the JSON reader handled one byte at a time. Malformed files with trailing junk were also accepted.
+- The headless renderer's `render_to_png` wrote a TGA whatever the name. It writes the format the extension asks for, and `try_render_to_file` returns write errors.
+- `gradient_viridis`, `gradient_plasma` and `gradient_inferno` were rough five-stop approximations; they now follow the published maps.
+
+### Changed
+- Built on [image](https://crates.io/crates/image), [serde_json](https://crates.io/crates/serde_json), [hound](https://crates.io/crates/hound), [colorgrad](https://crates.io/crates/colorgrad) and [rhai](https://crates.io/crates/rhai), all MIT or Apache-2.0. About 300 lines of hand-written BMP, TGA and JSON code are gone.
+- Removed the `noise` and `rodio` dependencies, which nothing used.
+- Rhai is behind a new default feature, `rhai-scripts`. Rhai adds `Add` impls for `String`, so in a crate that links it, `String + &String` needs `.as_str()` on the right. If that breaks your build, use `default-features = false`.
+- `RawSoundLoader` no longer lists `ogg`, `mp3` or `flac`, and `RawImageLoader` adds `gif`.
+
 ## 0.2.3
 
 ### Added

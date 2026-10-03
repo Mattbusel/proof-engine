@@ -1691,24 +1691,24 @@ impl Asset for SceneAsset {}
 
 // ── RawImageLoader ───────────────────────────────────────────────────────────
 
-/// Loader for raw RGBA8 image files.
+/// Loader for image files: PNG, JPEG, BMP, TGA and GIF, plus the engine's
+/// own raw `RIMG` format.
 ///
-/// The file format is a 12-byte header:
-/// `[4 bytes "RIMG"] [4 bytes width LE u32] [4 bytes height LE u32]`
+/// Real image formats are decoded by the [`image`] crate into RGBA8, top
+/// row first. A file that cannot be decoded is a load error, not a silent
+/// placeholder, so a broken texture shows up in the asset server's state.
+///
+/// `RIMG` is a 12-byte header,
+/// `[4 bytes "RIMG"] [4 bytes width LE u32] [4 bytes height LE u32]`,
 /// followed by `width * height * 4` raw RGBA bytes.
-///
-/// This is intentionally minimal — a real engine would plug in a PNG decoder.
 pub struct RawImageLoader;
 
 impl AssetLoader<ImageAsset> for RawImageLoader {
     fn load(&self, bytes: &[u8], path: &AssetPath) -> Result<ImageAsset, String> {
-        if bytes.len() < 12 {
-            return Ok(ImageAsset::solid_color(1, 1, [255, 0, 255, 255]));
-        }
-        if &bytes[0..4] == b"RIMG" {
+        if bytes.len() >= 12 && &bytes[0..4] == b"RIMG" {
             let width = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
             let height = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-            let expected = (width * height * 4) as usize;
+            let expected = (width as usize) * (height as usize) * 4;
             if bytes.len() < 12 + expected {
                 return Err(format!("{path}: truncated RIMG data"));
             }
@@ -1720,11 +1720,13 @@ impl AssetLoader<ImageAsset> for RawImageLoader {
                 mip_levels: Vec::new(),
             });
         }
-        Ok(ImageAsset::solid_color(1, 1, [255, 0, 255, 255]))
+        let (width, height, data) = crate::export::load_rgba(bytes)
+            .map_err(|e| format!("{path}: {e}"))?;
+        Ok(ImageAsset { width, height, format: PixelFormat::Rgba8, data, mip_levels: Vec::new() })
     }
 
     fn extensions(&self) -> &[&str] {
-        &["rimg", "png", "jpg", "jpeg", "bmp", "tga"]
+        &["rimg", "png", "jpg", "jpeg", "bmp", "tga", "gif"]
     }
 }
 
@@ -1791,26 +1793,32 @@ impl AssetLoader<ScriptAsset> for PlainTextScriptLoader {
 
 // ── RawSoundLoader ───────────────────────────────────────────────────────────
 
-/// Loader for raw PCM audio files.
+/// Loader for sound files: WAV (any PCM bit depth, or 32-bit float), read
+/// by the [`hound`] crate, plus the engine's own raw `RSND` format.
 ///
-/// Header format:
-/// `[4 bytes "RSND"] [4 bytes sample_rate LE u32] [2 bytes channels LE u16]`
-/// `[2 bytes padding] [remaining bytes: little-endian f32 samples]`
+/// `RSND` is `[4 bytes "RSND"] [4 bytes sample_rate LE u32]
+/// [2 bytes channels LE u16] [2 bytes padding]` followed by little-endian
+/// f32 samples.
+///
+/// Anything else is a load error. This loader used to list ogg, mp3 and
+/// flac too and hand back a second of silence for them, which hid the
+/// problem instead of reporting it.
 pub struct RawSoundLoader;
 
 impl AssetLoader<SoundAsset> for RawSoundLoader {
     fn load(&self, bytes: &[u8], path: &AssetPath) -> Result<SoundAsset, String> {
-        if bytes.len() < 12 {
-            return Err(format!("{path}: sound file too small"));
-        }
-        if &bytes[0..4] != b"RSND" {
+        if bytes.len() >= 4 && &bytes[0..4] == b"RIFF" {
+            let clip = crate::audio::wav::read_wav(bytes).map_err(|e| format!("{path}: {e}"))?;
             return Ok(SoundAsset {
-                sample_rate: 44100,
-                channels: 1,
-                samples: vec![0.0f32; 44100],
+                sample_rate: clip.sample_rate,
+                channels: clip.channels,
+                samples: clip.samples,
                 loop_start: None,
                 loop_end: None,
             });
+        }
+        if bytes.len() < 12 || &bytes[0..4] != b"RSND" {
+            return Err(format!("{path}: not a WAV or RSND file"));
         }
         let sample_rate = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let channels = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
@@ -1826,7 +1834,7 @@ impl AssetLoader<SoundAsset> for RawSoundLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["rsnd", "wav", "ogg", "mp3", "flac"]
+        &["rsnd", "wav"]
     }
 }
 
@@ -2820,6 +2828,46 @@ mod tests {
         let handle = server.insert::<ImageAsset>("generated/green.png", img);
 
         assert_eq!(server.load_state(&handle), LoadState::Loaded);
+    }
+
+    #[test]
+    fn image_loader_decodes_real_png_and_rimg() {
+        let px: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 9, 9, 9, 128];
+        let path = std::env::temp_dir().join("proof_engine_asset_loader.png");
+        crate::export::save_rgba(&path, 2, 2, &px).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let img = RawImageLoader.load(&bytes, &AssetPath::new("tex.png")).unwrap();
+        assert_eq!((img.width, img.height), (2, 2));
+        assert_eq!(img.format, PixelFormat::Rgba8);
+        assert_eq!(img.data, px);
+
+        let mut rimg = b"RIMG".to_vec();
+        rimg.extend_from_slice(&1u32.to_le_bytes());
+        rimg.extend_from_slice(&1u32.to_le_bytes());
+        rimg.extend_from_slice(&[1, 2, 3, 4]);
+        let img = RawImageLoader.load(&rimg, &AssetPath::new("tex.rimg")).unwrap();
+        assert_eq!(img.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn image_loader_reports_garbage_as_an_error() {
+        let err = RawImageLoader.load(b"definitely not a png file", &AssetPath::new("bad.png"));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn sound_loader_reads_wav_and_refuses_unknown_formats() {
+        let samples = [0.0f32, 0.5, -0.5, 1.0];
+        let path = std::env::temp_dir().join("proof_engine_asset_loader.wav");
+        crate::audio::wav::write_wav(&path, 22050, 2, &samples).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let snd = RawSoundLoader.load(&bytes, &AssetPath::new("clip.wav")).unwrap();
+        assert_eq!((snd.sample_rate, snd.channels), (22050, 2));
+        assert_eq!(snd.frame_count(), 2);
+        for (a, b) in snd.samples.iter().zip(samples) {
+            assert!((a - b).abs() < 1e-4, "{a} vs {b}");
+        }
+        assert!(RawSoundLoader.load(b"OggS and then some bytes", &AssetPath::new("x.ogg")).is_err());
     }
 
     #[test]
