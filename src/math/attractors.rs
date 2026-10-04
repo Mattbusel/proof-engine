@@ -7,6 +7,8 @@
 //! - Normalised output bounding boxes (attractor fits ≈ unit cube)
 //! - Bifurcation parameter sweeps for each attractor family
 
+#![warn(missing_docs)]
+
 use glam::Vec3;
 
 // ── Attractor type ─────────────────────────────────────────────────────────────
@@ -14,15 +16,25 @@ use glam::Vec3;
 /// Which strange attractor to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttractorType {
+    /// Lorenz system (sigma 10, rho 28, beta 8/3).
     Lorenz,
+    /// Rossler system (a 0.2, b 0.2, c 5.7).
     Rossler,
+    /// Chen system (a 35, b 3, c 28).
     Chen,
+    /// Halvorsen system (a 1.4).
     Halvorsen,
+    /// Aizawa system (a 0.95, b 0.7, c 0.6, d 3.5, e 0.25, f 0.1).
     Aizawa,
+    /// Thomas cyclically symmetric system (b 0.208186).
     Thomas,
+    /// Dadras system (p 3, q 2.7, r 1.7, s 2, h 9).
     Dadras,
+    /// Sprott B system.
     Sprott,
+    /// Rabinovich-Fabrikant system (gamma 0.87, alpha 1.1).
     Rabinovich,
+    /// Burke-Shaw system (s 10, v 4.272).
     Burke,
 }
 
@@ -205,6 +217,38 @@ pub fn rk4_step(attractor: AttractorType, state: Vec3, dt: f32) -> Vec3 {
     state + (k1 + k2 * 2.0 + k3 * 2.0 + k4) * (dt / 6.0)
 }
 
+/// Advance every point in `points` by one RK4 step, in place.
+///
+/// This is the inner loop of the `lorenz` and `strange_attractors` demos.
+/// With the `parallel` feature it is split across CPU cores with
+/// [rayon](https://crates.io/crates/rayon); results are identical either way,
+/// because each point is independent.
+///
+/// ```
+/// use proof_engine::math::attractors::{rk4_step, rk4_step_all, AttractorType};
+/// use proof_engine::prelude::Vec3;
+/// let mut pts = vec![Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.1, 1.0, 1.0)];
+/// let one = rk4_step(AttractorType::Lorenz, pts[1], 0.01);
+/// rk4_step_all(AttractorType::Lorenz, &mut pts, 0.01);
+/// assert_eq!(pts[1], one);
+/// ```
+pub fn rk4_step_all(attractor: AttractorType, points: &mut [Vec3], dt: f32) {
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        // Below a few thousand points the thread hand-off costs more than it saves.
+        if points.len() >= 4096 {
+            points
+                .par_chunks_mut(1024)
+                .for_each(|chunk| chunk.iter_mut().for_each(|p| *p = rk4_step(attractor, *p, dt)));
+            return;
+        }
+    }
+    for p in points.iter_mut() {
+        *p = rk4_step(attractor, *p, dt);
+    }
+}
+
 /// Evolve by one step and return (new_state, displacement).
 /// Uses RK4 for accuracy.
 pub fn step(attractor: AttractorType, state: Vec3, dt: f32) -> (Vec3, Vec3) {
@@ -255,9 +299,13 @@ pub fn initial_state_warmed(attractor: AttractorType) -> Vec3 {
 /// Maintains the current state and advances it on each call to `next()`.
 #[derive(Debug, Clone)]
 pub struct AttractorSampler {
+    /// Which system is integrated.
     pub attractor: AttractorType,
+    /// Current state in the attractor's own coordinates (before scale and centre).
     pub state:     Vec3,
+    /// Integration time step per sub-step.
     pub dt:        f32,
+    /// Simulated time integrated so far.
     pub time:      f32,
     /// Scale applied to output positions (use `normalization_scale()` for unit cube).
     pub scale:     f32,
@@ -268,6 +316,8 @@ pub struct AttractorSampler {
 }
 
 impl AttractorSampler {
+    /// A sampler starting on the attractor (after 5,000 warm-up steps) with
+    /// its recommended time step and unit-cube scale.
     pub fn new(attractor: AttractorType) -> Self {
         let state = initial_state_warmed(attractor);
         Self {
@@ -443,11 +493,17 @@ pub fn kaplan_yorke_dimension(spectrum: [f32; 3]) -> f32 {
 /// Statistical metadata about an attractor's trajectory.
 #[derive(Debug, Clone)]
 pub struct AttractorStats {
+    /// Which system was sampled.
     pub attractor:    AttractorType,
+    /// Smallest x, y and z seen on the trajectory.
     pub bbox_min:     Vec3,
+    /// Largest x, y and z seen on the trajectory.
     pub bbox_max:     Vec3,
+    /// Mean position of the samples.
     pub centroid:     Vec3,
+    /// Per-axis variance of the samples.
     pub variance:     Vec3,
+    /// Number of points sampled.
     pub sample_count: usize,
     /// Estimated largest Lyapunov exponent from the trajectory.
     pub lyapunov_max: f32,
@@ -623,7 +679,9 @@ impl AttractorPool {
         }
     }
 
+    /// Number of samplers.
     pub fn len(&self) -> usize { self.samplers.len() }
+    /// True if there are no samplers.
     pub fn is_empty(&self) -> bool { self.samplers.is_empty() }
 }
 
@@ -724,10 +782,15 @@ pub fn velocity_color(velocity: Vec3, palette: AttractorPalette) -> glam::Vec4 {
 /// Colour palette for attractor visualisation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttractorPalette {
+    /// Purple through blue and green to yellow as speed rises.
     Plasma,
+    /// Black through red to yellow.
     Fire,
+    /// Dark to bright cyan-blue.
     Ice,
+    /// Red at low speed, green in the middle, blue at high speed.
     Neon,
+    /// Black to white.
     Greyscale,
 }
 
@@ -744,6 +807,28 @@ mod initial_state_tests {
             let s = initial_state_warmed(a);
             assert!(s.is_finite(), "{} diverged: {s:?}", a.name());
             assert!(s.length() > 0.05, "{} collapsed to the origin: {s:?}", a.name());
+        }
+    }
+}
+
+#[cfg(test)]
+mod step_all_tests {
+    use super::*;
+
+    #[test]
+    fn rk4_step_all_matches_single_steps() {
+        // 10,000 points: above the threshold where the parallel path is used.
+        let start: Vec<Vec3> = (0..10_000).map(|i| Vec3::new(1.0 + i as f32 * 1e-3, 1.0, 1.0)).collect();
+        let mut all = start.clone();
+        for _ in 0..5 {
+            rk4_step_all(AttractorType::Lorenz, &mut all, 0.005);
+        }
+        for (i, p0) in start.iter().enumerate() {
+            let mut p = *p0;
+            for _ in 0..5 {
+                p = rk4_step(AttractorType::Lorenz, p, 0.005);
+            }
+            assert_eq!(all[i], p, "point {i}");
         }
     }
 }

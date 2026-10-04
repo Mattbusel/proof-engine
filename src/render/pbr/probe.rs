@@ -703,7 +703,7 @@ pub fn ssr_ray(pos_vs: Vec3, normal_vs: Vec3, roughness: f32, jitter: f32) -> Ra
 /// Compute the SSR fade factor — attenuates hits near screen edges and for
 /// high roughness.
 ///
-/// `screen_uv` — screen UV of the hit point [0,1]²
+/// `screen_uv` — screen UV of the hit point \[0,1\]²
 /// `hit_dist`  — distance travelled by the SSR ray
 /// `roughness` — material roughness
 pub fn ssr_fade(screen_uv: Vec2, hit_dist: f32, roughness: f32) -> f32 {

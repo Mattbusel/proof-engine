@@ -1,7 +1,7 @@
 //! Tessellate mathematical curves into polylines for rendering.
 //!
 //! Each curve type has its own evaluation function. The tessellator
-//! samples the curve at N points and returns a Vec<Vec2> polyline.
+//! samples the curve at N points and returns a Vec`<Vec2>` polyline.
 
 use glam::Vec2;
 use super::entity_curves::{EntityCurve, CurveType};

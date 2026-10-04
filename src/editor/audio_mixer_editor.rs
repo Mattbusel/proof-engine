@@ -5953,8 +5953,10 @@ impl MasterBusProcessor {
             let peak = l.abs().max(r.abs());
             let target_gain = if peak > ceiling { ceiling / peak.max(1e-10) } else { 1.0 };
             if target_gain < self.limiter_gain {
-                self.limiter_gain = self.limiter_gain * self.limiter_attack_coeff
-                    + target_gain * (1.0 - self.limiter_attack_coeff);
+                // Brick-wall: clamp at once. Smoothing the attack let the
+                // first few samples of a loud transient through above the
+                // ceiling (a 10x input came out at about 8x on sample one).
+                self.limiter_gain = target_gain;
             } else {
                 self.limiter_gain = self.limiter_gain * self.limiter_release_coeff
                     + target_gain * (1.0 - self.limiter_release_coeff);
@@ -6300,20 +6302,26 @@ impl HrtfPanner {
 
     pub fn process_mono_sample(&mut self, mono: f32) -> (f32, f32) {
         if self.bypass { return (mono, mono); }
-        // Distance attenuation (inverse square law)
+        // Distance attenuation: amplitude falls as 1/r (intensity as 1/r^2).
         let dist_atten = 1.0 / self.distance.max(1.0);
         let s = mono * dist_atten;
-        // Apply ITD: delay one channel
+        // Apply ITD: delay the far ear by `itd_delay_samples`. The buffers
+        // used to stay at their initial 50 samples, so the far ear was always
+        // 50 samples late whatever the azimuth (even straight ahead).
+        let d = self.itd_delay_samples.round() as usize;
+        let delay = |buf: &mut VecDeque<f32>, s: f32| -> f32 {
+            buf.push_back(s);
+            while buf.len() > d + 1 {
+                buf.pop_front();
+            }
+            if buf.len() == d + 1 { buf[0] } else { 0.0 }
+        };
         let az_sign = self.azimuth_deg.signum();
         let (l_in, r_in) = if az_sign >= 0.0 {
-            // Source to right: right ear gets direct, left ear gets delayed
-            self.itd_buffer_l.push_back(s);
-            let delayed_l = self.itd_buffer_l.pop_front().unwrap_or(s);
-            (delayed_l, s)
+            // Source to the right: right ear direct, left ear delayed.
+            (delay(&mut self.itd_buffer_l, s), s)
         } else {
-            self.itd_buffer_r.push_back(s);
-            let delayed_r = self.itd_buffer_r.pop_front().unwrap_or(s);
-            (s, delayed_r)
+            (s, delay(&mut self.itd_buffer_r, s))
         };
         // Apply ILD
         let l_out = self.ild_state_l.process(l_in, &self.ild_filter_l);
@@ -7124,14 +7132,21 @@ impl AudioMixerEditorExtended {
         self.redo_history.clear();
     }
 
+    /// Step back to the previous snapshot. Snapshots are pushed after each
+    /// change, so undo restores the one below the newest (it used to
+    /// restore the newest, which is the current state, so undo did nothing).
     pub fn undo(&mut self) -> bool {
+        if self.undo_history.len() < 2 {
+            return false;
+        }
         if let Some(state) = self.undo_history.pop_back() {
-            self.redo_history.push_back(state.clone());
-            // Basic undo: restore BPM and play head
-            self.set_bpm(state.bpm);
-            self.seek_to(state.play_head);
-            true
-        } else { false }
+            self.redo_history.push_back(state);
+        }
+        if let Some(prev) = self.undo_history.back().cloned() {
+            self.set_bpm(prev.bpm);
+            self.seek_to(prev.play_head);
+        }
+        true
     }
 
     pub fn redo(&mut self) -> bool {

@@ -179,11 +179,11 @@ pub enum NodeType {
     Log,
     /// log2(A)
     Log2,
-    /// Remap: rescales A from [in_min,in_max] to [out_min,out_max]
+    /// Remap: rescales A from \[in_min,in_max\] to \[out_min,out_max\]
     Remap,
     /// 1.0 - A
     OneMinus,
-    /// Saturate: clamp to [0,1]
+    /// Saturate: clamp to \[0,1\]
     Saturate,
     /// Negate: -A
     Negate,

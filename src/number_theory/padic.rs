@@ -3,7 +3,7 @@
 use glam::{Vec2, Vec3, Vec4};
 
 /// A p-adic number represented by its prime, digit expansion, and valuation.
-/// The value is: sum_{i=0}^{n-1} digits[i] * p^(valuation + i).
+/// The value is: sum_{i=0}^{n-1} digits\[i\] * p^(valuation + i).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PAdic {
     pub prime: u64,

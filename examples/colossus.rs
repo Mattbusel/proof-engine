@@ -16,11 +16,12 @@
 //!
 //! Run: cargo run --release --example colossus
 
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop, clippy::ptr_arg, unused_assignments)]
 use proof_engine::prelude::*;
 use proof_engine::particle::gpu_density::{GpuDensityEntityData, GpuBone, MAX_BONES};
 use proof_engine::particle::EmitterPreset;
 use proof_engine::audio::MusicVibe;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 // ── Particle budget ────────────────────────────────────────────────────────
 const TOTAL_PARTICLES: u32 = 500_000_000;
@@ -274,7 +275,7 @@ fn main() {
         }
 
         // Continuous fire emitters at hands
-        if (time * 6.0) as u32 % 2 == 0 {
+        if ((time * 6.0) as u32).is_multiple_of(2) {
             engine.emit_particles(EmitterPreset::FireBurst { intensity: 2.0 },                                    Vec3::new(-0.60 * 2.6, -0.22 * 2.6, 0.3));
             engine.emit_particles(EmitterPreset::EntropyCascade,                                                   Vec3::new( 0.62 * 2.6, -0.22 * 2.6, 0.3));
             engine.emit_particles(EmitterPreset::GravitationalCollapse { color: Vec4::new(0.2, 0.6, 1.0, 1.0), attractor: AttractorType::Lorenz }, Vec3::new(0.0, -1.15 * 2.6, 0.0));

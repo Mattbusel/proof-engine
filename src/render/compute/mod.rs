@@ -826,7 +826,11 @@ mod tests {
 
     #[test]
     fn test_gpu_particle_size() {
-        assert_eq!(GpuParticle::SIZE, 48, "Particle must be exactly 48 bytes for std430");
+        // The GLSL `Particle` (three vec4 plus two float and two uint) is 64
+        // bytes in std430, and so is this struct; 48 was a stale number.
+        assert_eq!(GpuParticle::SIZE, 64, "Particle must match the 64-byte std430 struct");
+        assert_eq!(std::mem::offset_of!(GpuParticle, size), 48);
+        assert_eq!(std::mem::offset_of!(GpuParticle, attractor), 60);
     }
 
     #[test]

@@ -138,7 +138,7 @@ pub struct SubEmitterRef {
 
 // ─── Curves and gradients ────────────────────────────────────────────────────
 
-/// A float keyframe curve for particle properties over normalized lifetime [0,1].
+/// A float keyframe curve for particle properties over normalized lifetime \[0,1\].
 #[derive(Clone, Debug)]
 pub struct FloatCurve {
     keys: Vec<(f32, f32)>, // (time, value), sorted by time
@@ -173,7 +173,7 @@ impl FloatCurve {
     }
 }
 
-/// A color gradient over normalized lifetime [0,1].
+/// A color gradient over normalized lifetime \[0,1\].
 #[derive(Clone, Debug)]
 pub struct ColorGradient {
     keys: Vec<(f32, Vec4)>,

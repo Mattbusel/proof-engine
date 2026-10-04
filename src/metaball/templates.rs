@@ -144,8 +144,9 @@ impl EntityTemplate {
                 .with_breath(0.025, i as f32 * 0.5));
         }
 
-        // Body mass (20+ sources)
-        let angles = 16;
+        // Body mass: 20 sources, as documented (the loop made only 16, so
+        // the boss had 29 sources instead of the intended 30+).
+        let angles = 20;
         for i in 0..angles {
             let theta = i as f32 / angles as f32 * std::f32::consts::TAU;
             let r = 1.5 + (i % 3) as f32 * 0.3;

@@ -1,9 +1,11 @@
 //! Networking module: HTTP client, WebSocket client, connection management.
 //!
-//! Provides async-compatible networking primitives for leaderboards,
-//! replay sharing, analytics, and live updates. Designed to work with
-//! Rust's standard library plus minimal dependencies — uses non-blocking
-//! TCP sockets under the hood with a simple state-machine event loop.
+//! Networking primitives for leaderboards, replay sharing, analytics and
+//! live updates. Real network I/O needs cargo features: `http` (ureq) for
+//! [`http`], [`leaderboard`] and [`analytics`], `websocket` (tungstenite) for
+//! [`websocket`], or `net` for both. Without them the clients report an error
+//! instead of talking to the network. Requests and connections run on
+//! background threads; nothing blocks the frame.
 //!
 //! ## Modules
 //! - `http`      — HTTP/HTTPS request/response with retry, caching, rate limiting

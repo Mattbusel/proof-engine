@@ -2,7 +2,7 @@
 //!
 //! The engine can already build a skeleton, sample a clip into a [`Pose`], mask
 //! it, blend it and solve IK onto it. What it could not do was move anything
-//! made of particles with the result: [`SkinningMatrices`] is built for GPU
+//! made of particles with the result: \[`SkinningMatrices`\] is built for GPU
 //! vertex skinning, and a body made of a hundred thousand loose points with a
 //! spring each is not a vertex buffer.
 //!

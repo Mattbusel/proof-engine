@@ -14,7 +14,7 @@
 
 use proof_engine::prelude::*;
 use proof_engine::particle::gpu_density::*;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 const MAX_SCULPT_BONES: usize = 16;
 const PREVIEW_PARTICLES: u32 = 5_000_000;
@@ -85,8 +85,6 @@ impl SculptBone {
 struct SculptorState {
     bones: Vec<SculptBone>,
     selected: Option<usize>,
-    /// Which endpoint is being dragged: 0=start, 1=end, 2=move whole bone
-    dragging: Option<(usize, u8)>,
     symmetry: bool,
     show_preview: bool,
     preview_particles: u32,
@@ -103,7 +101,6 @@ impl SculptorState {
         Self {
             bones: Vec::new(),
             selected: None,
-            dragging: None,
             symmetry: true,
             show_preview: true,
             preview_particles: PREVIEW_PARTICLES,
@@ -156,7 +153,7 @@ impl SculptorState {
 
     fn to_toml(&self) -> String {
         let mut s = String::new();
-        s.push_str(&format!("# Density Sculptor export\n"));
+        s.push_str("# Density Sculptor export\n");
         s.push_str(&format!("scale = {:.2}\n", self.entity_scale));
         s.push_str(&format!("density_falloff = {:.2}\n", self.density_falloff));
         s.push_str(&format!("base_color = [{:.2}, {:.2}, {:.2}, {:.2}]\n\n",
@@ -164,7 +161,7 @@ impl SculptorState {
 
         for bone in &self.bones {
             let c = &PALETTE[bone.color_idx];
-            s.push_str(&format!("[[bone]]\n"));
+            s.push_str("[[bone]]\n");
             s.push_str(&format!("name = \"{}\"\n", bone.name));
             s.push_str(&format!("start = [{:.3}, {:.3}]\n", bone.start.x, bone.start.y));
             s.push_str(&format!("end = [{:.3}, {:.3}]\n", bone.end.x, bone.end.y));
@@ -271,7 +268,7 @@ fn main() {
         let scroll = engine.input.scroll_delta;
         if scroll.abs() > 0.001 {
             if let Some(idx) = state.selected {
-                state.bones[idx].radius = (state.bones[idx].radius + scroll * 0.005).max(0.01).min(0.5);
+                state.bones[idx].radius = (state.bones[idx].radius + scroll * 0.005).clamp(0.01, 0.5);
             }
         }
 

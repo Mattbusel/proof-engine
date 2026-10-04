@@ -235,7 +235,7 @@ impl TradeRoute {
         }
     }
 
-    /// Apply a disruption event (bandits, war, weather). Value in [0,1].
+    /// Apply a disruption event (bandits, war, weather). Value in \[0,1\].
     pub fn apply_disruption(&mut self, severity: f64) {
         let mitigation = if self.escorted { 0.5 } else { 0.0 };
         let infra_mitigation = (self.infrastructure / 200.0).min(0.3);

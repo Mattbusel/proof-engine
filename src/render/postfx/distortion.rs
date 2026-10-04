@@ -231,11 +231,16 @@ mod tests {
     fn gravity_lens_creates_offsets() {
         let mut map = DistortionMap::new(64, 64);
         map.add_gravity_lens(Vec2::new(0.5, 0.5), 0.05, 0.3);
-        // Near the center the offset should be near zero (distance = 0)
-        // At the edge it should be non-zero
-        let edge = map.get(0, 0);
-        let near_center = map.get(32, 32);
-        assert!(edge.length() > near_center.length());
+        // The lens pulls toward its centre inside radius 0.3 and does nothing
+        // outside it. The old test sampled the image corner (distance 0.71,
+        // outside the radius, so zero) and expected it to beat the centre.
+        let inside = map.get(38, 32); // uv (0.594, 0.5): 0.094 from the centre
+        let centre = map.get(32, 32);
+        let outside = map.get(0, 0);
+        assert!(inside.length() > 0.0);
+        assert!(inside.x < 0.0, "pull points back toward the centre");
+        assert_eq!(centre, Vec2::ZERO);
+        assert_eq!(outside, Vec2::ZERO);
     }
 
     #[test]

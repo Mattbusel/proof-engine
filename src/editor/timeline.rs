@@ -12,7 +12,7 @@
 //! - **BoneRotation**: quaternion rotation for a named bone.
 //! - **BoneTranslation**: Vec3 translation for a named bone.
 //! - **BoneScale**: Vec3 scale for a named bone.
-//! - **SdfMorph**: blend factor [0,1] between two SDF graphs by name.
+//! - **SdfMorph**: blend factor \[0,1\] between two SDF graphs by name.
 //! - **KitFloat**: any f32 kit parameter (bloom, AO strength, etc.).
 //! - **KitVec3**: any Vec3 kit parameter (light direction, etc.).
 //! - **KitColor**: RGBA colour parameter.

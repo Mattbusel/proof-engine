@@ -291,7 +291,7 @@ impl Default for MaterialParams {
 }
 
 impl MaterialParams {
-    /// Lerp between two parameter sets by weight t ∈ [0,1].
+    /// Lerp between two parameter sets by weight t ∈ \[0,1\].
     pub fn lerp(&self, other: &Self, t: f32) -> Self {
         let s = 1.0 - t;
         Self {

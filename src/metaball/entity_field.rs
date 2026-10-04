@@ -321,9 +321,13 @@ impl MetaballEntity {
         ) / (2.0 * eps)
     }
 
-    /// Normal at a point on the isosurface (normalized gradient, pointing outward).
+    /// Normal at a point on the isosurface, pointing outward.
+    ///
+    /// The field is largest at the sources and falls off with distance, so
+    /// its gradient points inward; the outward normal is the negated
+    /// gradient (this returned the gradient itself, pointing inward).
     pub fn normal_at(&self, point: Vec3) -> Vec3 {
-        self.gradient(point).normalize_or_zero()
+        (-self.gradient(point)).normalize_or_zero()
     }
 
     /// Set HP ratio. Marks dirty.
@@ -448,9 +452,13 @@ mod tests {
     #[test]
     fn gradient_points_away_from_sources() {
         let e = basic_entity();
-        let grad = e.gradient(Vec3::new(1.5, 0.0, 0.0));
-        // Gradient should point away from center (positive x direction)
-        assert!(grad.x > 0.0 || grad.length() < 0.01, "grad.x={}", grad.x);
+        let p = Vec3::new(1.5, 0.0, 0.0);
+        let grad = e.gradient(p);
+        // The field falls off away from the sources, so its gradient points
+        // back toward them (negative x here); the old test expected the
+        // opposite. The outward surface normal is the negated gradient.
+        assert!(grad.x < 0.0, "grad.x={}", grad.x);
+        assert!(e.normal_at(p).x > 0.0);
     }
 
     #[test]

@@ -137,7 +137,13 @@ pub fn generate(heightmap: &Grid2D, precipitation: &Grid2D, sea_level: f32) -> R
     for y in 0..h {
         for x in 0..w {
             let flow = flow_grid.get(x, y);
-            if flow > threshold && heightmap.get(x, y) > sea_level {
+            // `>=`: the threshold is the 98th-percentile flow itself, so
+            // with `>` the cells at that value were dropped, and on terrain
+            // where the top flows tie (a uniform slope) no river was found.
+            // A river cell must also collect water from upstream (more than
+            // its own rainfall), so flat ground does not count.
+            let upstream = flow - precipitation.get(x, y);
+            if flow >= threshold && upstream > 1e-6 && heightmap.get(x, y) > sea_level {
                 let (dx, dy) = flow_dir[y * w + x];
                 segments.push(RiverSegment {
                     x,
@@ -192,8 +198,9 @@ mod tests {
         let hm = Grid2D::filled(16, 16, 0.5);
         let precip = Grid2D::filled(16, 16, 0.5);
         let rn = generate(&hm, &precip, 0.4);
-        // Flat terrain may not generate rivers (no gradient)
-        // This is acceptable behavior
+        // Flat terrain has no downhill direction, so no cell collects
+        // upstream water and there are no rivers.
         assert!(rn.threshold > 0.0);
+        assert!(rn.segments.is_empty());
     }
 }

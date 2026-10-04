@@ -42,7 +42,7 @@ pub enum Attenuation {
     InverseSquare,
     /// Windowed inverse square (smoothly cuts off at max_range): UE4 style.
     WindowedInverseSquare { range: f32 },
-    /// Custom MathFunction falloff evaluated at normalized distance [0,1].
+    /// Custom MathFunction falloff evaluated at normalized distance \[0,1\].
     Math(MathFunction),
     /// Polynomial: constant + linear*d + quadratic*d^2.
     Polynomial { constant: f32, linear: f32, quadratic: f32 },
@@ -920,11 +920,11 @@ pub struct PbrMaterial {
     pub albedo:           Vec3,
     /// Alpha channel (0 = fully transparent, 1 = opaque).
     pub alpha:            f32,
-    /// Metallic factor [0,1]: 0 = dielectric, 1 = conductor.
+    /// Metallic factor \[0,1\]: 0 = dielectric, 1 = conductor.
     pub metallic:         f32,
-    /// Roughness factor [0,1]: 0 = mirror, 1 = fully diffuse.
+    /// Roughness factor \[0,1\]: 0 = mirror, 1 = fully diffuse.
     pub roughness:        f32,
-    /// Ambient occlusion factor [0,1].
+    /// Ambient occlusion factor \[0,1\].
     pub ao:               f32,
     /// Emissive color (added on top of lighting).
     pub emissive:         Vec3,
@@ -934,9 +934,9 @@ pub struct PbrMaterial {
     pub anisotropy:       f32,
     /// Anisotropy tangent direction.
     pub anisotropy_dir:   Vec3,
-    /// Clear-coat layer intensity [0,1].
+    /// Clear-coat layer intensity \[0,1\].
     pub clearcoat:        f32,
-    /// Clear-coat roughness [0,1].
+    /// Clear-coat roughness \[0,1\].
     pub clearcoat_rough:  f32,
     /// Subsurface scattering color.
     pub sss_color:        Vec3,
@@ -1293,7 +1293,7 @@ pub enum LightAnimation {
     Strobe { frequency: f32 },
     /// Fade from start to end over duration seconds.
     Fade { start: f32, end: f32, duration: f32 },
-    /// Driven by a MathFunction: maps f(t) → [0,1] → intensity.
+    /// Driven by a MathFunction: maps f(t) → \[0,1\] → intensity.
     Math { func: MathFunction, base_intensity: f32, amplitude: f32 },
     /// Color-shifting animation: cycles through hue over time.
     ColorCycle { speed: f32, saturation: f32, value: f32 },
@@ -1461,7 +1461,7 @@ pub struct IesProfile {
     pub vertical_angles:  Vec<f32>,
     /// Horizontal angles in degrees [0°, 360°].
     pub horizontal_angles: Vec<f32>,
-    /// Candela data: [horizontal][vertical] indexing.
+    /// Candela data: \[horizontal\]\[vertical\] indexing.
     pub candela:          Vec<Vec<f32>>,
     /// Maximum candela value for normalization.
     pub max_candela:      f32,
@@ -1685,7 +1685,7 @@ pub struct IblEnvironment {
     pub name:            String,
     /// 9 SH coefficients for diffuse irradiance (precomputed from env map).
     pub irradiance_sh:   [Vec3; 9],
-    /// Prefiltered specular mip levels: each entry is (roughness, [6*W*H] data).
+    /// Prefiltered specular mip levels: each entry is (roughness, \[6*W*H\] data).
     pub specular_mips:   Vec<(f32, Vec<Vec3>)>,
     pub mip_width:       u32,
     pub mip_height:      u32,

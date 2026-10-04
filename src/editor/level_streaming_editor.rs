@@ -6567,7 +6567,11 @@ impl TerrainPatch {
     }
 
     pub fn update_lod(&mut self, camera_pos: Vec3) {
-        let center = self.world_position() + Vec3::splat(self.patch_size * 0.5);
+        // Centre of the patch on the ground plane. Using splat() also lifted
+        // the centre by half the patch size in y, so a camera standing in the
+        // middle of a 256 m patch was measured as 128 m away.
+        let half = self.patch_size * 0.5;
+        let center = self.world_position() + Vec3::new(half, 0.0, half);
         let dist = (camera_pos - center).length();
         let desired = self.desired_lod_for_distance(dist);
         if desired != self.current_lod {

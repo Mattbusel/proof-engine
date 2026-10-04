@@ -871,17 +871,19 @@ mod tests {
     #[test]
     fn test_aabb_ray_intersection() {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(2.0));
-        let origin = Vec3::new(1.0, 1.0, -5.0);
-        let dir = Vec3::new(0.0, 0.0, 1.0);
-        let inv_dir = Vec3::new(f32::INFINITY, f32::INFINITY, 1.0);
-        // Use safe inv_dir
-        let inv_dir = Vec3::new(1.0 / 1e-8, 1.0 / 1e-8, 1.0);
-        let hit = aabb.intersect_ray(origin, Vec3::new(0.0, 0.0, 1.0).recip());
-        // direction is (0,0,1), recip may be inf, that's fine for the algorithm
-        // Just test with non-degenerate ray
-        let origin2 = Vec3::new(1.0, 1.0, -2.0);
-        let hit2 = aabb.intersect_ray(origin2, Vec3::new(1.0, 1.0, 1.0).recip());
-        assert!(hit2.is_some());
+        // Axis-aligned ray through the middle: enters at z = 0 (t = 5) and
+        // leaves at z = 2 (t = 7). Infinite reciprocals are fine here.
+        let hit = aabb.intersect_ray(Vec3::new(1.0, 1.0, -5.0), Vec3::new(0.0, 0.0, 1.0).recip());
+        let (t0, t1) = hit.expect("axis ray hits");
+        assert!((t0 - 5.0).abs() < 1e-5 && (t1 - 7.0).abs() < 1e-5);
+        // Diagonal through the box corner to corner: t from 1 to 3.
+        let (t0, t1) = aabb
+            .intersect_ray(Vec3::splat(-1.0), Vec3::splat(1.0).recip())
+            .expect("diagonal ray hits");
+        assert!((t0 - 1.0).abs() < 1e-5 && (t1 - 3.0).abs() < 1e-5);
+        // The old test's ray, from (1, 1, -2) along (1, 1, 1), is already at
+        // x = 3 when it reaches z = 0, so it really misses the box.
+        assert!(aabb.intersect_ray(Vec3::new(1.0, 1.0, -2.0), Vec3::splat(1.0).recip()).is_none());
     }
 
     #[test]

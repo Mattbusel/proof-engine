@@ -20,7 +20,7 @@ pub enum Expr {
     Vararg,
     /// identifier reference
     Ident(String),
-    /// table access: expr[expr]
+    /// table access: expr\[expr\]
     Index { table: Box<Expr>, key: Box<Expr> },
     /// field access: expr.name
     Field { table: Box<Expr>, name: String },
@@ -32,7 +32,7 @@ pub enum Expr {
     Unary { op: UnOp, expr: Box<Expr> },
     /// binary op: lhs op rhs
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    /// table constructor: { [k]=v, ... }
+    /// table constructor: { \[k\]=v, ... }
     TableCtor(Vec<TableField>),
     /// anonymous function: function(params) body end
     FuncExpr { params: Vec<String>, vararg: bool, body: Vec<Stmt> },
@@ -42,7 +42,7 @@ pub enum Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableField {
-    /// [expr] = expr
+    /// \[expr\] = expr
     ExprKey(Expr, Expr),
     /// name = expr
     NameKey(String, Expr),

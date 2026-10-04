@@ -7978,7 +7978,7 @@ pub fn smoothstep(t: f32) -> f32 { let c = t.clamp(0.0, 1.0); c * c * (3.0 - 2.0
 /// Inverse lerp: find t such that lerp(a, b, t) == v
 pub fn inv_lerp(a: f32, b: f32, v: f32) -> f32 { if (b - a).abs() < 1e-9 { 0.0 } else { ((v - a) / (b - a)).clamp(0.0, 1.0) } }
 
-/// Remap value from [a,b] range to [c,d] range
+/// Remap value from \[a,b\] range to \[c,d\] range
 pub fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 { lerp_f32(c, d, inv_lerp(a, b, v)) }
 
 /// Exponential decay: value decays toward target with rate per second

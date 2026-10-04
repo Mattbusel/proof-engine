@@ -273,7 +273,15 @@ mod tests {
     fn test_grav_time_renderer() {
         let field = GravTimeDilationField::new(10, 10, Vec2::ZERO, 1e30, C, G, 1000.0);
         let renderer = GravTimeRenderer::new(field);
-        let rate = renderer.tick_rate_at(Vec2::new(1000.0, 0.0));
+        // 1e30 kg has a Schwarzschild radius of about 1485 m, so the old
+        // sample point at 1000 m was inside the horizon (rate 0). Sample
+        // outside it, where the rate is sqrt(1 - rs/r).
+        let rs = renderer.field.schwarzschild_radius();
+        assert!((rs - 1485.0).abs() < 5.0, "rs = {rs}");
+        let rate = renderer.tick_rate_at(Vec2::new(5000.0, 0.0));
+        let expected = (1.0 - rs / 5000.0).sqrt() as f32;
         assert!(rate > 0.0 && rate <= 1.0);
+        assert!((rate - expected).abs() < 1e-4, "rate {rate}, expected {expected}");
+        assert_eq!(renderer.tick_rate_at(Vec2::new(1000.0, 0.0)), 0.0);
     }
 }

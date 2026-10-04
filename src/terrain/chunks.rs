@@ -286,7 +286,7 @@ pub struct ChunkGenConfig {
     pub cells_per_chunk:  usize,
     /// World units per chunk.
     pub chunk_size:       f32,
-    /// World height scale (multiplier applied to [0,1] heights).
+    /// World height scale (multiplier applied to \[0,1\] heights).
     pub height_scale:     f32,
     /// Diamond-square roughness.
     pub roughness:        f32,

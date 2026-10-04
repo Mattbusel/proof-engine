@@ -377,7 +377,7 @@ impl BurningShip {
 /// Newton's method fractal for a polynomial p(z)/p'(z).
 /// Converges to roots; color by which root was reached.
 pub struct NewtonFractal {
-    /// Coefficients of p(z) = coeff[0] + coeff[1]*z + ... + coeff[n]*z^n.
+    /// Coefficients of p(z) = coeff\[0\] + coeff\[1\]*z + ... + coeff\[n\]*z^n.
     pub coeffs:   Vec<Complex>,
     pub max_iter: u32,
     pub tol:      f64,
@@ -482,7 +482,7 @@ impl LyapunovFractal {
         Self { sequence, warmup: 200, iterations: 1000 }
     }
 
-    /// Sample the Lyapunov exponent at (a, b) in [0,4]×[0,4].
+    /// Sample the Lyapunov exponent at (a, b) in \[0,4\]×\[0,4\].
     /// Returns the exponent (negative = stable, positive = chaotic).
     pub fn sample(&self, a: f64, b: f64) -> f64 {
         if self.sequence.is_empty() { return 0.0; }
@@ -529,7 +529,7 @@ pub enum FractalPalette {
 }
 
 impl FractalPalette {
-    /// Convert an EscapeResult to RGBA in [0,1].
+    /// Convert an EscapeResult to RGBA in \[0,1\].
     pub fn color(&self, result: &EscapeResult, max_iter: u32) -> Vec4 {
         if !result.escaped {
             return Vec4::ZERO; // inside = black

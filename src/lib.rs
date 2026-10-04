@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_variables, unused_imports, unused_mut, unused_parens, non_snake_case, unreachable_patterns, unused_assignments, unused_labels, unused_doc_comments, private_interfaces, clippy::all)]
+#![allow(dead_code, unused_variables, unused_imports, unused_mut, unused_parens, non_snake_case, unreachable_patterns, unused_assignments, unused_labels, unused_doc_comments, private_interfaces, non_camel_case_types, non_upper_case_globals, clippy::all)]
 
 //! # Proof Engine
 //!
@@ -103,6 +103,7 @@ pub mod ecs;
 pub mod editor;
 pub mod asset;
 pub mod save;
+/// Character stats, inventory, skills and quests.
 pub mod character;
 pub mod dsp;
 pub mod game;
@@ -112,9 +113,11 @@ pub mod netcode;
 pub mod network;
 pub mod world;
 pub mod crafting;
+/// Navigation meshes, A* search and steering.
 pub mod pathfinding;
 pub mod economy;
 pub mod behavior;
+/// Atmosphere, precipitation and climate simulation.
 pub mod weather;
 pub mod deferred;
 pub mod shader_graph;
@@ -123,7 +126,9 @@ pub mod rendergraph;
 pub mod compute;
 pub mod lighting;
 pub mod number_theory;
+/// Graph data structures, layout, community detection, paths and flows.
 pub mod graph;
+/// Hyperbolic, spherical and toroidal spaces and portals.
 pub mod topology;
 pub mod stochastic;
 pub mod ml;
@@ -138,7 +143,9 @@ pub mod ecology;
 pub mod narrative;
 pub mod electromagnetic;
 pub mod relativistic;
+/// Quantum mechanics simulations: Schrodinger solvers, tunneling, entanglement and more.
 pub mod quantum;
+/// Sparse voxel octree global illumination (voxel cone tracing), not wired into the demos.
 pub mod svogi;
 pub mod curves;
 pub mod nishita_sky;
@@ -160,9 +167,13 @@ pub use audio::AudioEvent;
 
 /// The main engine struct. Create once, run forever.
 pub struct ProofEngine {
+    /// Engine settings; most render settings are read every frame.
     pub config: EngineConfig,
+    /// The glyphs, particles and force fields in the world.
     pub scene: SceneGraph,
+    /// The camera the world pass is drawn from.
     pub camera: ProofCamera,
+    /// Keyboard and mouse state for the current frame.
     pub input: InputState,
     /// Screen-space UI, in pixel coordinates. Cleared at the start of every
     /// frame by `run_ui`, so games redraw it immediate-mode style.
@@ -181,6 +192,8 @@ pub struct ProofEngine {
 }
 
 impl ProofEngine {
+    /// Create the engine. The window and GL context are created when `run`
+    /// or `run_ui` is called; audio starts now if enabled and a device exists.
     pub fn new(mut config: EngineConfig) -> Self {
         if let Some((w, h)) = capture::window_size() {
             config.window_width = w;
@@ -322,7 +335,7 @@ impl ProofEngine {
 
     /// Run a UI-driven game.
     ///
-    /// Unlike [`run`], `update` is called *before* the scene is drawn, and the
+    /// Unlike \[`run`\], `update` is called *before* the scene is drawn, and the
     /// screen-space `ui` layer is painted afterwards. That ordering matters for
     /// a game: what you push this frame is what appears this frame, rather than
     /// showing up one frame late.
@@ -474,6 +487,7 @@ impl ProofEngine {
 
 /// Request quit on next frame.
 impl ProofEngine {
+    /// Ask the run loop to exit at the end of the current frame.
     pub fn request_quit(&mut self) {
         self.input.quit_requested = true;
     }

@@ -133,32 +133,19 @@ impl Offset {
 
 /// Compute an unsigned distance field from a binary bitmap using 8SSEDT.
 ///
-/// `bitmap` is row-major, `true` = inside the glyph.
-/// Returns float distances (in pixels) for each cell.
+/// `bitmap` is row-major. Returns, for each cell, the distance in pixels to
+/// the nearest `true` cell (0 for `true` cells).
 fn dead_reckoning_udf(bitmap: &[bool], w: usize, h: usize) -> Vec<f32> {
     let n = w * h;
     let mut grid = vec![Offset::FAR; n];
 
-    // Initialize: pixels on the boundary get zero offset.
-    for y in 0..h {
-        for x in 0..w {
-            let idx = y * w + x;
-            let inside = bitmap[idx];
-            // Check if this pixel is on the boundary (has a neighbor with different state).
-            let on_boundary = if inside {
-                (x > 0 && !bitmap[idx - 1])
-                    || (x + 1 < w && !bitmap[idx + 1])
-                    || (y > 0 && !bitmap[idx - w])
-                    || (y + 1 < h && !bitmap[idx + w])
-            } else {
-                (x > 0 && bitmap[idx - 1])
-                    || (x + 1 < w && bitmap[idx + 1])
-                    || (y > 0 && bitmap[idx - w])
-                    || (y + 1 < h && bitmap[idx + w])
-            };
-            if on_boundary {
-                grid[idx] = Offset::ZERO;
-            }
+    // Seed every set pixel with distance zero, so the result is the
+    // distance to the nearest set pixel. Seeding only "boundary" pixels on
+    // both sides of the edge gave 0 inside and outside alike, so the signed
+    // field was 0 for any shape one pixel thick and wrong-signed near edges.
+    for (cell, &set) in grid.iter_mut().zip(bitmap.iter()) {
+        if set {
+            *cell = Offset::ZERO;
         }
     }
 

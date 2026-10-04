@@ -11,7 +11,7 @@
 //! Run: `cargo run --example supernova`
 
 use proof_engine::prelude::*;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 const STAR_GLYPHS: usize = 200;
 const EXPLOSION_PARTICLES: usize = 800;
@@ -132,7 +132,7 @@ fn main() {
                         let speed = 2.0 + (i as f32 * 0.13).sin().abs() * 6.0;
                         let ring = (i / 200) as f32;
 
-                        let hue = (i as f32 / EXPLOSION_PARTICLES as f32);
+                        let hue = i as f32 / EXPLOSION_PARTICLES as f32;
                         let (r, g, b) = if hue < 0.3 {
                             (1.0, 0.9, 0.3) // gold core
                         } else if hue < 0.6 {

@@ -380,22 +380,28 @@ impl SPHSimulator {
 
     // ── Kernel helpers (delegate to physics) ────────────────────────────────
 
-    /// Cubic spline kernel W(r, h).
+    // `self.h` is the interaction radius: neighbours are searched within h.
+    // The Monaghan cubic spline has support 2 * (smoothing length), so the
+    // smoothing length passed to it is h / 2. Passing h made the kernel reach
+    // to 2h while only neighbours inside h were summed, cutting the kernel
+    // off at about 0.23 of its peak instead of at zero.
+
+    /// Cubic spline kernel W(r), zero at r >= h.
     #[inline]
     fn kernel(&self, r: f32) -> f32 {
-        cubic_kernel(r, self.h)
+        cubic_kernel(r, self.h * 0.5)
     }
 
     /// Scalar gradient of kernel dW/dr.
     #[inline]
     fn kernel_grad_scalar(&self, r: f32) -> f32 {
-        cubic_kernel_grad(r, self.h)
+        cubic_kernel_grad(r, self.h * 0.5)
     }
 
     /// Vector gradient of kernel.
     #[inline]
     fn kernel_grad_vec(&self, r_vec: Vec3) -> Vec3 {
-        kernel_gradient(r_vec, self.h)
+        kernel_gradient(r_vec, self.h * 0.5)
     }
 
     // ── SPH steps ───────────────────────────────────────────────────────────

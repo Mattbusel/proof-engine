@@ -8,6 +8,8 @@
 //! - Validation with clamped/sanitized values
 //! - Diff-based change detection for per-subsystem notifications
 
+#![warn(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 
 // ── Top-level ─────────────────────────────────────────────────────────────────
@@ -15,17 +17,29 @@ use serde::{Deserialize, Serialize};
 /// Top-level engine configuration, loadable from a TOML file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConfig {
+    /// Text shown in the window title bar.
     pub window_title:  String,
+    /// Window width in pixels.
     pub window_width:  u32,
+    /// Window height in pixels.
     pub window_height: u32,
+    /// Frame-rate cap in frames per second; 0 means uncapped, otherwise clamped to 15 to 360 by `validate`.
     pub target_fps:    u32,
+    /// Wait for the display refresh before presenting each frame.
     pub vsync:         bool,
+    /// Sound settings.
     pub audio:         AudioConfig,
+    /// Rendering and post-processing settings.
     pub render:        RenderConfig,
+    /// Physics simulation settings.
     pub physics:       PhysicsConfig,
+    /// Mouse, keyboard and gamepad settings.
     pub input:         InputConfig,
+    /// Debug overlays and logging settings.
     pub debug:         DebugConfig,
+    /// Game rules such as seed, difficulty and autosave.
     pub gameplay:      GameplayConfig,
+    /// Accessibility options such as colourblind mode and reduced motion.
     pub accessibility: AccessibilityConfig,
 }
 
@@ -220,6 +234,7 @@ impl EngineConfig {
 
     // ── Aspect ratio ──────────────────────────────────────────────────────────
 
+    /// Window width divided by height.
     pub fn aspect_ratio(&self) -> f32 {
         self.window_width as f32 / self.window_height as f32
     }
@@ -247,13 +262,18 @@ impl EngineConfig {
 /// Bitmask of which subsystems changed in a hot-reload diff.
 #[derive(Debug, Default)]
 pub struct ConfigDiff {
+    /// Window width or height differs.
     pub window_changed:  bool,
+    /// Audio enabled flag or master volume (by more than 0.01) differs.
     pub audio_changed:   bool,
+    /// Bloom enabled flag or bloom intensity differs.
     pub render_changed:  bool,
+    /// Fluid grid size differs.
     pub physics_changed: bool,
 }
 
 impl ConfigDiff {
+    /// True if any subsystem changed.
     pub fn any_changed(&self) -> bool {
         self.window_changed || self.audio_changed || self.render_changed || self.physics_changed
     }
@@ -261,11 +281,16 @@ impl ConfigDiff {
 
 // ── AudioConfig ───────────────────────────────────────────────────────────────
 
+/// Sound settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
+    /// Play sound at all.
     pub enabled:       bool,
+    /// Overall volume, 0.0 to 1.0.
     pub master_volume: f32,
+    /// Music volume, 0.0 to 1.0, applied on top of the master volume.
     pub music_volume:  f32,
+    /// Sound-effect volume, 0.0 to 1.0, applied on top of the master volume.
     pub sfx_volume:    f32,
     /// Sample rate override (0 = use device default).
     pub sample_rate:   u32,
@@ -275,6 +300,7 @@ pub struct AudioConfig {
     pub spatial_audio: bool,
     /// Reverb room size (0.0 = dry, 1.0 = large hall).
     pub reverb_room:   f32,
+    /// Which audio host API to prefer.
     pub audio_backend: AudioBackend,
 }
 
@@ -295,6 +321,7 @@ impl Default for AudioConfig {
 }
 
 impl AudioConfig {
+    /// Clamp the volumes and reverb room size to 0.0 to 1.0.
     pub fn validate(&mut self) {
         self.master_volume = self.master_volume.clamp(0.0, 1.0);
         self.music_volume  = self.music_volume.clamp(0.0, 1.0);
@@ -303,24 +330,47 @@ impl AudioConfig {
     }
 }
 
+/// Audio host API preference.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum AudioBackend { Default, Wasapi, Asio, PulseAudio, Alsa, CoreAudio }
+pub enum AudioBackend {
+    /// The platform's default host.
+    Default,
+    /// Windows Audio Session API.
+    Wasapi,
+    /// Steinberg ASIO (Windows, low latency).
+    Asio,
+    /// PulseAudio (Linux).
+    PulseAudio,
+    /// ALSA (Linux).
+    Alsa,
+    /// Core Audio (macOS).
+    CoreAudio,
+}
 
 // ── RenderConfig ──────────────────────────────────────────────────────────────
 
+/// Rendering and post-processing settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
+    /// Turn the bloom (glow) pass on.
     pub bloom_enabled:        bool,
+    /// Bloom strength, clamped to 0.0 to 20.0.
     pub bloom_intensity:      f32,
     /// Bloom radius in pixels (higher = wider glow).
     pub bloom_radius:         f32,
+    /// Turn the screen distortion pass on.
     pub distortion_enabled:   bool,
+    /// Turn motion blur on.
     pub motion_blur_enabled:  bool,
     /// Motion blur sample count (2-16).
     pub motion_blur_samples:  u32,
+    /// Colour fringing strength, clamped to 0.0 to 0.2.
     pub chromatic_aberration: f32,
+    /// Film grain strength, clamped to 0.0 to 0.5.
     pub film_grain:           f32,
+    /// Draw CRT-style scanlines.
     pub scanlines_enabled:    bool,
+    /// Scanline darkness, clamped to 0.0 to 1.0.
     pub scanline_intensity:   f32,
 
     // ── Grade ────────────────────────────────────────────────────────────────
@@ -338,8 +388,11 @@ pub struct RenderConfig {
     pub tonemap:              f32,
     /// Warm bleed around bright edges, the way film halates. 0.0 to ~0.5.
     pub halation:             f32,
+    /// Colour saturation multiplier; 1.0 is neutral.
     pub saturation:           f32,
+    /// Contrast multiplier; 1.0 is neutral.
     pub contrast:             f32,
+    /// Brightness offset; 0.0 is neutral.
     pub brightness:           f32,
     /// Strength of the corner darkening, 0.0 to 1.0.
     pub vignette:             f32,
@@ -367,12 +420,15 @@ pub struct RenderConfig {
     pub dither:               f32,
     /// Barrel distortion, as a fraction of the frame. Small values only.
     pub barrel:               f32,
+    /// Glyph font size in pixels, clamped to 8 to 64.
     pub font_size:            u32,
+    /// Start in fullscreen.
     pub fullscreen:           bool,
     /// Render scale (1.0 = native, 0.5 = half res).
     pub render_scale:         f32,
     /// Particle system multiplier (1.0 = full, 0.5 = half particles).
     pub particle_multiplier:  f32,
+    /// Shadow map quality level.
     pub shadow_quality:       ShadowQuality,
     /// Enable anti-aliasing (FXAA approximation for terminal renderer).
     pub antialiasing:         bool,
@@ -480,6 +536,7 @@ impl Default for RenderConfig {
 }
 
 impl RenderConfig {
+    /// Clamp every setting to its supported range.
     pub fn validate(&mut self) {
         self.bloom_intensity      = self.bloom_intensity.clamp(0.0, 20.0);
         self.bloom_radius         = self.bloom_radius.clamp(1.0, 128.0);
@@ -498,11 +555,24 @@ impl RenderConfig {
     }
 }
 
+/// Shadow map quality level.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum ShadowQuality { Off, Low, Medium, High, Ultra }
+pub enum ShadowQuality {
+    /// No shadows.
+    Off,
+    /// Lowest resolution shadows.
+    Low,
+    /// Medium resolution shadows.
+    Medium,
+    /// High resolution shadows.
+    High,
+    /// Highest resolution shadows.
+    Ultra,
+}
 
 // ── PhysicsConfig ─────────────────────────────────────────────────────────────
 
+/// Physics simulation settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicsConfig {
     /// Fixed timestep for physics simulation (seconds).
@@ -539,6 +609,7 @@ impl Default for PhysicsConfig {
 }
 
 impl PhysicsConfig {
+    /// Clamp the timestep, sub-steps, grid size, iterations and sleep threshold.
     pub fn validate(&mut self) {
         self.fixed_dt        = self.fixed_dt.clamp(1.0 / 240.0, 1.0 / 15.0);
         self.max_sub_steps   = self.max_sub_steps.clamp(1, 16);
@@ -548,11 +619,20 @@ impl PhysicsConfig {
     }
 }
 
+/// Collision broadphase strategy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum BroadphaseStrategy { BruteForce, Grid, BvhTree }
+pub enum BroadphaseStrategy {
+    /// Test every pair of bodies.
+    BruteForce,
+    /// Uniform spatial grid.
+    Grid,
+    /// Bounding volume hierarchy.
+    BvhTree,
+}
 
 // ── InputConfig ───────────────────────────────────────────────────────────────
 
+/// Mouse, keyboard and gamepad settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputConfig {
     /// Mouse sensitivity multiplier.
@@ -587,15 +667,24 @@ impl Default for InputConfig {
 
 // ── DebugConfig ───────────────────────────────────────────────────────────────
 
+/// Debug overlays and logging settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugConfig {
+    /// Show the frames-per-second counter.
     pub show_fps:         bool,
+    /// Show the frame-time graph.
     pub show_frame_graph: bool,
+    /// Draw physics debug shapes.
     pub show_physics:     bool,
+    /// Draw spawn zones.
     pub show_spawn_zones: bool,
+    /// Label entities with their ids.
     pub show_entity_ids:  bool,
+    /// Draw force field extents.
     pub show_force_fields: bool,
+    /// Show the live particle count.
     pub show_particle_count: bool,
+    /// Most verbose log level that is printed.
     pub log_level:        LogLevel,
     /// Cap the log output to this many bytes per second to avoid spam.
     pub log_rate_limit:   usize,
@@ -620,11 +709,26 @@ impl Default for DebugConfig {
     }
 }
 
+/// Log verbosity, from `Off` (nothing) to `Trace` (everything).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, PartialOrd)]
-pub enum LogLevel { Off, Error, Warn, Info, Debug, Trace }
+pub enum LogLevel {
+    /// No logging.
+    Off,
+    /// Errors only.
+    Error,
+    /// Errors and warnings.
+    Warn,
+    /// Normal information messages and above.
+    Info,
+    /// Debug messages and above.
+    Debug,
+    /// Everything.
+    Trace,
+}
 
 // ── GameplayConfig ────────────────────────────────────────────────────────────
 
+/// Game rules such as seed, difficulty and autosave.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameplayConfig {
     /// Seed for the world generator (0 = random).
@@ -662,6 +766,7 @@ impl Default for GameplayConfig {
 
 // ── AccessibilityConfig ───────────────────────────────────────────────────────
 
+/// Accessibility options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessibilityConfig {
     /// Enable colorblind compensation mode.
@@ -691,8 +796,20 @@ impl Default for AccessibilityConfig {
     }
 }
 
+/// Colourblind compensation mode.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum ColorblindMode { None, Deuteranopia, Protanopia, Tritanopia, Achromatopsia }
+pub enum ColorblindMode {
+    /// No compensation.
+    None,
+    /// Green-weak vision.
+    Deuteranopia,
+    /// Red-weak vision.
+    Protanopia,
+    /// Blue-weak vision.
+    Tritanopia,
+    /// No colour vision.
+    Achromatopsia,
+}
 
 // ── Unit tests ─────────────────────────────────────────────────────────────────
 

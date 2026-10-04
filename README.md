@@ -132,6 +132,26 @@ If you save a typo, it tells you where and keeps the last picture that worked. I
 
 **Render sound to a file.** `audio::OfflineRenderer` runs the engine's synthesiser with no sound card and `audio::wav::write_wav` saves it. Try `cargo run --release --example audio_bounce`.
 
+**Use every core.** `math::attractors::rk4_step_all(kind, &mut points, dt)` steps a whole slice; with the `parallel` feature it runs on all cores with rayon. On an i7-13700KF, 40,000 Lorenz points take 1.21 ms per frame on one core and 0.10 ms with `parallel` (`cargo bench --bench attractor_bench`). Results are bit-identical either way.
+
+## Cargo features
+
+| Feature | Default | What it adds |
+| --- | --- | --- |
+| `rhai-scripts` | on | `math::scripted`: systems written in Rhai, hot reloaded |
+| `parallel` | off | multi-core `rk4_step_all` (rayon) |
+| `http` | off | real requests for `networking::http`, the leaderboard and analytics clients (ureq, rustls) |
+| `websocket` | off | real `ws://` / `wss://` connections for `networking::websocket` (tungstenite, rustls) |
+| `net` | off | `http` + `websocket` |
+
+Without `http` / `websocket` the networking clients report an error instead of touching the network. No feature pulls in OpenSSL.
+
+## How it compares
+
+- **[nannou](https://crates.io/crates/nannou)** is a general creative-coding framework (wgpu, draw API, audio, OSC). Pick it for general sketches.
+- **[macroquad](https://crates.io/crates/macroquad)** is a small game library that also runs on the web. Pick it for 2D games, especially in the browser.
+- **Proof Engine** is narrower: the scene is glyphs and particles moved by equations, drawn through an HDR bloom pipeline, with attractors, force fields, colour maps, scripted systems and frame capture built in. The equations themselves are checked against the [ode_solvers](https://crates.io/crates/ode_solvers) crate in the test suite (Lorenz, Rossler, Thomas, Aizawa and Chen, written out independently).
+
 ## Documentation
 
 | Doc | What is in it |

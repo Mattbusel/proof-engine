@@ -984,8 +984,9 @@ mod tests {
         let config = test_config();
         let mut mgr = StreamingManager::new_synchronous(config);
         mgr.update(Vec3::new(0.0, 0.0, 0.0));
-        // After update, some chunks should be loaded
-        assert!(mgr.cache_size() > 0 || mgr.stats.pending_count >= 0);
+        // A synchronous manager loads chunks during update. (The old
+        // assertion `... || pending_count >= 0` was always true.)
+        assert!(mgr.cache_size() > 0);
     }
 
     #[test]

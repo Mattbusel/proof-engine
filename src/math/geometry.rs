@@ -1,7 +1,6 @@
 //! Computational geometry: primitives, intersection, distance, convex hull,
 //! triangulation, polygon operations, GJK/EPA collision detection.
 
-use std::f64;
 
 // ============================================================
 // PRIMITIVE TYPES

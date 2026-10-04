@@ -695,7 +695,7 @@ pub struct ColorGradingEditor {
 
 impl ColorGradingEditor {
     pub fn new() -> Self {
-        Self {
+        let mut ed = Self {
             grade: ColorGrade::default(),
             active_tab: ColorGradingTab::Grading,
             active_lut: None,
@@ -718,7 +718,11 @@ impl ColorGradingEditor {
             working_space: ColorSpace::AcesCg,
             output_space: ColorSpace::SRgb,
             preset_search: String::new(),
-        }
+        };
+        // History holds a snapshot after every change, starting with the
+        // initial grade, so the first change can be undone.
+        ed.snapshot();
+        ed
     }
 
     pub fn snapshot(&mut self) {
@@ -742,8 +746,8 @@ impl ColorGradingEditor {
     }
 
     pub fn apply_preset(&mut self, preset: &ColorGradePreset) {
-        self.snapshot();
         self.grade = preset.grade.clone();
+        self.snapshot();
     }
 
     pub fn generate_lut(&mut self) {
@@ -777,8 +781,8 @@ impl ColorGradingEditor {
     }
 
     pub fn reset_to_identity(&mut self) {
-        self.snapshot();
         self.grade = ColorGrade::default();
+        self.snapshot();
     }
 }
 

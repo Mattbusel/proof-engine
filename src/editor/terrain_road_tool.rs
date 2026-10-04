@@ -6199,7 +6199,9 @@ pub fn grade_resistance_n(vehicle_mass_kg: f32, grade_pct: f32) -> f32 {
 
 pub fn stopping_distance_on_grade_m(speed_kph: f32, grade_pct: f32, friction: f32) -> f32 {
     let v = speed_kph / 3.6;
-    let effective_friction = friction - grade_pct / 100.0;
+    // AASHTO braking distance: d = V^2 / (2 g (f + G)), with G negative on a
+    // downgrade, so going downhill lengthens the stop.
+    let effective_friction = friction + grade_pct / 100.0;
     if effective_friction <= 0.0 { return f32::INFINITY; }
     v * v / (2.0 * ROAD_DESIGN_GRAVITY * effective_friction)
 }

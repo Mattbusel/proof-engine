@@ -367,37 +367,7 @@ impl DialoguePlayer {
             DialogueState::Typing => {
                 let done = self.typewriter.as_mut().map(|tw| tw.tick(dt)).unwrap_or(false);
                 if done {
-                    let node = self.current_node.as_deref()
-                        .and_then(|id| self.tree.get(id))
-                        .cloned();
-                    if let Some(node) = node {
-                        match &node.next {
-                            DialogueNext::End => {
-                                self.state = DialogueState::Waiting;
-                            }
-                            DialogueNext::Node(_) => {
-                                self.state = DialogueState::Waiting;
-                            }
-                            DialogueNext::Choice(choices) => {
-                                let visible: Vec<Choice> = choices.iter()
-                                    .filter(|c| {
-                                        c.requires.as_ref()
-                                            .map(|f| self.flags.get(f.as_str()).copied().unwrap_or(false))
-                                            .unwrap_or(true)
-                                    })
-                                    .cloned()
-                                    .collect();
-                                self.choices = visible;
-                                self.state   = DialogueState::Choosing;
-                                return Some(DialogueEvent::ShowChoices(self.choices.clone()));
-                            }
-                            DialogueNext::Auto { duration, .. } => {
-                                self.auto_timer = Some(*duration);
-                                self.state      = DialogueState::AutoTimer;
-                            }
-                        }
-                    }
-                    return Some(DialogueEvent::TypewriterDone);
+                    return Some(self.finish_typing());
                 }
             }
             DialogueState::AutoTimer => {
@@ -412,6 +382,38 @@ impl DialoguePlayer {
             _ => {}
         }
         None
+    }
+
+    /// The current line has been fully shown: move to the state its `next`
+    /// asks for (wait, choose, or start an auto timer).
+    fn finish_typing(&mut self) -> DialogueEvent {
+        let node = self.current_node.as_deref()
+            .and_then(|id| self.tree.get(id))
+            .cloned();
+        self.state = DialogueState::Waiting;
+        if let Some(node) = node {
+            match &node.next {
+                DialogueNext::End | DialogueNext::Node(_) => {}
+                DialogueNext::Choice(choices) => {
+                    let visible: Vec<Choice> = choices.iter()
+                        .filter(|c| {
+                            c.requires.as_ref()
+                                .map(|f| self.flags.get(f.as_str()).copied().unwrap_or(false))
+                                .unwrap_or(true)
+                        })
+                        .cloned()
+                        .collect();
+                    self.choices = visible;
+                    self.state   = DialogueState::Choosing;
+                    return DialogueEvent::ShowChoices(self.choices.clone());
+                }
+                DialogueNext::Auto { duration, .. } => {
+                    self.auto_timer = Some(*duration);
+                    self.state      = DialogueState::AutoTimer;
+                }
+            }
+        }
+        DialogueEvent::TypewriterDone
     }
 
     fn advance_auto(&mut self) -> Option<DialogueEvent> {
@@ -434,10 +436,11 @@ impl DialoguePlayer {
     pub fn advance(&mut self) -> Option<DialogueEvent> {
         match self.state {
             DialogueState::Typing => {
-                // Skip typewriter to end
+                // Skip typewriter to end. This used to go straight to
+                // Waiting, so skipping the text of a choice node (or an auto
+                // node) never showed the choices and the dialogue stuck.
                 if let Some(tw) = &mut self.typewriter { tw.skip(); }
-                self.state = DialogueState::Waiting;
-                Some(DialogueEvent::TypewriterDone)
+                Some(self.finish_typing())
             }
             DialogueState::Waiting => {
                 let next = self.current_node.as_deref()
@@ -460,14 +463,17 @@ impl DialoguePlayer {
                     self.state = DialogueState::Finished;
                     return Some(DialogueEvent::Finished);
                 }
-                let choice = self.choices[self.selected_choice].clone();
+                let index = self.selected_choice;
+                let choice = self.choices[index].clone();
                 // Apply flags
                 for (flag, val) in &choice.sets {
                     self.flags.insert(flag.clone(), *val);
                 }
                 let next_id = choice.next.clone();
                 self.goto(&next_id);
-                Some(DialogueEvent::ChoiceMade { index: self.selected_choice, next: next_id })
+                // Report the index chosen, read before goto() resets the
+                // selection (it reported 0 for every choice).
+                Some(DialogueEvent::ChoiceMade { index, next: next_id })
             }
             _ => None,
         }

@@ -296,7 +296,7 @@ pub fn inject_emissive(grid: &mut VoxelGrid) {
     }
 }
 
-/// Inject emissive lighting from a separate emission channel stored in sh_coeffs[0].
+/// Inject emissive lighting from a separate emission channel stored in sh_coeffs\[0\].
 pub fn inject_emissive_from_sh(grid: &mut VoxelGrid) {
     let res = grid.resolution;
     for z in 0..res.z {
@@ -513,8 +513,12 @@ mod tests {
             intensity: 2.0,
         });
 
-        // Shadow map that blocks everything
-        let mut sm = ShadowMap::new(64, Mat4::IDENTITY);
+        // Shadow map that blocks everything. Its view-projection has to
+        // cover the world box [0, 4]^3: with the identity matrix (as before)
+        // the voxel at world 1.5 projected outside the map (u = 1.25), which
+        // counts as unshadowed, so the test never exercised the shadow path.
+        let to_ndc = Mat4::from_translation(Vec3::splat(-1.0)) * Mat4::from_scale(Vec3::splat(0.5));
+        let mut sm = ShadowMap::new(64, to_ndc);
         for d in &mut sm.depth_data {
             *d = 0.0;
         }

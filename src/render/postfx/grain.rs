@@ -37,8 +37,9 @@ impl Default for GrainParams {
 }
 
 impl GrainParams {
-    /// No grain.
-    pub fn none() -> Self { Self { enabled: false, ..Default::default() } }
+    /// Disabled and at zero intensity, so blending from `none()` fades in
+    /// from nothing (it used to start at the default 0.02).
+    pub fn none() -> Self { Self { enabled: false, intensity: 0.0, ..Default::default() } }
 
     /// Subtle film grain (cinematic quality).
     pub fn subtle() -> Self {

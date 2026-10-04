@@ -62,13 +62,13 @@ pub enum Op {
 
     // ── Tables ────────────────────────────────────────────────────────────────
     NewTable,
-    /// `SetField(kidx)`: pop val; table = peek; table[const_str] = val.
+    /// `SetField(kidx)`: pop val; table = peek; table\[const_str\] = val.
     SetField(u32),
-    /// `GetField(kidx)`: pop table; push table[const_str].
+    /// `GetField(kidx)`: pop table; push table\[const_str\].
     GetField(u32),
-    /// `SetIndex`: pop val, key; table = peek; table[key] = val.
+    /// `SetIndex`: pop val, key; table = peek; table\[key\] = val.
     SetIndex,
-    /// `GetIndex`: pop key, table; push table[key].
+    /// `GetIndex`: pop key, table; push table\[key\].
     GetIndex,
     /// `TableAppend`: pop val; table = peek; append val to array part.
     TableAppend,
@@ -108,8 +108,12 @@ pub enum Op {
     Call(u8, u8),
     /// `CallMethod(name_kidx, nargs, nret)`: obj on stack; method = const_str.
     CallMethod(u32, u8, u8),
-    /// `Return(n)`: pop n values and return (0 = return all).
+    /// `Return(n)`: pop n values and return (0 = return all). `Return(255)`
+    /// returns everything pushed since the last `MarkReturn`, for
+    /// `return ..., f()` where f can return any number of values.
     Return(u8),
+    /// Remember the stack height for a following `Return(255)`.
+    MarkReturn,
     /// Tail-call optimisation.
     TailCall(u8),
 
@@ -249,9 +253,13 @@ pub enum Instruction {
     JumpIfPop(isize),
     JumpAbs(usize),
     // Calls
-    Call(usize),
-    CallMethod(String, usize),
+    /// `Call(nargs, nret)`: nret 0 keeps every result, otherwise exactly nret.
+    Call(usize, usize),
+    CallMethod(String, usize, usize),
     Return(usize),
+    /// Return every value pushed since the last `MarkReturn`.
+    ReturnFromMark,
+    MarkReturn,
     // Closures
     MakeFunction(usize),
     MakeClosure(usize, Vec<(bool, usize)>),
@@ -358,10 +366,12 @@ fn op_to_instruction(op: &Op, constants: &[Constant]) -> Instruction {
         Op::JumpIfNot(off)    => Instruction::JumpIfNot(*off as isize),
         Op::JumpIfNotPop(off) => Instruction::JumpIfNotPop(*off as isize),
         Op::JumpIfPop(off)    => Instruction::JumpIfPop(*off as isize),
-        Op::Call(na, _)       => Instruction::Call(*na as usize),
-        Op::CallMethod(k, na, _) => Instruction::CallMethod(get_str(*k), *na as usize),
+        Op::Call(na, nr)      => Instruction::Call(*na as usize, *nr as usize),
+        Op::CallMethod(k, na, nr) => Instruction::CallMethod(get_str(*k), *na as usize, *nr as usize),
+        Op::Return(255)       => Instruction::ReturnFromMark,
         Op::Return(n)         => Instruction::Return(*n as usize),
-        Op::TailCall(n)       => Instruction::Call(*n as usize),
+        Op::MarkReturn        => Instruction::MarkReturn,
+        Op::TailCall(n)       => Instruction::Call(*n as usize, 0),
         Op::Closure(idx)      => Instruction::MakeFunction(*idx as usize),
         Op::Close(s)          => Instruction::CloseUpvalue(*s as usize),
         Op::ForPrep(n)        => Instruction::ForPrep(*n as usize),
@@ -445,6 +455,9 @@ pub struct Compiler {
     proto:  Proto,
     scope:  Scope,
     breaks: Vec<Vec<usize>>,   // break-patch points indexed by loop nesting
+    /// Set while compiling the last expression of a `return`: a call there
+    /// keeps all of its results instead of exactly one.
+    want_multi: bool,
     // Note: upvalue handling is simplified — outer-function locals captured
     // as globals in this basic implementation.
 }
@@ -463,6 +476,7 @@ impl Compiler {
             proto:  Proto::new(&script.name),
             scope:  Scope::new(),
             breaks: Vec::new(),
+            want_multi: false,
         };
         c.proto.is_vararg = true;
         c.compile_block_no_scope(&script.stmts);
@@ -509,12 +523,30 @@ impl Compiler {
 
             Stmt::Assign { target, value } => {
                 for (i, t) in target.iter().enumerate() {
-                    if i < value.len() {
-                        self.compile_expr(&value[i]);
-                    } else {
-                        self.proto.emit(Op::Nil);
+                    // Field and index targets need the table (and key) below
+                    // the value: SetField wants [table, value] and keeps the
+                    // table, SetIndex wants [table, key, value]. The value
+                    // used to be pushed first, so `t.x = v` failed with
+                    // "SetField on non-table" and `t[k] = v` indexed v.
+                    match t {
+                        Expr::Field { table, name } => {
+                            self.compile_expr(table);
+                            self.compile_assign_value(value, i);
+                            let k = self.proto.add_const(Constant::Str(name.clone()));
+                            self.proto.emit(Op::SetField(k));
+                            self.proto.emit(Op::Pop);
+                        }
+                        Expr::Index { table, key } => {
+                            self.compile_expr(table);
+                            self.compile_expr(key);
+                            self.compile_assign_value(value, i);
+                            self.proto.emit(Op::SetIndex);
+                        }
+                        _ => {
+                            self.compile_assign_value(value, i);
+                            self.compile_assign_target(t);
+                        }
                     }
-                    self.compile_assign_target(t);
                 }
             }
 
@@ -663,7 +695,11 @@ impl Compiler {
                     }
                     let last = name.last().unwrap();
                     let k = self.proto.add_const(Constant::Str(last.clone()));
+                    // Stack is [closure, table]; SetField wants [table, value]
+                    // and leaves the table, so swap first and pop after.
+                    self.proto.emit(Op::Swap);
                     self.proto.emit(Op::SetField(k));
+                    self.proto.emit(Op::Pop);
                 }
             }
 
@@ -678,9 +714,28 @@ impl Compiler {
             }
 
             Stmt::Return(vals) => {
-                let n = vals.len() as u8;
-                for v in vals { self.compile_expr(v); }
-                self.proto.emit(Op::Return(n));
+                // `return f()` / `return a, f()` passes on every value f
+                // returns, as in Lua. Calls used to be fixed at one result,
+                // so `return pcall(g)` lost its leading `true` and
+                // `return table.unpack(t)` gave only the last element.
+                let last_is_call = matches!(
+                    vals.last(),
+                    Some(Expr::Call { .. }) | Some(Expr::MethodCall { .. })
+                );
+                if last_is_call {
+                    self.proto.emit(Op::MarkReturn);
+                    let n = vals.len();
+                    for (i, v) in vals.iter().enumerate() {
+                        self.want_multi = i + 1 == n;
+                        self.compile_expr(v);
+                    }
+                    self.want_multi = false;
+                    self.proto.emit(Op::Return(255));
+                } else {
+                    let n = vals.len() as u8;
+                    for v in vals { self.compile_expr(v); }
+                    self.proto.emit(Op::Return(n));
+                }
             }
 
             Stmt::Break => {
@@ -764,6 +819,14 @@ impl Compiler {
         }
     }
 
+    fn compile_assign_value(&mut self, value: &[Expr], i: usize) {
+        if i < value.len() {
+            self.compile_expr(&value[i]);
+        } else {
+            self.proto.emit(Op::Nil);
+        }
+    }
+
     fn compile_assign_target(&mut self, target: &Expr) {
         match target {
             Expr::Ident(name) => {
@@ -821,18 +884,20 @@ impl Compiler {
             }
 
             Expr::Call { callee, args } => {
+                let nret = if std::mem::take(&mut self.want_multi) { 0 } else { 1 };
                 self.compile_expr(callee);
                 let nargs = args.len() as u8;
                 for a in args { self.compile_expr(a); }
-                self.proto.emit(Op::Call(nargs, 1));
+                self.proto.emit(Op::Call(nargs, nret));
             }
 
             Expr::MethodCall { obj, method, args } => {
+                let nret = if std::mem::take(&mut self.want_multi) { 0 } else { 1 };
                 self.compile_expr(obj);
                 let k = self.proto.add_const(Constant::Str(method.clone()));
                 let nargs = args.len() as u8;
                 for a in args { self.compile_expr(a); }
-                self.proto.emit(Op::CallMethod(k, nargs, 1));
+                self.proto.emit(Op::CallMethod(k, nargs, nret));
             }
 
             Expr::Unary { op, expr } => {
@@ -870,11 +935,12 @@ impl Compiler {
 
             Expr::TableCtor(fields) => {
                 self.proto.emit(Op::NewTable);
-                let mut array_count = 0u16;
                 for field in fields {
                     match field {
                         TableField::NameKey(name, val) => {
-                            self.proto.emit(Op::Dup);
+                            // SetField keeps the table on the stack, so no
+                            // Dup (the Dup left a spare table per field and
+                            // shifted every later local slot).
                             self.compile_expr(val);
                             let k = self.proto.add_const(Constant::Str(name.clone()));
                             self.proto.emit(Op::SetField(k));
@@ -886,11 +952,12 @@ impl Compiler {
                             self.proto.emit(Op::SetIndex);
                         }
                         TableField::Value(val) => {
-                            self.proto.emit(Op::Dup);
+                            // Positional values go to the array part. They
+                            // were stored with SetField and an integer
+                            // constant, which SetField reads as a string
+                            // name: every {1, 2, 3} item landed under "".
                             self.compile_expr(val);
-                            array_count += 1;
-                            let k = self.proto.add_const(Constant::Int(array_count as i64));
-                            self.proto.emit(Op::SetField(k));
+                            self.proto.emit(Op::TableAppend);
                         }
                     }
                 }
@@ -947,6 +1014,7 @@ impl Compiler {
             proto:  Proto::new(name),
             scope:  Scope::new(),
             breaks: Vec::new(),
+            want_multi: false,
         };
         child.proto.param_count = params.len() as u8;
         child.proto.is_vararg   = vararg;

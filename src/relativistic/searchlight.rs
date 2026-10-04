@@ -153,7 +153,13 @@ mod tests {
     fn test_forward_brightness_boost() {
         let fwd = relativistic_beaming(1.0, 0.9 * C, C, 0.0);
         assert!(fwd > 1.0, "Forward should be boosted: {}", fwd);
-        assert!(fwd > 100.0, "At 0.9c forward boost should be large: {}", fwd);
+        // D = 1 / (gamma (1 - beta)) = 4.36 at 0.9c head-on, and this
+        // function scales by D^3 = 82.8. The old "> 100" bound was not
+        // derived from anything (D^4 would be 361).
+        let gamma = lorentz_factor(0.9 * C, C);
+        let d = 1.0 / (gamma * (1.0 - 0.9));
+        assert!((fwd - d * d * d).abs() < 1e-6 * d * d * d, "forward boost {}", fwd);
+        assert!(fwd > 80.0, "At 0.9c forward boost should be large: {}", fwd);
     }
 
     #[test]
@@ -204,15 +210,15 @@ mod tests {
             sum_beamed += relativistic_beaming(1.0, v, C, theta) * d_omega;
             sum_rest += 1.0 * d_omega;
         }
-        // The total should be boosted by gamma^2 for a moving source
-        // Actually total radiated power transforms as P_obs = P_rest (Lorentz invariant for total)
-        // but beaming redistributes it. For isotropic rest emission:
-        // integral of D^3 over solid angle = 4*pi * gamma^2
+        // With D = 1 / (gamma (1 - beta mu)):
+        //   integral of D^3 dOmega = (2 pi / gamma^3) * integral over mu in
+        //   [-1, 1] of (1 - beta mu)^-3 = 4 pi gamma.
+        // The old expectation (gamma^2) is the D^4 result to leading order.
         let gamma = lorentz_factor(v, C);
-        let expected_ratio = gamma * gamma;
+        let expected_ratio = gamma;
         let actual_ratio = sum_beamed / sum_rest;
         assert!(
-            (actual_ratio - expected_ratio).abs() / expected_ratio < 0.05,
+            (actual_ratio - expected_ratio).abs() / expected_ratio < 1e-3,
             "Luminosity ratio: {} expected: {}",
             actual_ratio, expected_ratio
         );

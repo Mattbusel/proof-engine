@@ -157,11 +157,27 @@ pub fn finite_light_speed_positions(
     c: f64,
 ) -> Vec<Vec3> {
     objects.iter().map(|(pos, vel)| {
-        // Find retarded time iteratively
-        let dist = (*pos - observer).length() as f64;
-        let t_delay = dist / c;
-        // Apparent position is where the object was t_delay ago
-        *pos - *vel * t_delay as f32
+        // Retarded time t: light that left the object's position t ago,
+        // pos - vel * t, reaches the observer now:
+        //   |r - v t|^2 = c^2 t^2, r = pos - observer
+        //   (v.v - c^2) t^2 - 2 (r.v) t + r.r = 0.
+        // (This used the current distance / c, which is only right for an
+        // object at rest, and is what the old comment called iterative.)
+        let r = (*pos - observer).as_dvec3();
+        let v = vel.as_dvec3();
+        let a = v.dot(v) - c * c;
+        let b = -2.0 * r.dot(v);
+        let cc = r.dot(r);
+        let t = if a.abs() < 1e-30 {
+            if b.abs() < 1e-30 { 0.0 } else { (-cc / b).max(0.0) }
+        } else {
+            let disc = (b * b - 4.0 * a * cc).max(0.0).sqrt();
+            let t1 = (-b - disc) / (2.0 * a);
+            let t2 = (-b + disc) / (2.0 * a);
+            [t1, t2].into_iter().filter(|t| *t >= 0.0).fold(f64::INFINITY, f64::min)
+        };
+        let t = if t.is_finite() { t } else { r.length() / c };
+        (r - v * t).as_vec3() + observer
     }).collect()
 }
 
@@ -276,7 +292,14 @@ mod tests {
             (Vec3::new(10.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
             (Vec3::new(20.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
         ];
-        let apparent = finite_light_speed_positions(&objects, Vec3::ZERO, C);
+        // In metres and m/s a 10 m light delay moves a 1 m/s object by
+        // 3e-8 m, which f32 positions cannot show. Use c = 1 (natural
+        // units) and v = 0.5c so the delay is visible.
+        let objects: Vec<(Vec3, Vec3)> = objects.iter().map(|(p, _)| (*p, Vec3::new(0.5, 0.0, 0.0))).collect();
+        let apparent = finite_light_speed_positions(&objects, Vec3::ZERO, 1.0);
+        // Receding along the line of sight at 0.5c, the retarded time is
+        // d / (c + v) = d / 1.5, so the shift is v d / 1.5 = d / 3.
+        assert!((apparent[0].x - 10.0 * 2.0 / 3.0).abs() < 1e-4, "{}", apparent[0].x);
         // Both should be shifted backward along velocity by light delay
         assert!(apparent[0].x < 10.0);
         assert!(apparent[1].x < 20.0);

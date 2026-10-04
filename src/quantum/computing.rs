@@ -606,10 +606,10 @@ mod tests {
         // QFT of |0> should give uniform superposition
         let reg = QuantumRegister::new(2);
         let result = qft(&reg);
-        let expected = 0.5; // 1/sqrt(4) squared
+        let expected = 0.25; // (1/sqrt(4))^2; the old value 0.5 was a slip
         for i in 0..4 {
             assert!(
-                (result.state[i].norm_sq() - expected).abs() < 0.1,
+                (result.state[i].norm_sq() - expected).abs() < 1e-9,
                 "QFT |0>[{}] prob: {}",
                 i,
                 result.state[i].norm_sq()

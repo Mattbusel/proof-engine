@@ -1,6 +1,9 @@
-//! Networking for Proof Engine: HTTP + WebSocket client, leaderboards, cloud saves.
+//! Network message types for Proof Engine, with in-memory stand-ins.
 //!
-//! Provides async-compatible (non-blocking) networking primitives:
+//! Nothing in this module opens a socket: the "clients" here queue and
+//! inspect messages in memory, which is useful for tests and replays. For
+//! real HTTP and WebSocket I/O use [`crate::networking`] with the `http` /
+//! `websocket` features. Contents:
 //! - HTTP request builder (GET/POST/PUT/DELETE)
 //! - WebSocket message protocol
 //! - Leaderboard submission and retrieval

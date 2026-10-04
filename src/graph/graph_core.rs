@@ -199,7 +199,7 @@ impl<N, E> Graph<N, E> {
         ids
     }
 
-    pub fn bfs(&self, start: NodeId) -> BfsIterator<N, E> {
+    pub fn bfs(&self, start: NodeId) -> BfsIterator<'_, N, E> {
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
         if self.has_node(start) {
@@ -209,7 +209,7 @@ impl<N, E> Graph<N, E> {
         BfsIterator { graph: self, queue, visited }
     }
 
-    pub fn dfs(&self, start: NodeId) -> DfsIterator<N, E> {
+    pub fn dfs(&self, start: NodeId) -> DfsIterator<'_, N, E> {
         let mut stack = Vec::new();
         let mut visited = HashSet::new();
         if self.has_node(start) {

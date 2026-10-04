@@ -1051,12 +1051,18 @@ mod tests {
 
     #[test]
     fn fluid_renderer_extracts_glyphs() {
+        // Particle mass must match the rest density: 1000 kg/m^3 at 0.1 m
+        // spacing is 1 kg per particle. The old test used 0.001 kg, so every
+        // density was about 1/1000 of rest and no particle looked like
+        // surface. Its "or the sim is empty" escape could not apply either.
         let mut sim = SphSimulation::new(0.1, 1000.0);
-        sim.add_cube(Vec3::ZERO, Vec3::splat(0.3), 0.1, 0.001);
+        sim.add_cube(Vec3::ZERO, Vec3::splat(0.3), 0.1, 1.0);
         sim.step_with_dt(0.001);
+        assert!(sim.particle_count() > 0);
         let renderer = FluidRenderer::new().with_iso_threshold(0.5);
         let glyphs = renderer.extract(&sim);
-        assert!(!glyphs.is_empty() || sim.particle_count() == 0, "renderer should produce glyphs or sim is empty");
+        assert!(!glyphs.is_empty(), "renderer should produce surface glyphs");
+        assert!(glyphs.len() < sim.particle_count(), "interior particles are skipped");
     }
 
     #[test]

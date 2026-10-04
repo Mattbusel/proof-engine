@@ -7,11 +7,11 @@
 //! * [`geometry`]     — masking/shadowing functions (G)
 //! * [`fresnel`]      — Fresnel reflectance functions (F)
 //! * [`vec3`]         — Vec3 helpers used throughout
-//! * [`brdf`]         — full BRDF evaluators (Cook-Torrance, Lambertian, …)
+//! * \[`brdf`\]         — full BRDF evaluators (Cook-Torrance, Lambertian, …)
 //! * [`ibl`]          — image-based lighting helpers
-//! * [`lights`]       — light types and shading loop
+//! * \[`lights`\]       — light types and shading loop
 //! * [`tonemap`]      — tone-mapping operators
-//! * [`glsl`]         — GLSL source generation
+//! * \[`glsl`\]         — GLSL source generation
 
 use glam::{Vec2, Vec3};
 use std::f32::consts::{FRAC_1_PI, PI};
@@ -385,8 +385,8 @@ impl CookTorranceBrdf {
     /// * `v` — view direction pointing *away* from surface (unit)
     /// * `l` — light direction pointing *toward* the light (unit)
     /// * `albedo` — base colour (linear RGB)
-    /// * `metallic` — metallic factor [0,1]
-    /// * `roughness` — perceptual roughness [0,1]
+    /// * `metallic` — metallic factor \[0,1\]
+    /// * `roughness` — perceptual roughness \[0,1\]
     ///
     /// Returns the BRDF value multiplied by `NdotL`.  The caller multiplies by
     /// light irradiance.
@@ -574,8 +574,8 @@ pub struct ClearcoatBrdf;
 impl ClearcoatBrdf {
     /// Evaluate the clearcoat specular lobe.
     ///
-    /// `strength` — clearcoat weight [0,1]
-    /// `roughness` — clearcoat roughness [0,1]
+    /// `strength` — clearcoat weight \[0,1\]
+    /// `roughness` — clearcoat roughness \[0,1\]
     pub fn evaluate(n: Vec3, v: Vec3, l: Vec3, strength: f32, roughness: f32) -> Vec3 {
         if strength < 1e-5 {
             return Vec3::ZERO;

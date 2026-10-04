@@ -460,7 +460,9 @@ mod tests {
         let mut o = PerfOverlay::new();
         for _ in 0..n {
             o.begin_frame();
-            o.end_frame(frame_ms * 0.6, 50_000_000, 1, 2_000.0, 4_000.0);
+            // The test does no CPU work, so the frame time is the GPU time we
+            // pass in. Passing 0.6 * frame_ms made "60 fps" frames 10 ms long.
+            o.end_frame(frame_ms, 50_000_000, 1, 2_000.0, 4_000.0);
         }
         o
     }

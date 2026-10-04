@@ -1914,8 +1914,16 @@ impl VisibilityTrack {
         if idx >= n { return self.keyframes[n-1].opacity; }
         let k0 = &self.keyframes[idx-1];
         let k1 = &self.keyframes[idx];
-        let fade = k0.fade.max(1e-9);
-        let t = ((time - k0.time) / fade).clamp(0.0, 1.0) as f32;
+        // Hold k0's opacity, then fade over the `fade` seconds that end at
+        // k1. Using k0's fade from k0's time made a keyframe with fade 0
+        // jump straight to the next value, so "visible at 0" was invisible
+        // at 0.1.
+        if k1.fade <= 0.0 {
+            return k0.opacity;
+        }
+        let start = (k1.time - k1.fade).max(k0.time);
+        let span = (k1.time - start).max(1e-9);
+        let t = ((time - start) / span).clamp(0.0, 1.0) as f32;
         lerp(k0.opacity, k1.opacity, smooth_step(t))
     }
 
@@ -2838,6 +2846,34 @@ impl TrackCollection {
         self.time_dilation_tracks.insert(id, track);
     }
 
+    /// Remove track `id` and return it in a collection of its own (with its
+    /// display position), so it can be put back with [`Self::restore_from`].
+    pub fn take_track(&mut self, id: u64) -> TrackCollection {
+        let mut out = TrackCollection::new();
+        macro_rules! mv { ($($f:ident),*) => { $( if let Some(t) = self.$f.remove(&id) { out.$f.insert(id, t); } )* } }
+        mv!(camera_tracks, actor_tracks, animation_tracks, audio_tracks, vfx_tracks, light_tracks,
+            post_fx_tracks, subtitle_tracks, event_tracks, transform_tracks, blend_shape_tracks,
+            visibility_tracks, time_dilation_tracks);
+        if let Some(pos) = self.track_order.iter().position(|&t| t == id) {
+            self.track_order.remove(pos);
+            // Remember the position in a one-element order list: index then id.
+            out.track_order = vec![pos as u64, id];
+        }
+        out
+    }
+
+    /// Put back tracks taken with [`Self::take_track`].
+    pub fn restore_from(&mut self, mut other: TrackCollection) {
+        macro_rules! mv { ($($f:ident),*) => { $( for (k, t) in other.$f.drain() { self.$f.insert(k, t); } )* } }
+        mv!(camera_tracks, actor_tracks, animation_tracks, audio_tracks, vfx_tracks, light_tracks,
+            post_fx_tracks, subtitle_tracks, event_tracks, transform_tracks, blend_shape_tracks,
+            visibility_tracks, time_dilation_tracks);
+        if let [pos, id] = other.track_order[..] {
+            let pos = (pos as usize).min(self.track_order.len());
+            self.track_order.insert(pos, id);
+        }
+    }
+
     pub fn remove_track(&mut self, id: u64) {
         self.track_order.retain(|&tid| tid != id);
         self.camera_tracks.remove(&id);
@@ -2970,6 +3006,8 @@ pub struct CinematicSequencer {
 
     // Undo/redo
     pub undo_history: SequencerUndoHistory,
+    /// Tracks removed by undoing an `AddTrack`, kept so redo can put them back.
+    pub undone_tracks: HashMap<u64, TrackCollection>,
 
     // Selection
     pub selection: SequencerSelection,
@@ -3021,6 +3059,7 @@ impl CinematicSequencer {
             playback: PlaybackController::new(fps_clone),
             prev_eval_time: 0.0,
             undo_history: SequencerUndoHistory::new(),
+            undone_tracks: HashMap::new(),
             selection: SequencerSelection::new(),
             curve_editor: CurveEditorState::new(),
             active_camera_id: None,
@@ -3465,7 +3504,8 @@ impl CinematicSequencer {
                 self.master_sequence.duration = old_duration;
             }
             SequencerCommand::AddTrack { track_id, .. } => {
-                self.tracks.remove_track(track_id);
+                let taken = self.tracks.take_track(track_id);
+                self.undone_tracks.insert(track_id, taken);
             }
             _ => {}
         }
@@ -3478,6 +3518,12 @@ impl CinematicSequencer {
             }
             SequencerCommand::SetDuration { new_duration, .. } => {
                 self.master_sequence.duration = new_duration;
+            }
+            // Redo used to ignore AddTrack, so an undone track never came back.
+            SequencerCommand::AddTrack { track_id, .. } => {
+                if let Some(taken) = self.undone_tracks.remove(&track_id) {
+                    self.tracks.restore_from(taken);
+                }
             }
             _ => {}
         }
@@ -5143,7 +5189,7 @@ pub fn score_shot_transition(
 // AUDIO ENVELOPE GENERATOR
 // ============================================================
 
-/// ADSR envelope: returns gain in [0,1] at time t given ADSR params.
+/// ADSR envelope: returns gain in \[0,1\] at time t given ADSR params.
 pub fn adsr_envelope(t: f64, attack: f64, decay: f64, sustain: f32, release: f64, note_off: f64) -> f32 {
     if t < 0.0 { return 0.0; }
     if t < attack {
@@ -5744,7 +5790,8 @@ mod tests_cinematic_extended {
         c.add_key(0.0, 0.0, InterpType::Linear);
         c.add_key(1.0, 1.0, InterpType::Linear);
         let frames = bake_curve_to_frames(&c, 30.0, 1.0);
-        assert_eq!(frames.len(), 32); // ceil(30)+1 = 31, but we add 1 → 32
+        // One second at 30 fps sampled at both ends is frames 0..=30: 31 values.
+        assert_eq!(frames.len(), 31);
     }
 
     #[test]
@@ -6355,7 +6402,7 @@ impl AudioSpectrumAnalyser {
         Self::new(vec![63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0])
     }
 
-    /// Feed simulated band levels (amplitude [0,1]) and update with attack/release.
+    /// Feed simulated band levels (amplitude \[0,1\]) and update with attack/release.
     pub fn update(&mut self, input_levels: &[f32], dt: f32) {
         for (i, &input) in input_levels.iter().enumerate().take(self.levels.len()) {
             if input > self.levels[i] {

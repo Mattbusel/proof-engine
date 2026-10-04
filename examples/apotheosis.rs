@@ -48,6 +48,7 @@
 //!
 //! Run: cargo run --release --example apotheosis
 
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop, clippy::ptr_arg, unused_assignments)]
 use proof_engine::prelude::*;
 use proof_engine::audio::MusicVibe;
 use proof_engine::config::ShadowQuality;
@@ -195,7 +196,7 @@ fn leon_color(x: f32, y: f32) -> (f32, f32, f32) {
     if y < -0.56 && ax > 0.11 { return (0.22, 0.13, 0.07); }
 
     // Face (forehead to chin)
-    if y >= -0.88 && y <= -0.30 {
+    if (-0.88..=-0.30).contains(&y) {
         if ax > 0.13 && y < -0.58 { return (0.20, 0.12, 0.06); } // side hair
         if y > -0.76 && y < -0.70 { return (0.62, 0.44, 0.32); } // brow shadow
         if y > -0.72 && y < -0.63 && ax > 0.04 && ax < 0.11 { return (0.70, 0.50, 0.36); } // eye area
@@ -216,7 +217,7 @@ fn leon_color(x: f32, y: f32) -> (f32, f32, f32) {
     if y < -0.06 && ax > 0.30 { return (0.60, 0.42, 0.24); }
 
     // Belt zone
-    if y >= 0.22 && y <= 0.30 {
+    if (0.22..=0.30).contains(&y) {
         if ax < 0.05 { return (0.72, 0.70, 0.66); } // buckle
         return (0.14, 0.10, 0.07); // belt
     }
@@ -286,11 +287,11 @@ fn leon_tag(x: f32, y: f32) -> MatTag {
     if y < -0.56 && ax > 0.11 { return MatTag::Hair; }
 
     // Face / neck skin
-    if y >= -0.88 && y <= -0.30 { return MatTag::Skin; }
+    if (-0.88..=-0.30).contains(&y) { return MatTag::Skin; }
     if y < -0.18 && ax < 0.09  { return MatTag::Skin; }
 
     // Belt zone: buckle = metal, strap = boot-weight leather
-    if y >= 0.22 && y <= 0.30 {
+    if (0.22..=0.30).contains(&y) {
         if ax < 0.05 { return MatTag::Metal; }
         return MatTag::Boot;
     }
@@ -1357,12 +1358,12 @@ fn gi_bounce(px: f32, py: f32, snx: f32, sny: f32, snz: f32, illum: f32)
     const BOUNCE: f32 = 0.060;   // fraction of neighbor albedo re-emitted
 
     // Gram-Schmidt tangent basis (mirrors sdf_curvature construction)
-    let t1x = -snz;  let t1z = snx;           // T1 — horizontal, in xz-plane
+    let t1x = -snz;  let _t1z = snx;           // T1 — horizontal, in xz-plane
     let t2x = -snx * sny;
     let t2y =  1.0 - sny * sny;
     let t2z = -snz * sny;
     let t2n = (t2x*t2x + t2y*t2y + t2z*t2z).sqrt().max(0.001);
-    let (t2x, t2y, t2z) = (t2x / t2n, t2y / t2n, t2z / t2n);
+    let (t2x, t2y, _t2z) = (t2x / t2n, t2y / t2n, t2z / t2n);
 
     // 4 tangent-plane samples: ±T1 (left/right) and ±T2 (up/down)
     let (ar, ag, ab) = leon_color(px + RH * t1x,        py              );
@@ -1442,7 +1443,7 @@ fn render_sdf_body(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let (d_t, ax_v, az_v) = sdf_torso(px, py, pz);
         let (d_a, _)           = sdf_arm_r(px, py, pz);
         let d = smin(d_t, d_a, 0.04);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         // Analytical surface normal: gradient of ellipse = (x/ax², z/az²)
         let gx = px / (ax_v * ax_v);
@@ -1632,7 +1633,7 @@ fn render_sdf_body(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let (d_t, _, _) = sdf_torso(px, py, pz);
         let (d_a, _)    = sdf_arm_r(px, py, pz);
         let d = smin(d_t, d_a, 0.04);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         // Analytical normal: outward from capsule axis in scaled space
         let nx = (px - cx) / (1.05*1.05);
@@ -1773,7 +1774,7 @@ fn render_sdf_body(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let (d_t, _, _) = sdf_torso(px, py, pz);
         let (d_a, _)    = sdf_arm_r(-px, py, pz);
         let d = smin(d_t, d_a, 0.04);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
         let nx_raw = (px - cx) / (1.05*1.05);
         let nz_raw = pz / (0.95*0.95);
         let nn = (nx_raw*nx_raw + nz_raw*nz_raw).sqrt().max(0.001);
@@ -1847,7 +1848,7 @@ fn render_sdf_body(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
             let d_fa  = sdf_forearm_r(sign*px, py, pz);
             let (d_arm,_) = sdf_arm_r(sign*px, py, pz);
             let d = smin(d_fa, d_arm, 0.025);
-            if d < -SHELL || d > SHELL { continue; }
+            if !(-SHELL..=SHELL).contains(&d) { continue; }
             let nx_raw = (px-cx)/(1.05*1.05); let nz_raw = pz/(0.95*0.95);
             let nn = (nx_raw*nx_raw+nz_raw*nz_raw).sqrt().max(0.001);
             let (snx,sny,snz) = (nx_raw/nn, 0.0f32, nz_raw/nn);
@@ -1939,7 +1940,7 @@ fn render_sdf_body(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
             let px = sign*px_u;
             let pz = pz_u;
             let d = sdf_leg_r(sign*px, py, pz);
-            if d < -SHELL || d > SHELL { continue; }
+            if !(-SHELL..=SHELL).contains(&d) { continue; }
             let nx_raw = px_u - LEG_CX;
             let nz_raw = pz;
             let nn = (nx_raw*nx_raw+nz_raw*nz_raw).sqrt().max(0.001);
@@ -2169,7 +2170,7 @@ fn render_sdf_face(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let pz = ez + noise*gnz/gnn;
 
         let d = sdf_face(px, py, pz);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         // Delegate eye-surface particles to the EYE loop
         let der = sdf_sphere_f(px-EYEB_CX, py-EYEB_CY, pz-EYEB_CZ, EYEB_R);
@@ -2261,7 +2262,7 @@ fn render_sdf_face(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let pz = EYEB_CZ + (rz/rn)*r;
 
         let d = sdf_face(px, py, pz);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         let (snx,sny,snz) = face_normal(px, py, pz);
         let hz   = snz.max(0.0);
@@ -2313,7 +2314,7 @@ fn render_sdf_face(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let py = -0.558 + hf(i,261)*0.118;
         let pz =  0.076 + hf(i,262)*0.072;
         let d  = sdf_face(px, py, pz);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         let (snx,sny,snz) = face_normal(px, py, pz);
         let hz   = snz.max(0.0);
@@ -2373,7 +2374,7 @@ fn render_sdf_face(engine: &mut ProofEngine, dt: f32, time: f32, pos: Vec3, hp: 
         let py = -0.410 + hf(i,271)*0.080;
         let pz =  0.060 + hf(i,272)*0.046;
         let d  = sdf_face(px, py, pz);
-        if d < -SHELL || d > SHELL { continue; }
+        if !(-SHELL..=SHELL).contains(&d) { continue; }
 
         let (snx,sny,snz) = face_normal(px, py, pz);
         let hz   = snz.max(0.0);
@@ -2548,7 +2549,7 @@ fn render_leon(
             // Y-direction peek: 0.06 units outside the bone's Y endpoints
             // (catches collar-to-chest, belt-to-pants, boot-to-shin, hand-to-sleeve)
             let along_t  = (along - y0) / ((y1 - y0).abs() + 0.001);
-            let at_y_end = along_t < 0.15 || along_t > 0.85;
+            let at_y_end = !(0.15..=0.85).contains(&along_t);
             let peek_y   = if along_t < 0.15 { y0 - 0.06 } else { y1 + 0.06 };
             let y_adj    = at_y_end && leon_tag(x, peek_y) != mat_tag;
 
@@ -2731,10 +2732,10 @@ fn render_leon(
             MatTag::Hair                                          => 0.50,
             MatTag::Jacket if y > 0.28                           => 0.85, // pants
             MatTag::Jacket                                        => 0.75, // jacket
-            MatTag::Boot   if y >= 0.22 && y <= 0.30             => 0.90, // belt
+            MatTag::Boot   if (0.22..=0.30).contains(&y)             => 0.90, // belt
             MatTag::Boot                                          => 0.95, // boot
             MatTag::Metal                                         => 0.98,
-            MatTag::Skin | _                                      => 0.95,
+            _                                                     => 0.95, // skin
         };
         let smoothed_p = if is_moving {
             lag[i].lerp(bone_p, lag_weight)
@@ -3103,7 +3104,7 @@ fn render_environment(engine: &mut ProofEngine, dt: f32, time: f32) {
     // ── Left pillar — cool, barely lit by key ────────────────────────────────
     for i in 0..34usize {
         let py     = -4.60 + i as f32 * 0.245;    // Y: –4.6 → +3.7
-        let cap    = i < 4 || i > 29;             // capitals at top/bottom: brighter
+        let cap    = !(4..=29).contains(&i);             // capitals at top/bottom: brighter
         let cap_br = if cap { 0.18 } else { 0.0 };
         engine.spawn_glyph(Glyph {
             character: if cap { '+' } else if i % 5 == 0 { '|' } else { '.' },
@@ -3121,7 +3122,7 @@ fn render_environment(engine: &mut ProofEngine, dt: f32, time: f32) {
     // ── Right pillar — torch-lit, orange wash that fades toward top and base ──
     for i in 0..34usize {
         let py     = -4.60 + i as f32 * 0.245;
-        let cap    = i < 4 || i > 29;
+        let cap    = !(4..=29).contains(&i);
         let d_y    = (py - TORCH_Y).abs();
         let torch_f = flicker / (1.0 + d_y * 0.55).powi(2);
         let cap_br = if cap { 0.15 } else { 0.0 };
@@ -5761,7 +5762,7 @@ impl SdfGpuPipeline {
         self.exposure = self.exposure * 0.95 + target_exposure * 0.05;
         gl.uniform_1_f32(Some(&self.u_exposure_c), self.exposure);
 
-        let body_groups = (GPU_N_TOTAL + GPU_WG - 1) / GPU_WG;
+        let body_groups = GPU_N_TOTAL.div_ceil(GPU_WG);
         gl.dispatch_compute(body_groups, 1, 1);
 
         gl.memory_barrier(GL_SHADER_STORAGE_BARRIER | GL_ATOMIC_COUNTER_BARRIER);
@@ -5773,7 +5774,7 @@ impl SdfGpuPipeline {
         gl.uniform_1_f32(Some(&self.u_breath_h), breath);
         gl.uniform_1_i32(Some(&self.u_n_h),      HAIR_N_TOTAL as i32);
 
-        let hair_groups = (HAIR_N_TOTAL + GPU_WG - 1) / GPU_WG;
+        let hair_groups = HAIR_N_TOTAL.div_ceil(GPU_WG);
         gl.dispatch_compute(hair_groups, 1, 1);
 
         gl.memory_barrier(GL_SHADER_STORAGE_BARRIER | GL_ATOMIC_COUNTER_BARRIER | GL_COMMAND_BARRIER);

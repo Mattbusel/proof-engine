@@ -270,7 +270,7 @@ impl ItemStatGenerator {
         Self { model: None }
     }
 
-    /// Generate item stats from a rarity level [0,1] and a type hint string.
+    /// Generate item stats from a rarity level \[0,1\] and a type hint string.
     pub fn generate_item(&self, rarity: f32, type_hint: &str) -> ItemStats {
         let type_val = match type_hint {
             "sword" => 0.0,

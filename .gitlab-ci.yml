@@ -18,7 +18,56 @@
 # Nothing here publishes to crates.io.
 
 stages:
+  - test
   - build
+
+# Tests, clippy and docs on every push and merge request. Nothing here opens a
+# window or plays sound: the lib tests are pure computation, and the
+# networking tests talk to servers they start on 127.0.0.1.
+.checks:
+  stage: test
+  image: rust:1
+  timeout: 2h
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
+  variables:
+    CARGO_INCREMENTAL: "0"
+    CARGO_TERM_COLOR: always
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo-home"
+    CARGO_PROFILE_DEV_DEBUG: "0"
+    CARGO_PROFILE_TEST_DEBUG: "0"
+  cache:
+    key: checks-cargo
+    paths:
+      - .cargo-home/registry/index/
+      - .cargo-home/registry/cache/
+  before_script:
+    - apt-get update -qq
+    - >
+      apt-get install -y -qq --no-install-recommends
+      pkg-config libasound2-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev
+
+test:
+  extends: .checks
+  script:
+    - sh ci/test-lib.sh
+    - cargo test --locked --all-features --lib networking
+    - cargo test --locked --test '*'
+    - cargo test --locked --doc
+
+clippy:
+  extends: .checks
+  script:
+    - rustup component add clippy
+    - cargo clippy --locked --all-targets --all-features -- -D warnings
+
+doc:
+  extends: .checks
+  variables:
+    RUSTDOCFLAGS: "-D warnings"
+  script:
+    - cargo doc --locked --no-deps --all-features
 
 linux-demos:
   stage: build

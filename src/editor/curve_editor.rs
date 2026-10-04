@@ -125,7 +125,7 @@ pub struct CurveSegment {
 }
 
 impl CurveSegment {
-    /// Evaluate cubic Bezier at parameter t ∈ [0,1]
+    /// Evaluate cubic Bezier at parameter t ∈ \[0,1\]
     pub fn bezier(&self, t: f32) -> Vec2 {
         let u = 1.0 - t;
         self.p0 * (u*u*u)
@@ -141,7 +141,7 @@ impl CurveSegment {
             + (self.p3 - self.p2) * (3.0*t*t)
     }
 
-    /// Evaluate Catmull-Rom at parameter t ∈ [0,1]
+    /// Evaluate Catmull-Rom at parameter t ∈ \[0,1\]
     pub fn catmull_rom(&self, t: f32) -> Vec2 {
         let t2 = t * t;
         let t3 = t2 * t;

@@ -547,10 +547,10 @@ pub struct InstanceData {
     /// Model matrix (4x4, column-major, 16 floats).
     pub model_matrix: [[f32; 4]; 4],
     /// Packed material parameters.
-    /// [0] = albedo.r, albedo.g, albedo.b, alpha
-    /// [1] = metallic, roughness, emission_intensity, material_id (as float)
-    /// [2] = emission.r, emission.g, emission.b, <unused>
-    /// [3] = uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y
+    /// \[0\] = albedo.r, albedo.g, albedo.b, alpha
+    /// \[1\] = metallic, roughness, emission_intensity, material_id (as float)
+    /// \[2\] = emission.r, emission.g, emission.b, `<unused>`
+    /// \[3\] = uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y
     pub material_params: [[f32; 4]; 4],
 }
 

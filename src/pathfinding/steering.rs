@@ -5,7 +5,6 @@
 //   FormationMovement, PathFollowing with lookahead,
 //   behavior blending with weights.
 
-use std::f32;
 use std::f32::consts::{PI, TAU};
 
 // ── 2-D vector ────────────────────────────────────────────────────────────────

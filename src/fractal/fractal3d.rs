@@ -26,6 +26,13 @@ impl Mandelbulb {
         for _ in 0..self.max_iter {
             r = z.length();
             if r > 2.0 { break; }
+            if r < 1e-6 {
+                // z^n is 0 here; the angle formulas below divide by r and
+                // produced NaN for any orbit that hits the origin (p = 0).
+                z = p;
+                dr = 1.0;
+                continue;
+            }
             let theta = (z.z / r).acos();
             let phi = z.y.atan2(z.x);
             dr = r.powf(self.power - 1.0) * self.power * dr + 1.0;
@@ -33,6 +40,9 @@ impl Mandelbulb {
             let t = theta * self.power;
             let ph = phi * self.power;
             z = Vec3::new(t.sin() * ph.cos(), t.sin() * ph.sin(), t.cos()) * zr + p;
+        }
+        if r < 1e-6 {
+            return 0.0; // the orbit stayed at the origin: inside the set
         }
         0.5 * r.ln() * r / dr
     }

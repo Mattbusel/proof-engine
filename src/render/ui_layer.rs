@@ -581,10 +581,16 @@ mod tests {
     fn ui_layer_projection_is_orthographic() {
         let ui = UiLayer::new(1280.0, 800.0);
         let proj = ui.projection();
-        // Top-left (0,0) should map to (-1, 1) in clip space.
+        // projection() deliberately maps y = 0 to clip y = -1 because this
+        // pass draws after the post-processing flip (see its comment), so
+        // (0, 0) lands at (-1, -1) and (w, h) at (1, 1). The old test
+        // expected the unflipped (-1, 1).
         let tl = proj * Vec4::new(0.0, 0.0, 0.0, 1.0);
         assert!((tl.x / tl.w - (-1.0)).abs() < 0.01);
-        assert!((tl.y / tl.w - 1.0).abs() < 0.01);
+        assert!((tl.y / tl.w - (-1.0)).abs() < 0.01);
+        let br = proj * Vec4::new(1280.0, 800.0, 0.0, 1.0);
+        assert!((br.x / br.w - 1.0).abs() < 0.01);
+        assert!((br.y / br.w - 1.0).abs() < 0.01);
     }
 
     #[test]

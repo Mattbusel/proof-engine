@@ -141,7 +141,7 @@ impl FieldEvaluator {
         evaluate_strength(entity, point)
     }
 
-    /// Sample the field on a regular 3D grid. Returns a flat array [z][y][x].
+    /// Sample the field on a regular 3D grid. Returns a flat array \[z\]\[y\]\[x\].
     pub fn sample_grid(
         &self,
         entity: &MetaballEntity,

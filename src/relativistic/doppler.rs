@@ -181,9 +181,12 @@ impl DopplerRenderer {
     /// Compute the Doppler frequency ratio (observed/emitted).
     pub fn frequency_ratio(&self, entity_pos: Vec3, entity_velocity: Vec3) -> f64 {
         let to_observer = (self.observer_pos - entity_pos).normalize_or_zero();
+        // Positive v_radial = receding. Observed/emitted frequency is
+        // sqrt((1 - beta) / (1 + beta)) for a receding source; this returned
+        // the reciprocal (the wavelength ratio), so approaching looked red.
         let v_radial = -entity_velocity.dot(to_observer) as f64;
         let beta = (v_radial / self.c).clamp(-0.9999999, 0.9999999);
-        ((1.0 + beta) / (1.0 - beta)).sqrt()
+        ((1.0 - beta) / (1.0 + beta)).sqrt()
     }
 
     /// Batch process: shift colors for multiple entities.

@@ -1979,7 +1979,7 @@ pub struct AssetServer {
     streaming: StreamingManager,
     loaders: Vec<LoaderEntry>,
     packs: Vec<AssetPack>,
-    /// Per-id typed handle storage: id -> Arc<RwLock<Option<T>>> erased as Box<dyn Any>
+    /// Per-id typed handle storage: id -> Arc<RwLock<Option`<T>`>> erased as Box`<dyn Any>`
     typed_slots: HashMap<u64, Box<dyn Any + Send + Sync>>,
     /// Statistics.
     stats: AssetServerStats,

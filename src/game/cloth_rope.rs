@@ -42,8 +42,9 @@ impl VerletPoint {
         }
         let velocity = self.position - self.old_position;
         self.old_position = self.position;
-        // Verlet: x_new = x + v + a * dt^2
-        self.position += velocity * 0.999 + self.acceleration * dt;
+        // Verlet: x_new = x + v + a * dt^2 (this used a * dt, so one 16 ms
+        // step under gravity moved a point 0.157 instead of 0.0025).
+        self.position += velocity * 0.999 + self.acceleration * dt * dt;
         self.acceleration = Vec3::ZERO;
     }
 
@@ -1651,18 +1652,31 @@ mod tests {
 
     #[test]
     fn test_cloth_step() {
+        // The strip already hangs at its rest length below the pinned top
+        // row, so "the bottom row moves below its rest position" (the old
+        // assertion) is not something an inextensible cloth does. Check the
+        // integrator instead: a free strip falls g * dt^2 in its first step,
+        // and a pinned one keeps its pinned row fixed.
+        let dt = 0.016;
+        let g = Vec3::new(0.0, -9.81, 0.0);
+        let mut free = ClothStrip::new(4, 4, 0.5, Vec3::ZERO);
+        let y0 = free.points[12].position.y;
+        free.apply_force(g);
+        free.step(dt, 4);
+        let fall = y0 - free.points[12].position.y;
+        assert!((fall - 9.81 * dt * dt).abs() < 1e-4, "fell {fall}");
+
         let mut cloth = ClothStrip::new(4, 4, 0.5, Vec3::ZERO);
-        cloth.pin_point(0);
-        cloth.pin_point(1);
-        cloth.pin_point(2);
-        cloth.pin_point(3);
-        cloth.apply_force(Vec3::new(0.0, -9.81, 0.0));
-        cloth.step(0.016, 4);
-        // Bottom points should have moved down
-        eprintln!("Point 12 y = {}", cloth.points[12].position.y);
-        eprintln!("Point 8 y = {}", cloth.points[8].position.y);
-        eprintln!("Point 4 y = {}", cloth.points[4].position.y);
-        assert!(cloth.points[12].position.y < -0.5 * 3.0);
+        for i in 0..4 {
+            cloth.pin_point(i);
+        }
+        for _ in 0..60 {
+            cloth.apply_force(g);
+            cloth.step(dt, 4);
+        }
+        assert_eq!(cloth.points[0].position, Vec3::ZERO);
+        // The bottom row stays close to its rest depth (-1.5), not above it.
+        assert!(cloth.points[12].position.y <= -1.45, "y = {}", cloth.points[12].position.y);
     }
 
     #[test]

@@ -222,10 +222,12 @@ mod tests {
     #[test]
     fn test_will_cross() {
         let portal = make_simple_portal();
-        // Moving left (in direction of entry normal = -x) through x=5
+        // The entry at x = 5 faces -x, so its front side is x < 5 (as
+        // test_visible_portals also says). The old test started at x = 6,
+        // behind the portal, and so could never cross front to back.
         let crosses = portal.will_cross(
-            Vec2::new(6.0, 0.0),   // in front of entry
-            Vec2::new(-10.0, 0.0), // moving toward entry
+            Vec2::new(4.0, 0.0),  // in front of entry
+            Vec2::new(10.0, 0.0), // moving through it
             1.0,
         );
         assert!(crosses, "Should cross the portal");
@@ -246,8 +248,8 @@ mod tests {
     fn test_will_not_cross_outside_width() {
         let portal = make_simple_portal();
         let crosses = portal.will_cross(
-            Vec2::new(6.0, 10.0), // far from portal centerline
-            Vec2::new(-10.0, 0.0),
+            Vec2::new(4.0, 10.0), // in front, but far from the centreline
+            Vec2::new(10.0, 0.0),
             1.0,
         );
         assert!(!crosses);
@@ -287,9 +289,10 @@ mod tests {
         let mut mgr = PortalManager::new();
         mgr.add_portal(make_simple_portal());
 
+        // Start on the entry's front side (x < 5) and move through it.
         let (new_pos, _new_vel, topo) = mgr.update_entity(
-            Vec2::new(6.0, 0.0),
-            Vec2::new(-10.0, 0.0),
+            Vec2::new(4.0, 0.0),
+            Vec2::new(10.0, 0.0),
             1.0,
         );
         assert!(topo.is_some());

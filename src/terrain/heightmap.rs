@@ -1377,12 +1377,12 @@ impl HeightMap {
         for v in self.data.iter_mut() { *v = 1.0 - *v; }
     }
 
-    /// Add a constant offset to all values (clamped to [0,1]).
+    /// Add a constant offset to all values (clamped to \[0,1\]).
     pub fn offset(&mut self, delta: f32) {
         for v in self.data.iter_mut() { *v = (*v + delta).clamp(0.0, 1.0); }
     }
 
-    /// Scale all values by a multiplier (clamped to [0,1]).
+    /// Scale all values by a multiplier (clamped to \[0,1\]).
     pub fn scale(&mut self, factor: f32) {
         for v in self.data.iter_mut() { *v = (*v * factor).clamp(0.0, 1.0); }
     }
@@ -1560,7 +1560,7 @@ impl HeightMap {
     }
 
     /// Compute a distance field: each cell stores distance to the nearest cell
-    /// with value >= `threshold`, normalized to [0,1].
+    /// with value >= `threshold`, normalized to \[0,1\].
     pub fn distance_field(&self, threshold: f32) -> HeightMap {
         let w = self.width;
         let h = self.height;

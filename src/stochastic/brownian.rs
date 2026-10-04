@@ -75,7 +75,7 @@ impl BrownianMotion {
         Self { dimension, dt, variance }
     }
 
-    /// Single step: returns the increment dW as a Vec<f64>.
+    /// Single step: returns the increment dW as a Vec`<f64>`.
     pub fn step(&self, rng: &mut Rng) -> Vec<f64> {
         let scale = (self.variance * self.dt).sqrt();
         (0..self.dimension).map(|_| rng.normal() * scale).collect()

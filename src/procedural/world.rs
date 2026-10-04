@@ -663,7 +663,11 @@ impl RoadNetwork {
                 path.reverse();
                 return path;
             }
-            if cost > dist[idx] { continue; }
+            // `cost` is f = g + h; compare its g part with the best known g.
+            // Comparing f with g (as this did) skipped every node but the
+            // start, so no path was ever found.
+            let h_here = ((x as f32 - bx as f32).powi(2) + (y as f32 - by as f32).powi(2)).sqrt();
+            if cost - h_here > dist[idx] + 1e-4 { continue; }
 
             for (dx, dy) in &[(0i32,1),(0,-1),(1,0),(-1,0)] {
                 let nx = x as i32 + dx;

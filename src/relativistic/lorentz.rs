@@ -15,6 +15,7 @@ pub fn lorentz_factor(v: f64, c: f64) -> f64 {
 /// A four-vector in Minkowski spacetime with signature (+, -, -, -).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FourVector {
+    /// Time component in length units (c times t).
     pub t: f64,
     pub x: f64,
     pub y: f64,
@@ -155,11 +156,15 @@ impl LorentzBoost {
 
 /// General Lorentz boost of a four-vector along an arbitrary velocity direction.
 ///
-/// Uses the standard formula for a boost along direction n = v/|v|:
-///   t' = gamma (t - (v . r) / c^2)
-///   r' = r + (gamma - 1)(r . n)n - gamma v t
+/// The time component is `c t` (the same units as x, y, z), matching the
+/// Minkowski product in [`FourVector::dot`]. With beta = v / c and
+/// n = v / |v|:
+///   t' = gamma (t - beta . r)
+///   r' = r + (gamma - 1)(r . n) n - gamma beta t
 ///
-/// where r = (x, y, z) spatial part.
+/// The old version mixed conventions (it divided r . v by c^2 but
+/// subtracted v t, as if t were seconds), so boosts did not preserve the
+/// interval: (10, 1, 2, 0) at 0.5c went from 95 to about -3e18.
 pub fn boost(four_vec: &FourVector, velocity: Vec3, c: f64) -> FourVector {
     let vx = velocity.x as f64;
     let vy = velocity.y as f64;
@@ -174,17 +179,16 @@ pub fn boost(four_vec: &FourVector, velocity: Vec3, c: f64) -> FourVector {
     let nx = vx / v_mag;
     let ny = vy / v_mag;
     let nz = vz / v_mag;
+    let (bx, by, bz) = (vx / c, vy / c, vz / c);
 
-    // r dot n
     let r_dot_n = four_vec.x * nx + four_vec.y * ny + four_vec.z * nz;
-    // r dot v
-    let r_dot_v = four_vec.x * vx + four_vec.y * vy + four_vec.z * vz;
+    let r_dot_b = four_vec.x * bx + four_vec.y * by + four_vec.z * bz;
 
-    let t_prime = gamma * (four_vec.t - r_dot_v / (c * c));
+    let t_prime = gamma * (four_vec.t - r_dot_b);
     let coeff = (gamma - 1.0) * r_dot_n;
-    let x_prime = four_vec.x + coeff * nx - gamma * vx * four_vec.t;
-    let y_prime = four_vec.y + coeff * ny - gamma * vy * four_vec.t;
-    let z_prime = four_vec.z + coeff * nz - gamma * vz * four_vec.t;
+    let x_prime = four_vec.x + coeff * nx - gamma * bx * four_vec.t;
+    let y_prime = four_vec.y + coeff * ny - gamma * by * four_vec.t;
+    let z_prime = four_vec.z + coeff * nz - gamma * bz * four_vec.t;
 
     FourVector::new(t_prime, x_prime, y_prime, z_prime)
 }

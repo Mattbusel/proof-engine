@@ -288,7 +288,7 @@ pub fn simpsons38(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
 }
 
 /// Gauss-Legendre quadrature. Supports n = 1..=5 nodes (pre-computed).
-/// Maps from [-1,1] to [a,b].
+/// Maps from [-1,1] to \[a,b\].
 pub fn gauss_legendre(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
     // (nodes, weights) on [-1, 1]
     let (nodes, weights): (&[f64], &[f64]) = match n {
@@ -1059,7 +1059,7 @@ pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 
 /// Bilinear interpolation on a unit square.
 /// tl=top-left, tr=top-right, bl=bottom-left, br=bottom-right.
-/// tx, ty in [0,1].
+/// tx, ty in \[0,1\].
 #[inline]
 pub fn bilinear(tl: f64, tr: f64, bl: f64, br: f64, tx: f64, ty: f64) -> f64 {
     let top = lerp(tl, tr, tx);

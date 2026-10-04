@@ -388,7 +388,9 @@ mod tests {
     fn test_chsh_violation() {
         // For Phi+, optimal angles give S = 2*sqrt(2) ~ 2.828
         let state = bell_state(0);
-        let s = chsh_correlation(&state, 0.0, PI / 2.0, PI / 4.0, -PI / 4.0);
+        // E(a, b) = cos(a - b) for Phi+. With S = E11 - E12 + E21 + E22 the
+        // optimal settings are b2 = 3pi/4; the old b2 = -pi/4 gives S = 0.
+        let s = chsh_correlation(&state, 0.0, PI / 2.0, PI / 4.0, 3.0 * PI / 4.0);
         assert!(s > 2.0, "CHSH S = {} should violate Bell inequality (> 2)", s);
         assert!((s - 2.0 * 2.0_f64.sqrt()).abs() < 0.3, "S = {} should be ~2.828", s);
     }

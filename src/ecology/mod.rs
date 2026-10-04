@@ -83,8 +83,16 @@ impl Ecosystem {
 
         for i in 0..n {
             let s = &self.species[i];
-            // Logistic growth: dN/dt = rN(1 - N/K)
-            dpop[i] += s.growth_rate * s.population * (1.0 - s.population / s.carrying_capacity.max(1.0));
+            if s.growth_rate > 0.0 {
+                // Logistic growth: dN/dt = rN(1 - N/K)
+                dpop[i] += s.growth_rate * s.population * (1.0 - s.population / s.carrying_capacity.max(1.0));
+            } else {
+                // A negative rate is a death rate (predators without prey):
+                // dN/dt = rN. Putting it through the logistic term flipped
+                // its sign above K, so a large predator population grew
+                // without food and wiped out its prey.
+                dpop[i] += s.growth_rate * s.population;
+            }
         }
 
         // Interaction effects

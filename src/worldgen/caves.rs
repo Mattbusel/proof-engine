@@ -121,11 +121,15 @@ fn generate_single(w: usize, h: usize, d: usize, rng: &mut Rng) -> CaveSystem {
 
     // 2. Cellular automata (4 iterations)
     for _ in 0..4 {
-        let old = grid.solid.clone();
+        // Count neighbours in the previous generation. Counting in `grid`
+        // while writing to it (as this did) let cells already turned solid in
+        // this pass vote for their neighbours, and the cave filled in solid.
+        let old_grid = grid.clone();
+        let old = &old_grid.solid;
         for z in 1..d - 1 {
             for y in 1..h - 1 {
                 for x in 1..w - 1 {
-                    let neighbors = grid.count_neighbors(x, y, z);
+                    let neighbors = old_grid.count_neighbors(x, y, z);
                     let idx = grid.idx(x, y, z);
                     grid.solid[idx] = if old[idx] {
                         // Survival: stay solid if >= 13 solid neighbors

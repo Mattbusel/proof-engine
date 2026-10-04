@@ -38,12 +38,16 @@ pub struct CommunityResult {
 /// Compute modularity Q for a given partitioning of the graph.
 /// Q = (1/2m) * sum_ij [ A_ij - k_i*k_j/(2m) ] * delta(c_i, c_j)
 pub fn modularity<N, E>(graph: &Graph<N, E>, communities: &[Community]) -> f32 {
+    // Newman modularity, per community c:
+    //   undirected: Q = sum_c [ L_c / m - (D_c / 2m)^2 ]
+    //   directed:   Q = sum_c [ L_c / m - Dout_c * Din_c / m^2 ]
+    // with L_c the edges inside c and D_c the summed degrees of c. The old
+    // version summed A_ij - k_i k_j / 2m over edges only, leaving out the
+    // expected-edge terms of every non-adjacent pair, so a single community
+    // scored 0.5 instead of 0.
     let m = graph.edge_count() as f32;
     if m == 0.0 { return 0.0; }
 
-    let m2 = if graph.kind == GraphKind::Undirected { 2.0 * m } else { m };
-
-    // Build community assignment map
     let mut community_of: HashMap<NodeId, usize> = HashMap::new();
     for (ci, comm) in communities.iter().enumerate() {
         for &nid in &comm.members {
@@ -51,26 +55,31 @@ pub fn modularity<N, E>(graph: &Graph<N, E>, communities: &[Community]) -> f32 {
         }
     }
 
-    let mut q = 0.0f32;
-    let node_ids = graph.node_ids();
-
-    // Precompute degrees
-    let degrees: HashMap<NodeId, f32> = node_ids.iter()
-        .map(|&nid| (nid, graph.degree(nid) as f32))
-        .collect();
-
+    let k = communities.len();
+    let mut inside = vec![0.0f32; k];
+    let mut d_out = vec![0.0f32; k];
+    let mut d_in = vec![0.0f32; k];
     for edge in graph.edges() {
-        let ci = community_of.get(&edge.from).copied().unwrap_or(usize::MAX);
-        let cj = community_of.get(&edge.to).copied().unwrap_or(usize::MAX);
-        if ci == cj {
-            q += 1.0 - degrees[&edge.from] * degrees[&edge.to] / m2;
-            if graph.kind == GraphKind::Undirected {
-                q += 1.0 - degrees[&edge.to] * degrees[&edge.from] / m2;
-            }
+        let ci = community_of.get(&edge.from).copied();
+        let cj = community_of.get(&edge.to).copied();
+        if let Some(ci) = ci { d_out[ci] += 1.0; }
+        if let Some(cj) = cj { d_in[cj] += 1.0; }
+        if ci.is_some() && ci == cj {
+            inside[ci.unwrap_or(0)] += 1.0;
         }
     }
 
-    q / m2
+    let mut q = 0.0f32;
+    for c in 0..k {
+        q += inside[c] / m;
+        if graph.kind == GraphKind::Undirected {
+            let d = (d_out[c] + d_in[c]) / (2.0 * m);
+            q -= d * d;
+        } else {
+            q -= d_out[c] * d_in[c] / (m * m);
+        }
+    }
+    q
 }
 
 /// Louvain method for community detection.

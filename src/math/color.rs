@@ -4,6 +4,8 @@
 //! CIE LCH, and XYZ color spaces. Also includes gradient building, palette
 //! generation, color harmonies, and LUT support.
 
+#![warn(missing_docs)]
+
 use glam::{Vec3, Vec4};
 use std::f32::consts::PI;
 
@@ -12,28 +14,46 @@ use std::f32::consts::PI;
 /// Linear RGB color with alpha, all in `[0.0, 1.0]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rgba {
+    /// Red, 0.0 to 1.0.
     pub r: f32,
+    /// Green, 0.0 to 1.0.
     pub g: f32,
+    /// Blue, 0.0 to 1.0.
     pub b: f32,
+    /// Alpha (opacity), 0.0 to 1.0.
     pub a: f32,
 }
 
 impl Rgba {
+    /// Opaque white.
     pub const WHITE:   Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    /// Opaque black.
     pub const BLACK:   Rgba = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    /// Opaque red.
     pub const RED:     Rgba = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+    /// Opaque green.
     pub const GREEN:   Rgba = Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+    /// Opaque blue.
     pub const BLUE:    Rgba = Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+    /// Opaque yellow.
     pub const YELLOW:  Rgba = Rgba { r: 1.0, g: 1.0, b: 0.0, a: 1.0 };
+    /// Opaque cyan.
     pub const CYAN:    Rgba = Rgba { r: 0.0, g: 1.0, b: 1.0, a: 1.0 };
+    /// Opaque magenta.
     pub const MAGENTA: Rgba = Rgba { r: 1.0, g: 0.0, b: 1.0, a: 1.0 };
+    /// Fully transparent black.
     pub const TRANSPARENT: Rgba = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
 
+    /// A colour from red, green, blue and alpha.
     pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self { Self { r, g, b, a } }
+    /// An opaque colour from red, green and blue.
     pub fn rgb(r: f32, g: f32, b: f32) -> Self { Self { r, g, b, a: 1.0 } }
 
+    /// From a `Vec4` laid out as (r, g, b, a).
     pub fn from_vec4(v: Vec4) -> Self { Self { r: v.x, g: v.y, b: v.z, a: v.w } }
+    /// As a `Vec4` (r, g, b, a).
     pub fn to_vec4(self) -> Vec4 { Vec4::new(self.r, self.g, self.b, self.a) }
+    /// As a `Vec3` (r, g, b), dropping alpha.
     pub fn to_vec3(self) -> Vec3 { Vec3::new(self.r, self.g, self.b) }
 
     /// Construct from an `0xRRGGBB` hex literal (alpha = 1).
@@ -53,7 +73,9 @@ impl Rgba {
         Self { r, g, b, a }
     }
 
+    /// The same colour with alpha replaced by `a`.
     pub fn with_alpha(self, a: f32) -> Self { Self { a, ..self } }
+    /// Per-channel linear interpolation: `t = 0` gives `self`, `t = 1` gives `other`.
     pub fn lerp(self, other: Rgba, t: f32) -> Self {
         Rgba {
             r: self.r + (other.r - self.r) * t,
@@ -120,6 +142,7 @@ pub fn srgb_to_linear_channel(x: f32) -> f32 {
     }
 }
 
+/// Encode linear RGB to sRGB gamma (alpha unchanged).
 pub fn linear_to_srgb(c: Rgba) -> Rgba {
     Rgba::new(
         linear_to_srgb_channel(c.r),
@@ -129,6 +152,7 @@ pub fn linear_to_srgb(c: Rgba) -> Rgba {
     )
 }
 
+/// Decode sRGB gamma to linear RGB (alpha unchanged).
 pub fn srgb_to_linear(c: Rgba) -> Rgba {
     Rgba::new(
         srgb_to_linear_channel(c.r),
@@ -142,22 +166,33 @@ pub fn srgb_to_linear(c: Rgba) -> Rgba {
 
 /// HSV color: hue in `[0, 360)`, saturation and value in `[0, 1]`.
 #[derive(Debug, Clone, Copy)]
-pub struct Hsv { pub h: f32, pub s: f32, pub v: f32 }
+pub struct Hsv {
+    /// Hue in degrees, 0 to 360.
+    pub h: f32,
+    /// Saturation, 0.0 to 1.0.
+    pub s: f32,
+    /// Value (brightness), 0.0 to 1.0.
+    pub v: f32,
+}
 
 impl Hsv {
+    /// From hue (degrees), saturation and value.
     pub fn new(h: f32, s: f32, v: f32) -> Self { Self { h, s, v } }
 
+    /// Convert to an opaque RGB colour.
     pub fn to_rgb(self) -> Rgba {
         let (r, g, b) = hsv_to_rgb(self.h, self.s, self.v);
         Rgba::rgb(r, g, b)
     }
 
+    /// Convert from RGB (alpha ignored).
     pub fn from_rgb(c: Rgba) -> Self {
         let (h, s, v) = rgb_to_hsv(c.r, c.g, c.b);
         Self { h, s, v }
     }
 }
 
+/// HSV (hue in degrees, wrapped to 0..360) to `(r, g, b)`.
 pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     if s == 0.0 { return (v, v, v); }
     let h = ((h % 360.0) + 360.0) % 360.0;
@@ -176,6 +211,7 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     }
 }
 
+/// `(r, g, b)` to HSV with hue in degrees, 0 to 360.
 pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -199,11 +235,20 @@ pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 /// HSL color: hue in `[0, 360)`, saturation and lightness in `[0, 1]`.
 #[derive(Debug, Clone, Copy)]
-pub struct Hsl { pub h: f32, pub s: f32, pub l: f32 }
+pub struct Hsl {
+    /// Hue in degrees, 0 to 360.
+    pub h: f32,
+    /// Saturation, 0.0 to 1.0.
+    pub s: f32,
+    /// Lightness, 0.0 to 1.0.
+    pub l: f32,
+}
 
 impl Hsl {
+    /// From hue (degrees), saturation and lightness.
     pub fn new(h: f32, s: f32, l: f32) -> Self { Self { h, s, l } }
 
+    /// Convert to an opaque RGB colour.
     pub fn to_rgb(self) -> Rgba {
         let (r, g, b) = hsl_to_rgb(self.h, self.s, self.l);
         Rgba::rgb(r, g, b)
@@ -218,6 +263,7 @@ fn hue_to_rgb(p: f32, q: f32, t: f32) -> f32 {
     p
 }
 
+/// HSL (hue in degrees) to `(r, g, b)`.
 pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     if s == 0.0 { return (l, l, l); }
     let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
@@ -230,6 +276,7 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     )
 }
 
+/// `(r, g, b)` to HSL with hue in degrees.
 pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -252,11 +299,19 @@ pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 // ── Oklab ────────────────────────────────────────────────────────────────────
 
 /// Oklab color: a perceptually uniform color space by Björn Ottosson.
-/// `L` = lightness [0,1], `a` and `b` are chroma axes (approx −0.5..0.5).
+/// `L` = lightness \[0,1\], `a` and `b` are chroma axes (approx −0.5..0.5).
 #[derive(Debug, Clone, Copy)]
-pub struct Oklab { pub l: f32, pub a: f32, pub b: f32 }
+pub struct Oklab {
+    /// Perceived lightness, 0.0 to 1.0.
+    pub l: f32,
+    /// Green (negative) to red (positive) axis.
+    pub a: f32,
+    /// Blue (negative) to yellow (positive) axis.
+    pub b: f32,
+}
 
 impl Oklab {
+    /// Convert from linear RGB (alpha ignored).
     pub fn from_linear_rgb(c: Rgba) -> Self {
         let l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
         let m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
@@ -273,6 +328,7 @@ impl Oklab {
         }
     }
 
+    /// Convert to opaque linear RGB (may fall outside 0..1 for out-of-gamut colours).
     pub fn to_linear_rgb(self) -> Rgba {
         let l_ = self.l + 0.3963377774 * self.a + 0.2158037573 * self.b;
         let m_ = self.l - 0.1055613458 * self.a - 0.0638541728 * self.b;
@@ -303,9 +359,17 @@ impl Oklab {
 
 /// CIE XYZ (D65 white point).
 #[derive(Debug, Clone, Copy)]
-pub struct Xyz { pub x: f32, pub y: f32, pub z: f32 }
+pub struct Xyz {
+    /// X tristimulus value.
+    pub x: f32,
+    /// Y tristimulus value (luminance).
+    pub y: f32,
+    /// Z tristimulus value.
+    pub z: f32,
+}
 
 impl Xyz {
+    /// Convert from linear sRGB primaries (alpha ignored).
     pub fn from_linear_rgb(c: Rgba) -> Self {
         Self {
             x: c.r * 0.4124 + c.g * 0.3576 + c.b * 0.1805,
@@ -314,6 +378,7 @@ impl Xyz {
         }
     }
 
+    /// Convert to opaque linear sRGB.
     pub fn to_linear_rgb(self) -> Rgba {
         Rgba::rgb(
              self.x *  3.2406 + self.y * -1.5372 + self.z * -0.4986,
@@ -327,7 +392,14 @@ impl Xyz {
 
 /// CIE L*a*b* color space (D65 white point).
 #[derive(Debug, Clone, Copy)]
-pub struct Lab { pub l: f32, pub a: f32, pub b: f32 }
+pub struct Lab {
+    /// Lightness, 0 to 100.
+    pub l: f32,
+    /// Green (negative) to red (positive) axis.
+    pub a: f32,
+    /// Blue (negative) to yellow (positive) axis.
+    pub b: f32,
+}
 
 const D65_X: f32 = 0.95047;
 const D65_Y: f32 = 1.00000;
@@ -338,6 +410,7 @@ fn xyz_to_lab_f(t: f32) -> f32 {
 }
 
 impl Lab {
+    /// Convert from XYZ relative to the D65 white point.
     pub fn from_xyz(xyz: Xyz) -> Self {
         let fx = xyz_to_lab_f(xyz.x / D65_X);
         let fy = xyz_to_lab_f(xyz.y / D65_Y);
@@ -349,6 +422,7 @@ impl Lab {
         }
     }
 
+    /// Convert to XYZ relative to the D65 white point.
     pub fn to_xyz(self) -> Xyz {
         let fy = (self.l + 16.0) / 116.0;
         let fx = self.a / 500.0 + fy;
@@ -357,10 +431,12 @@ impl Lab {
         Xyz { x: cube(fx) * D65_X, y: cube(fy) * D65_Y, z: cube(fz) * D65_Z }
     }
 
+    /// Convert from linear RGB (alpha ignored).
     pub fn from_rgb(c: Rgba) -> Self {
         Self::from_xyz(Xyz::from_linear_rgb(c))
     }
 
+    /// Convert to opaque linear RGB.
     pub fn to_rgb(self) -> Rgba {
         self.to_xyz().to_linear_rgb()
     }
@@ -376,9 +452,17 @@ impl Lab {
 
 /// CIE LCH (Lightness, Chroma, Hue in degrees).
 #[derive(Debug, Clone, Copy)]
-pub struct Lch { pub l: f32, pub c: f32, pub h: f32 }
+pub struct Lch {
+    /// Lightness, 0 to 100.
+    pub l: f32,
+    /// Chroma (colourfulness), 0 and up.
+    pub c: f32,
+    /// Hue in degrees, 0 to 360.
+    pub h: f32,
+}
 
 impl Lch {
+    /// Convert from Lab (polar form of a and b).
     pub fn from_lab(lab: Lab) -> Self {
         let c = (lab.a * lab.a + lab.b * lab.b).sqrt();
         let h = lab.b.atan2(lab.a).to_degrees();
@@ -386,14 +470,19 @@ impl Lch {
         Self { l: lab.l, c, h }
     }
 
+    /// Convert to Lab.
     pub fn to_lab(self) -> Lab {
         let h_rad = self.h.to_radians();
         Lab { l: self.l, a: self.c * h_rad.cos(), b: self.c * h_rad.sin() }
     }
 
+    /// Convert from linear RGB (alpha ignored).
     pub fn from_rgb(c: Rgba) -> Self { Self::from_lab(Lab::from_rgb(c)) }
+    /// Convert to opaque linear RGB.
     pub fn to_rgb(self) -> Rgba { self.to_lab().to_rgb() }
 
+    /// Interpolate lightness and chroma linearly and hue along the shorter
+    /// way round the colour wheel.
     pub fn lerp_hue(self, other: Lch, t: f32) -> Lch {
         // Shortest path around the hue circle
         let mut dh = other.h - self.h;
@@ -425,22 +514,28 @@ pub enum GradientMode {
 /// A color stop in a gradient.
 #[derive(Debug, Clone, Copy)]
 pub struct ColorStop {
-    pub t:     f32,   // [0, 1]
+    /// Position along the gradient, 0.0 to 1.0.
+    pub t:     f32,
+    /// Colour at that position.
     pub color: Rgba,
 }
 
 /// A multi-stop color gradient.
 #[derive(Debug, Clone)]
 pub struct Gradient {
+    /// Stops, kept sorted by `t`.
     pub stops: Vec<ColorStop>,
+    /// Colour space used to blend between stops.
     pub mode:  GradientMode,
 }
 
 impl Gradient {
+    /// An empty gradient that blends in `mode`.
     pub fn new(mode: GradientMode) -> Self {
         Self { stops: Vec::new(), mode }
     }
 
+    /// Add a stop at `t` (clamped to 0..1) and keep the stops sorted.
     pub fn add_stop(mut self, t: f32, color: Rgba) -> Self {
         self.stops.push(ColorStop { t: t.clamp(0.0, 1.0), color });
         self.stops.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
@@ -644,6 +739,7 @@ pub fn gradient_viridis() -> Gradient {
     preset_gradient("viridis").expect("built-in preset")
 }
 
+/// Black through dark red, orange and yellow to white.
 pub fn gradient_fire() -> Gradient {
     Gradient::new(GradientMode::LinearRgb)
         .add_stop(0.0, Rgba::BLACK)
@@ -653,6 +749,7 @@ pub fn gradient_fire() -> Gradient {
         .add_stop(1.0, Rgba::WHITE)
 }
 
+/// Black through deep blue and sky blue to white, blended in Oklab.
 pub fn gradient_ice() -> Gradient {
     Gradient::new(GradientMode::Oklab)
         .add_stop(0.0, Rgba::BLACK)
@@ -661,6 +758,7 @@ pub fn gradient_ice() -> Gradient {
         .add_stop(1.0, Rgba::WHITE)
 }
 
+/// Magenta to cyan and back to magenta, blended in Oklab.
 pub fn gradient_neon() -> Gradient {
     Gradient::new(GradientMode::Oklab)
         .add_stop(0.0, Rgba::from_hex(0xff00ff))
@@ -668,6 +766,7 @@ pub fn gradient_neon() -> Gradient {
         .add_stop(1.0, Rgba::from_hex(0xff00ff))
 }
 
+/// Health bar colours: red at 0, amber at 0.5, green at 1.
 pub fn gradient_health() -> Gradient {
     Gradient::new(GradientMode::Oklab)
         .add_stop(0.0, Rgba::rgb(1.0, 0.0, 0.0))
@@ -728,11 +827,14 @@ pub fn tetradic(c: Rgba) -> [Rgba; 4] {
 /// A named palette of colors.
 #[derive(Debug, Clone)]
 pub struct Palette {
+    /// Display name.
     pub name:   String,
+    /// The colours, in order.
     pub colors: Vec<Rgba>,
 }
 
 impl Palette {
+    /// A palette called `name` with these colours.
     pub fn new(name: impl Into<String>, colors: Vec<Rgba>) -> Self {
         Self { name: name.into(), colors }
     }

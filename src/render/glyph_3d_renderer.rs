@@ -22,9 +22,9 @@ pub struct Glyph3DInstance {
     pub base_color: [f32; 4],
     /// Emission intensity.
     pub emission: f32,
-    /// Metallic factor [0,1].
+    /// Metallic factor \[0,1\].
     pub metallic: f32,
-    /// Roughness factor [0,1].
+    /// Roughness factor \[0,1\].
     pub roughness: f32,
     /// Animation phase (for per-glyph time offset).
     pub animation_phase: f32,

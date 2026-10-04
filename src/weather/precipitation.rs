@@ -66,7 +66,7 @@ pub struct PrecipitationConfig {
     pub grid_depth: usize,
     /// World units covered by each accumulation cell.
     pub cell_size: f32,
-    /// Threshold humidity for rain formation [0,1].
+    /// Threshold humidity for rain formation \[0,1\].
     pub rain_humidity_threshold: f32,
     /// Temperature (°C) below which precipitation falls as snow.
     pub snow_threshold_c: f32,
@@ -534,7 +534,7 @@ pub struct SnowpackLayer {
     pub density: f32,
     /// Temperature of the layer (K).
     pub temp_k: f32,
-    /// Liquid water content [0,1] from melt.
+    /// Liquid water content \[0,1\] from melt.
     pub liquid_water: f32,
     /// Whether this layer has refrozen into ice.
     pub is_ice_layer: bool,
@@ -824,7 +824,7 @@ pub struct SleetParticle {
     pub position: Vec3,
     pub velocity: Vec3,
     pub radius_m: f32,
-    /// Ice fraction [0,1].
+    /// Ice fraction \[0,1\].
     pub ice_fraction: f32,
     pub lifetime: f32,
 }
@@ -880,7 +880,7 @@ pub struct ThunderCell {
     pub mean_discharge_interval: f32,
     /// Cell lifetime remaining (s).
     pub lifetime: f32,
-    /// Cell intensity [0,1].
+    /// Cell intensity \[0,1\].
     pub intensity: f32,
     /// Random seed for this cell's internal variation.
     cell_seed: f32,
@@ -990,7 +990,7 @@ pub struct LightningBolt {
     pub peak_current_ka: f32,
     /// Number of return strokes.
     pub return_strokes: u32,
-    /// Thunder intensity [0,1].
+    /// Thunder intensity \[0,1\].
     pub thunder_intensity: f32,
 }
 

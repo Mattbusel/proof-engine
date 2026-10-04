@@ -347,7 +347,14 @@ pub fn energy_eigenvalues(potential: &[f64], n_states: usize, dx: f64, mass: f64
     let v_max = potential.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
     let mut eigenvalues = Vec::new();
-    let de = (v_max - v_min + 10.0) / 10000.0;
+    // Energy scan step. It used to be (V_max - V_min) / 10000, so a tall
+    // wall (an "infinite" well of 1e6) made the step 100, larger than the
+    // first several level spacings, and the low levels were skipped. Step
+    // at a fraction of the box's ground-state scale hbar^2 pi^2 / (2 m L^2),
+    // capped so a tall potential still needs at most 200,000 steps.
+    let length = (n.max(2) - 1) as f64 * dx;
+    let e_scale = hbar * hbar * std::f64::consts::PI.powi(2) / (2.0 * mass * length * length);
+    let de = (e_scale / 50.0).max((v_max - v_min + 10.0) / 200_000.0);
     let mut e = v_min + de;
     let mut prev_end = shoot(potential, e, dx, mass, hbar);
 
@@ -537,7 +544,7 @@ pub fn normalize(psi: &mut [Complex], dx: f64) {
     }
 }
 
-/// Expectation value of position: <x> = integral psi* x psi dx.
+/// Expectation value of position: `<x>` = integral psi* x psi dx.
 pub fn expectation_x(psi: &WaveFunction1D) -> f64 {
     let mut sum = 0.0;
     for i in 0..psi.n() {
@@ -547,7 +554,7 @@ pub fn expectation_x(psi: &WaveFunction1D) -> f64 {
     sum * psi.dx
 }
 
-/// Expectation value of momentum: <p> = -i hbar integral psi* dpsi/dx dx.
+/// Expectation value of momentum: `<p>` = -i hbar integral psi* dpsi/dx dx.
 pub fn expectation_p(psi: &WaveFunction1D, hbar: f64) -> f64 {
     let n = psi.n();
     let dx = psi.dx;
@@ -560,7 +567,7 @@ pub fn expectation_p(psi: &WaveFunction1D, hbar: f64) -> f64 {
     result.re
 }
 
-/// Uncertainty in position: sqrt(<x^2> - <x>^2).
+/// Uncertainty in position: sqrt(<x^2> - `<x>`^2).
 pub fn uncertainty_x(psi: &WaveFunction1D) -> f64 {
     let ex = expectation_x(psi);
     let mut ex2 = 0.0;
@@ -572,7 +579,7 @@ pub fn uncertainty_x(psi: &WaveFunction1D) -> f64 {
     (ex2 - ex * ex).max(0.0).sqrt()
 }
 
-/// Uncertainty in momentum: sqrt(<p^2> - <p>^2).
+/// Uncertainty in momentum: sqrt(<p^2> - `<p>`^2).
 pub fn uncertainty_p(psi: &WaveFunction1D, hbar: f64) -> f64 {
     let ep = expectation_p(psi, hbar);
     let n = psi.n();
@@ -764,6 +771,7 @@ mod tests {
             // Should be close to 4 (2^2/1^2)
             assert!((ratio - 4.0).abs() < 1.0, "Ratio: {}", ratio);
         }
+        assert_eq!(evals.len(), 3, "should find the three lowest levels");
     }
 
     #[test]

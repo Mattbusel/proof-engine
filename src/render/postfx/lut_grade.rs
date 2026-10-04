@@ -493,7 +493,9 @@ mod tests {
         let lut = Lut3D::identity(4);
         let bytes = lut.to_rgb_u8();
         assert_eq!(bytes.len(), 4 * 4 * 4 * 3);
-        assert!(*bytes.iter().max().unwrap() <= 255);
+        // An identity LUT spans the full range: black to white.
+        assert_eq!(*bytes.iter().max().unwrap(), 255);
+        assert_eq!(*bytes.iter().min().unwrap(), 0);
     }
 
     #[test]

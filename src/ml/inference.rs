@@ -130,10 +130,11 @@ struct OnnxNode {
 pub struct OnnxLoader;
 
 impl OnnxLoader {
-    /// Load an ONNX model from a binary file. This implements a minimal
-    /// subset of the protobuf format — enough for simple models.
+    /// Load a model from this engine's own simple binary layout.
     ///
-    /// The format we support is our own simplified binary:
+    /// Despite the name and the `ONNX` magic bytes, this is **not** the ONNX
+    /// protobuf format: real `.onnx` files from PyTorch or ONNX Runtime will
+    /// be rejected. The layout:
     /// - magic: b"ONNX" (4 bytes)
     /// - num_nodes: u32 LE
     /// - For each node:
@@ -226,9 +227,13 @@ impl OnnxLoader {
                 5 => Layer::Flatten, // Reshape treated as flatten
                 6 => Layer::Softmax(0),
                 7 | 8 => {
-                    // Add / Mul are skip layers (element-wise with weights handled
-                    // at a higher level; here we just store as identity)
-                    Layer::ReLU // placeholder: identity-ish
+                    // Element-wise Add / Mul need graph connections this
+                    // sequential model does not have. They used to be loaded
+                    // as ReLU, which silently zeroed negative values.
+                    return Err(format!(
+                        "op type {op_type} ({}) is not supported by the sequential loader",
+                        if op_type == 7 { "Add" } else { "Mul" }
+                    ));
                 }
                 _ => return Err(format!("unknown op type {op_type}")),
             };
@@ -395,6 +400,21 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_add_mul_ops_are_rejected_not_loaded_as_relu() {
+        for op in [7u8, 8] {
+            let path = std::env::temp_dir().join(format!("proof_engine_op{op}.onnx"));
+            let mut bytes = b"ONNX".to_vec();
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // one node
+            bytes.push(op);
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // no weights
+            std::fs::write(&path, &bytes).unwrap();
+            let result = OnnxLoader::load_onnx(path.to_str().unwrap());
+            assert!(result.is_err(), "op {op} loaded: {:?}", result.map(|m| m.layers.len()));
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

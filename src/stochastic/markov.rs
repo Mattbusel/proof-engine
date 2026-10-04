@@ -15,7 +15,7 @@ use glam::Vec2;
 pub struct MarkovChain {
     /// Number of states.
     pub states: usize,
-    /// Row-stochastic transition matrix: transition[i][j] = P(X_{n+1}=j | X_n=i).
+    /// Row-stochastic transition matrix: transition\[i\]\[j\] = P(X_{n+1}=j | X_n=i).
     pub transition: Vec<Vec<f64>>,
 }
 
@@ -267,7 +267,7 @@ fn mat_add(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 // ---------------------------------------------------------------------------
 
 /// Continuous-time Markov chain defined by a generator matrix Q.
-/// Q[i][j] >= 0 for i != j, Q[i][i] = -sum_{j!=i} Q[i][j].
+/// Q\[i\]\[j\] >= 0 for i != j, Q\[i\]\[i\] = -sum_{j!=i} Q\[i\]\[j\].
 pub struct ContinuousTimeMarkov {
     pub states: usize,
     pub generator: Vec<Vec<f64>>,
@@ -279,7 +279,7 @@ impl ContinuousTimeMarkov {
         Self { states, generator }
     }
 
-    /// Holding time in state i: Exp(-Q[i][i]).
+    /// Holding time in state i: Exp(-Q\[i\]\[i\]).
     pub fn holding_time(&self, state: usize, rng: &mut Rng) -> f64 {
         let rate = -self.generator[state][state];
         if rate <= 0.0 {

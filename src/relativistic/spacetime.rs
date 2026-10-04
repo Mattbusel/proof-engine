@@ -356,7 +356,7 @@ impl SpacetimeRenderer {
 }
 
 /// Compute the causal structure matrix.
-/// Returns a matrix where entry [i][j] is true if event i can causally influence event j.
+/// Returns a matrix where entry \[i\]\[j\] is true if event i can causally influence event j.
 pub fn causal_structure(events: &[SpacetimeEvent], c: f64) -> Vec<Vec<bool>> {
     let n = events.len();
     let mut matrix = vec![vec![false; n]; n];

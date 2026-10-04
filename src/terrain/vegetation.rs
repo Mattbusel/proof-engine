@@ -1818,7 +1818,7 @@ pub struct VegetationSerializer;
 
 impl VegetationSerializer {
     /// Serialize vegetation instances to compact binary.
-    /// Format per instance: [x:f32][y:f32][z:f32][rotation:f32][scale_x:f32][scale_y:f32][scale_z:f32][kind:u8][lod:u8]
+    /// Format per instance: \[x:f32\]\[y:f32\]\[z:f32\]\[rotation:f32\]\[scale_x:f32\]\[scale_y:f32\]\[scale_z:f32\]\[kind:u8\]\[lod:u8\]
     pub fn serialize(instances: &[VegetationInstance]) -> Vec<u8> {
         let mut out = Vec::with_capacity(instances.len() * 36 + 4);
         out.extend_from_slice(&(instances.len() as u32).to_le_bytes());
@@ -2179,7 +2179,7 @@ pub struct TerrainAwarePlacement;
 
 impl TerrainAwarePlacement {
     /// `positions` are world-space XZ coordinates. `hm_scale` converts world
-    /// units to [0,1] heightmap UV. Returns accepted positions with world Y.
+    /// units to \[0,1\] heightmap UV. Returns accepted positions with world Y.
     pub fn filter(
         positions: &[(f32, f32)],
         heights: &[f32],   // same length as positions, pre-sampled

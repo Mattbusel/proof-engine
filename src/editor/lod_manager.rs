@@ -627,7 +627,10 @@ mod tests {
         let levels = generate_lod_levels(1, 10000, 5000, &[1.0, 0.5, 0.25, 0.1]);
         for (l, _) in levels { group.add_level(l); }
         assert_eq!(group.compute_lod(1.0), 0);
-        assert_eq!(group.compute_lod(0.4), 1);
+        // Level i is used while coverage >= its threshold (1.0, 0.5, 0.25,
+        // 0.1). 0.4 is below level 1's 0.5, so it gets level 2, not 1.
+        assert_eq!(group.compute_lod(0.6), 1);
+        assert_eq!(group.compute_lod(0.4), 2);
         assert_eq!(group.compute_lod(0.05), 3);
     }
 

@@ -159,7 +159,7 @@ impl<T: Clone> MonteCarloSim<T> {
 // ---------------------------------------------------------------------------
 
 /// Estimate pi using the classic Monte Carlo method:
-/// sample uniform points in [0,1]^2, count fraction inside unit circle.
+/// sample uniform points in \[0,1\]^2, count fraction inside unit circle.
 pub fn estimate_pi(trials: usize, rng: &mut Rng) -> f64 {
     let mut inside = 0usize;
     for _ in 0..trials {
@@ -185,7 +185,7 @@ pub fn integrate(f: &dyn Fn(f64) -> f64, a: f64, b: f64, trials: usize, rng: &mu
     range * sum / trials as f64
 }
 
-/// Monte Carlo integration in 2D: integral of f over [a1,b1] x [a2,b2].
+/// Monte Carlo integration in 2D: integral of f over \[a1,b1\] x \[a2,b2\].
 pub fn integrate_2d(
     f: &dyn Fn(f64, f64) -> f64,
     a1: f64, b1: f64,

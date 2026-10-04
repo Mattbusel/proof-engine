@@ -175,8 +175,10 @@ impl Skeleton {
     /// Recompute all `inv_bind_matrix` fields from current bind pose.
     pub fn recompute_inv_bind_matrices(&mut self) {
         let world = self.compute_bind_world_matrices();
+        // The field is the INVERSE bind matrix; it used to store the bind
+        // matrix itself, so the rest pose did not skin to identity.
         for bone in &mut self.bones {
-            bone.inv_bind_matrix = world[bone.id.index()];
+            bone.inv_bind_matrix = world[bone.id.index()].inverse();
         }
     }
 
@@ -442,7 +444,7 @@ impl BoneMask {
 
 /// GPU-ready skinning matrices computed from a pose and skeleton.
 ///
-/// Each entry is `inv_bind_matrix * world_pose_matrix`, which transforms
+/// Each entry is `world_pose_matrix * inv_bind_matrix`, which transforms
 /// a vertex from bind-pose model space to the animated model space.
 #[derive(Debug, Clone)]
 pub struct SkinningMatrices {
@@ -471,9 +473,10 @@ impl SkinningMatrices {
             };
         }
 
-        // Skinning matrix = inv_bind * world_pose
+        // Skinning matrix = world_pose * inv_bind (glam uses column vectors,
+        // so inv_bind is applied to the vertex first).
         let matrices = skeleton.bones.iter().map(|bone| {
-            bone.inv_bind_matrix * world[bone.id.index()]
+            world[bone.id.index()] * bone.inv_bind_matrix
         }).collect();
 
         Self { matrices }
@@ -670,8 +673,12 @@ mod tests {
         let max_elem = [diff.x_axis, diff.y_axis, diff.z_axis, diff.w_axis]
             .iter()
             .flat_map(|col| [col.x, col.y, col.z, col.w])
-            .fold(f32::NEG_INFINITY, f32::max);
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        // Compare magnitudes: a real inverse of a +y offset has a negative
+        // translation, which the old signed max never saw.
         assert!(max_elem > 0.01);
+        assert!(spine.inv_bind_matrix.w_axis.y < 0.0);
     }
 
     #[test]

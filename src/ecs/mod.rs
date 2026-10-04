@@ -262,7 +262,7 @@ impl ComponentStorage {
 // Archetype
 // ---------------------------------------------------------------------------
 
-/// Unique index into [`World::archetypes`].
+/// Unique index into the world's archetype table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArchetypeId(pub u32);
 

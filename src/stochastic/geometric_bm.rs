@@ -72,7 +72,7 @@ impl GeometricBM {
 
 /// Cumulative distribution function of the standard normal (approximation).
 fn normal_cdf(x: f64) -> f64 {
-    // Abramowitz and Stegun approximation 26.2.17
+    // Abramowitz and Stegun 7.1.26 (an erf approximation, max error 1.5e-7)
     let a1 = 0.254829592;
     let a2 = -0.284496736;
     let a3 = 1.421413741;
@@ -80,10 +80,15 @@ fn normal_cdf(x: f64) -> f64 {
     let a5 = 1.061405429;
     let p = 0.3275911;
 
+    // These coefficients approximate erf(z) = 1 - poly(t) e^(-z^2) (A&S
+    // 7.1.26), and the normal CDF is 0.5 * (1 + erf(x / sqrt 2)). The code
+    // fed x itself into the erf formula with e^(-x^2 / 2), a mix of the two,
+    // so every Black-Scholes price was off (11.91 instead of 10.45 for the
+    // textbook at-the-money call).
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x_abs = x.abs();
+    let x_abs = x.abs() / std::f64::consts::SQRT_2;
     let t = 1.0 / (1.0 + p * x_abs);
-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs / 2.0).exp();
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs).exp();
 
     0.5 * (1.0 + sign * y)
 }
@@ -333,7 +338,7 @@ mod tests {
         // Known approximate value: S=100, K=100, r=5%, sigma=20%, T=1 => C ≈ 10.45
         let c = black_scholes_call(100.0, 100.0, 0.05, 0.2, 1.0);
         assert!(
-            (c - 10.45).abs() < 0.5,
+            (c - 10.4506).abs() < 0.01,
             "BS call should be ~10.45, got {}",
             c
         );

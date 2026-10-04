@@ -5,10 +5,8 @@
 //!
 //! Run: cargo run --release --example convergence
 
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop, clippy::ptr_arg)]
 use proof_engine::prelude::*;
-use proof_engine::entity::layered_entity::{LayeredEntity, LayeredEntityBuilder, Glyph3DInstance};
-use proof_engine::particle::density_entity::*;
-use proof_engine::particle::shape_templates::DensityTemplates;
 use proof_engine::curves::entity_curves::*;
 use proof_engine::curves::templates::CurveTemplates;
 use proof_engine::curves::tessellate::tessellate_curve;
@@ -139,7 +137,7 @@ fn main() {
         // RENDER SCENE (all one-frame glyphs, no persistent state)
         // ══════════════════════════════════════════════════════════════════
 
-        let (ww, wh) = engine.window_size();
+        let (_ww, _wh) = engine.window_size();
 
         // ── Arena floor ──
         for i in 0..150 {
@@ -325,7 +323,7 @@ fn main() {
         // Exchange phase (rapid small impacts)
         if phase == 3 {
             let beat = (phase_time * 4.0) as u32;
-            let from_player = beat % 2 == 0;
+            let from_player = beat.is_multiple_of(2);
             let attack_t = (phase_time * 4.0).fract();
             if attack_t < 0.8 {
                 let t = attack_t / 0.6;
@@ -367,7 +365,7 @@ fn main() {
         let fluid_phases = [(1, 1.5f32, Vec4::new(0.2, 0.4, 0.8, 0.15), enemy_pos.x),
                             (2, 1.5, Vec4::new(0.8, 0.3, 0.1, 0.12), player_pos.x)];
         for &(p, impact_at, color, fx) in &fluid_phases {
-            if phase as u8 >= p && cycle_time > (if p==1{IDLE_DUR}else{IDLE_DUR+ATTACK1_DUR}) + impact_at {
+            if phase >= p && cycle_time > (if p==1{IDLE_DUR}else{IDLE_DUR+ATTACK1_DUR}) + impact_at {
                 let age = cycle_time - (if p==1{IDLE_DUR}else{IDLE_DUR+ATTACK1_DUR}) - impact_at;
                 if age < 4.0 {
                     let fade = (1.0 - age / 4.0).max(0.0);
@@ -457,7 +455,7 @@ fn render_layered_humanoid(
     if vis.curve_opacity > 0.01 {
         for curve in &curves.curves {
             let poly = tessellate_curve(curve);
-            for (pi, pt) in poly.iter().enumerate().step_by(2) { // every other point for perf
+            for (_pi, pt) in poly.iter().enumerate().step_by(2) { // every other point for perf
                 let alpha = curve.color.w * vis.curve_opacity;
                 if alpha < 0.005 { continue; }
                 engine.spawn_glyph(Glyph {

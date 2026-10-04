@@ -867,11 +867,13 @@ pub struct CoupledOscillators {
 impl CoupledOscillators {
     /// Create a ring of `n` oscillators with the same frequency.
     pub fn ring(n: usize, frequency: f32, coupling: f32) -> Self {
+        // Start spread over half a turn. Phases spaced evenly round the full
+        // circle form a "twisted" state (winding number 1), which for
+        // nearest-neighbour coupling with neighbour gaps under 90 degrees is
+        // stable, not an unstable equilibrium: such a ring never
+        // synchronised (order parameter stayed at 0).
         let phases: Vec<f32> = (0..n).map(|i| {
-            // Small asymmetric perturbation breaks the unstable equilibrium
-            // of evenly-spaced phases on a ring, allowing synchronization.
-            // Small asymmetric perturbation to break unstable equilibrium
-            let base = i as f32 / n as f32 * std::f32::consts::TAU;
+            let base = i as f32 / n.max(1) as f32 * std::f32::consts::PI;
             base + 0.1 * ((i as f32 + 1.0) * 1.618).sin()
         }).collect();
         let frequencies = vec![frequency; n];

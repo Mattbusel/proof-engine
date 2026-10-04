@@ -576,7 +576,7 @@ impl Default for GBufferLayout {
 pub struct MrtConfig {
     /// List of draw buffer indices that the fragment shader writes to.
     pub draw_buffers: Vec<u32>,
-    /// Whether to use gl_FragData[n] or layout(location = n) out.
+    /// Whether to use gl_FragData\[n\] or layout(location = n) out.
     pub use_explicit_locations: bool,
     /// Maximum number of draw buffers supported by the hardware.
     pub max_draw_buffers: u32,
@@ -940,7 +940,7 @@ impl Default for GBufferStats {
 pub enum GBufferDebugChannel {
     /// Show the position buffer (RGB = XYZ, normalized).
     Position,
-    /// Show world-space normals (RGB mapped from [-1,1] to [0,1]).
+    /// Show world-space normals (RGB mapped from [-1,1] to \[0,1\]).
     Normal,
     /// Show albedo (raw color).
     Albedo,
@@ -1143,7 +1143,7 @@ impl GBufferDebugView {
         clampf((linear - near) / (far - near), 0.0, 1.0)
     }
 
-    /// Convert a normal from [-1,1] to [0,1] for visualization.
+    /// Convert a normal from [-1,1] to \[0,1\] for visualization.
     pub fn visualize_normal(n: [f32; 3]) -> [f32; 3] {
         [
             n[0] * 0.5 + 0.5,

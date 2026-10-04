@@ -210,7 +210,7 @@ pub fn mode(data: &[f64]) -> Vec<f64> {
     modes
 }
 
-/// p-th percentile (p in [0,100]).
+/// p-th percentile (p in \[0,100\]).
 pub fn percentile(data: &mut [f64], p: f64) -> f64 {
     data.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = data.len();

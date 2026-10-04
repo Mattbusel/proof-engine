@@ -368,15 +368,23 @@ impl CatmullRomSpline {
         [t0, t1, t2, t3]
     }
 
-    /// Evaluate position at local segment parameter u in [0,1]
+    /// Evaluate position at local segment parameter u in \[0,1\]
     pub fn eval_segment(&self, seg: usize, u: f32) -> Vec3 {
         let n = self.control_points.len();
         if n < 2 { return Vec3::ZERO; }
         let (i0, i1, i2, i3) = self.segment_indices(seg);
-        let p0 = self.get_point(i0);
+        let mut p0 = self.get_point(i0);
         let p1 = self.get_point(i1);
         let p2 = self.get_point(i2);
-        let p3 = self.get_point(i3);
+        let mut p3 = self.get_point(i3);
+        // At the ends of an open spline the outer neighbour does not exist;
+        // segment_indices repeats the end point, which gives a zero-length
+        // knot interval and made the end segments evaluate to the origin.
+        // Use the usual phantom points, reflected through the end point.
+        if !self.closed {
+            if i0 == i1 { p0 = 2.0 * p1 - p2; }
+            if i3 == i2 { p3 = 2.0 * p2 - p1; }
+        }
         let [t0, t1, t2, t3] = self.segment_t_values(p0, p1, p2, p3);
         let t = lerp(t1, t2, u);
         self.barry_phase(p0, p1, p2, p3, t0, t1, t2, t3, t)
@@ -410,7 +418,7 @@ impl CatmullRomSpline {
         }
     }
 
-    /// Global parameter t in [0,1] -> position
+    /// Global parameter t in \[0,1\] -> position
     pub fn evaluate(&self, t: f32) -> Vec3 {
         let nseg = self.num_segments();
         if nseg == 0 { return Vec3::ZERO; }
@@ -610,7 +618,7 @@ impl CubicBezierSpline {
         CubicBezierSpline::new(segs)
     }
 
-    /// De Casteljau evaluation at t in [0,1] for a single segment
+    /// De Casteljau evaluation at t in \[0,1\] for a single segment
     pub fn de_casteljau(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
         let q0 = lerp_vec3(p0, p1, t);
         let q1 = lerp_vec3(p1, p2, t);

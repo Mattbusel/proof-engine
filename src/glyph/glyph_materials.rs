@@ -177,7 +177,9 @@ impl MaterialModifier {
             MaterialModifier::ColorLerp { .. } => true,
             MaterialModifier::DeathFade { progress, speed } => {
                 *progress = (*progress + *speed * dt).min(1.0);
-                *progress < 1.0
+                // Stay active once complete: removing the modifier at 1.0
+                // snapped a dead glyph back to its full, living material.
+                true
             }
             MaterialModifier::HealGlow { intensity, decay, elapsed } => {
                 *elapsed += dt;

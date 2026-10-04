@@ -620,25 +620,35 @@ impl MaterialEditorState {
         }
     }
 
+    /// Undo to the last snapshot. `snapshot()` is called before an edit, so
+    /// the state to return to is the newest snapshot; the old code skipped
+    /// it and went one further back (and did nothing with one snapshot).
+    /// The current state is kept so `redo` can return to it.
     pub fn undo(&mut self) {
-        if self.history_pos > 1 {
-            self.history_pos -= 1;
-            let mat = self.history[self.history_pos - 1].clone();
-            let id = mat.id;
-            if let Some(m) = self.library.find_mut(id) {
-                *m = mat;
+        if self.history_pos == 0 {
+            return;
+        }
+        if self.history_pos == self.history.len() {
+            if let Some(cur) = self.selected_material().cloned() {
+                self.history.push(cur);
             }
         }
+        self.history_pos -= 1;
+        self.restore(self.history_pos);
     }
 
     pub fn redo(&mut self) {
-        if self.history_pos < self.history.len() {
-            let mat = self.history[self.history_pos].clone();
-            let id = mat.id;
+        if self.history_pos + 1 < self.history.len() {
             self.history_pos += 1;
-            if let Some(m) = self.library.find_mut(id) {
-                *m = mat;
-            }
+            self.restore(self.history_pos);
+        }
+    }
+
+    fn restore(&mut self, idx: usize) {
+        let mat = self.history[idx].clone();
+        let id = mat.id;
+        if let Some(m) = self.library.find_mut(id) {
+            *m = mat;
         }
     }
 
@@ -733,6 +743,10 @@ mod tests {
         ed.undo();
         if let Some(mat) = ed.selected_material() {
             assert!((mat.properties.roughness - 0.5).abs() < 0.01);
+        }
+        ed.redo();
+        if let Some(mat) = ed.selected_material() {
+            assert!((mat.properties.roughness - 0.99).abs() < 0.01);
         }
     }
 }

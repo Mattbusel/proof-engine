@@ -332,7 +332,7 @@ impl Model {
     }
 
     /// Save weights to a simple binary format:
-    /// For each tensor: [ndim: u32] [shape[0]: u32] ... [shape[n-1]: u32] [data as f32 LE bytes]
+    /// For each tensor: [ndim: u32] [shape\[0\]: u32] ... [shape[n-1]: u32] [data as f32 LE bytes]
     pub fn save_weights(&self, path: &str) -> Result<(), String> {
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
         let weights = self.collect_weights();

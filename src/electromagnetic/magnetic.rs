@@ -27,35 +27,31 @@ impl CurrentSegment {
 /// dB = (mu0 / 4*pi) * I * dl × r_hat / r^2
 /// Integrated analytically for a straight segment.
 pub fn biot_savart(segment: &CurrentSegment, point: Vec3) -> Vec3 {
+    // Closed form for a straight segment. With u the unit direction, d the
+    // perpendicular distance from the line and s1, s2 the signed positions of
+    // the segment ends relative to the foot of the perpendicular:
+    //   |B| = (mu0 / 4 pi) * I / d * (s2 / sqrt(s2^2 + d^2) - s1 / sqrt(s1^2 + d^2))
+    // in the direction u x r_perp. This replaces a 20-point midpoint sum that
+    // was far off near long segments (Ampere's law came out 33% low for a
+    // 100-unit wire seen from 2 units away).
     let dl = segment.end - segment.start;
     let length = dl.length();
     if length < 1e-10 {
         return Vec3::ZERO;
     }
-
-    // Numerical integration along the segment (Simpson-like with many points)
-    let n = 20;
-    let mut b = Vec3::ZERO;
-    let dl_step = dl / n as f32;
-    let dl_mag = dl_step.length();
-
-    for i in 0..n {
-        let t = (i as f32 + 0.5) / n as f32;
-        let src = segment.start + dl * t;
-        let r_vec = point - src;
-        let r2 = r_vec.length_squared();
-        if r2 < 1e-10 {
-            continue;
-        }
-        let r = r2.sqrt();
-        let r_hat = r_vec / r;
-
-        // dB = (mu0/4pi) * I * dl × r_hat / r^2
-        let cross = dl_step.cross(r_hat);
-        b += MU0_OVER_4PI * segment.current * cross / r2;
+    let u = dl / length;
+    let a = point - segment.start;
+    let along = a.dot(u);
+    let perp = a - u * along;
+    let d = perp.length();
+    if d < 1e-6 {
+        return Vec3::ZERO;
     }
-
-    b
+    let s1 = -along;
+    let s2 = length - along;
+    let mag = MU0_OVER_4PI * segment.current / d
+        * (s2 / (s2 * s2 + d * d).sqrt() - s1 / (s1 * s1 + d * d).sqrt());
+    u.cross(perp / d) * mag
 }
 
 /// Compute the total magnetic field at `pos` from multiple current segments (superposition).

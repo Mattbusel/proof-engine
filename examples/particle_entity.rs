@@ -10,8 +10,9 @@
 //!
 //! Run: cargo run --release --example particle_entity
 
+#![allow(unused_assignments)] // camera values start as placeholders and are set every frame
 use proof_engine::prelude::*;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 // Humanoid shape defined as weighted anchor points.
 // Particles cluster around these with gaussian falloff.

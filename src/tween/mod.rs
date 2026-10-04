@@ -2,7 +2,7 @@
 //!
 //! Provides typed interpolation between values, 30+ easing functions,
 //! multi-track keyframe timelines, and composable animation sequences.
-//! Every interpolation can be driven by a `MathFunction` instead of a simple t ∈ [0,1].
+//! Every interpolation can be driven by a `MathFunction` instead of a simple t ∈ \[0,1\].
 //!
 //! # Quick start
 //!

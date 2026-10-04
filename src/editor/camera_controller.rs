@@ -544,7 +544,9 @@ mod tests {
     fn spring_converges() {
         let mut vel = 0.0f32;
         let mut val = 0.0f32;
-        for _ in 0..60 {
+        // k=8, c=6 has roots -2 and -4: x(t) = 1 - 2e^-2t + e^-4t, still 0.26
+        // off after 1 s. After 3 s the error is about 0.005.
+        for _ in 0..180 {
             val = spring_damp_f32(val, 1.0, &mut vel, 8.0, 6.0, 1.0/60.0);
         }
         assert!((val - 1.0).abs() < 0.01);

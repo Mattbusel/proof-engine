@@ -20,7 +20,7 @@
 /// Available tone mapping operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToneMapOperator {
-    /// No tone mapping (clamp to [0,1]).
+    /// No tone mapping (clamp to \[0,1\]).
     None,
     /// Reinhard: simple, preserves color.
     Reinhard,

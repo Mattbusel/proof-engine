@@ -688,7 +688,7 @@ pub enum CondNode {
     },
     /// Evaluate an expression
     Expression(Expr),
-    /// Random trigger with probability [0,1]
+    /// Random trigger with probability \[0,1\]
     Random(f64),
     /// Time-based condition: true after elapsed > threshold
     TimeThreshold { elapsed_var: String, threshold: f64 },

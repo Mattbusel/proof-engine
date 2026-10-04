@@ -17,7 +17,6 @@
 //!
 //! Each pyramid level is half-resolution, giving a wider, softer halo.
 
-use std::f32;
 
 // ── Bloom parameters ──────────────────────────────────────────────────────────
 

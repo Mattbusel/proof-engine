@@ -645,7 +645,7 @@ pub enum FalloffCurve {
 }
 
 impl FalloffCurve {
-    /// Returns weight in [0,1] given normalized distance t in [0,1].
+    /// Returns weight in \[0,1\] given normalized distance t in \[0,1\].
     pub fn evaluate(&self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -1160,7 +1160,7 @@ impl PrimitiveBuilder {
         particles
     }
 
-    /// PointCloud — import from Vec<Vec3> with color mapping by height.
+    /// PointCloud — import from Vec`<Vec3>` with color mapping by height.
     pub fn point_cloud(
         points: Vec<Vec3>,
         character: char,
@@ -8056,7 +8056,7 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
      hue_to_rgb(p, q, h - 1.0/3.0))
 }
 
-/// Random float in [0,1] from a LCG seed (mutates seed)
+/// Random float in \[0,1\] from a LCG seed (mutates seed)
 pub fn lcg_rand(seed: &mut u64) -> f32 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
     ((*seed >> 33) as u32) as f32 / u32::MAX as f32

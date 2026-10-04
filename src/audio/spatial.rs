@@ -691,14 +691,21 @@ mod tests {
         combat_rev.process_sample(1.0);
         cathedral_rev.process_sample(1.0);
 
-        // Measure tail energy at 4000 samples
+        // Measure the tail: skip the first 200 ms, then sum 500 ms. The old
+        // test summed only the first 4000 samples (about 90 ms), which ends
+        // before the cathedral's first echoes (15 ms pre-delay plus 60 to
+        // 82 ms combs) have built up, so it compared onsets, not tails.
+        let skip = (0.2 * SAMPLE_RATE) as usize;
+        let window = (0.5 * SAMPLE_RATE) as usize;
         let mut combat_energy = 0.0_f32;
         let mut cathedral_energy = 0.0_f32;
-        for _ in 0..4000 {
+        for i in 0..skip + window {
             let c = combat_rev.process_sample(0.0);
             let d = cathedral_rev.process_sample(0.0);
-            combat_energy += c * c;
-            cathedral_energy += d * d;
+            if i >= skip {
+                combat_energy += c * c;
+                cathedral_energy += d * d;
+            }
         }
         assert!(cathedral_energy > combat_energy,
             "cathedral should have more tail energy: cathedral={cathedral_energy}, combat={combat_energy}");

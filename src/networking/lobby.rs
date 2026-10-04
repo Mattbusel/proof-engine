@@ -680,7 +680,7 @@ impl MatchmakingQueue {
     }
 
     /// Try to fill backfill jobs from the queue.
-    /// Returns (BackfillJob, Vec<PlayerId>) pairs for each successful fill.
+    /// Returns (BackfillJob, Vec`<PlayerId>`) pairs for each successful fill.
     pub fn process_backfill(&mut self) -> Vec<(BackfillJob, Vec<PlayerId>)> {
         let mut results = Vec::new();
         let mut filled_ids: std::collections::HashSet<PlayerId> = std::collections::HashSet::new();

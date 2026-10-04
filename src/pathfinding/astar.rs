@@ -8,7 +8,6 @@
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::cmp::Ordering;
-use std::f32;
 
 // ── Vec2 (local, avoids cross-module dep) ────────────────────────────────────
 

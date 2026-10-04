@@ -5,7 +5,7 @@
 //! `glyph/` reference private or renamed items. An integration test exercises
 //! the same public surface a caller uses and actually runs.
 
-use proof_engine::anim::particle_skin::{Bind, ParticleSkin, MAX_INFLUENCES};
+use proof_engine::anim::particle_skin::ParticleSkin;
 use proof_engine::anim::skeleton::{BoneId, Pose, Skeleton, SkeletonBuilder, Transform3D};
 use glam::{Quat, Vec3};
 

@@ -1793,6 +1793,23 @@ mod tests {
     }
 
     #[test]
+    fn test_assignment_targets() {
+        // Field, index and dotted-function assignment all compiled the
+        // value below the table before; each of these failed.
+        let r = run("local t = {} t.x = 5 t[2] = 7 return t.x, t[2]");
+        assert_eq!(r[0], Value::Int(5));
+        assert_eq!(r[1], Value::Int(7));
+        let r = run("local m = {} function m.f() return 3 end return m.f()");
+        assert_eq!(r[0], Value::Int(3));
+        // Locals after table constructors keep their own slots.
+        let r = run("local a = {x=1, y=2} local b = {3, 4} local c = 9 return a.y, b[2], c, #b");
+        assert_eq!(r, vec![Value::Int(2), Value::Int(4), Value::Int(9), Value::Int(2)]);
+        // A call statement whose function returns nothing leaves the stack alone.
+        let r = run("local t = {2, 1} local k = 5 table.sort(t) return k, t[1]");
+        assert_eq!(r, vec![Value::Int(5), Value::Int(1)]);
+    }
+
+    #[test]
     fn test_table_merge() {
         let r = run("local a = {x=1} local b = {y=2} local c = table.merge(a, b) return c.x, c.y");
         assert_eq!(r[0], Value::Int(1));

@@ -5,6 +5,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop, clippy::ptr_arg)]
 use proof_engine::prelude::*;
 use proof_engine::input::Key;
 use proof_engine::editor::{
@@ -183,6 +184,12 @@ impl StatusBar {
     pub fn current_message(&self) -> &str { &self.message }
 }
 
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // New-module state containers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +204,12 @@ impl WorldEditorState {
     }
 }
 
+impl Default for WorldEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct AiBehaviorState {
     pub blackboard: Blackboard,
     pub node_count: u32,
@@ -207,11 +220,23 @@ impl AiBehaviorState {
     }
 }
 
+impl Default for AiBehaviorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct PhysicsEditorState {
     pub active_bodies: u32,
 }
 impl PhysicsEditorState {
     pub fn new() -> Self { Self { active_bodies: 0 } }
+}
+
+impl Default for PhysicsEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct RenderGraphEditorState {
@@ -220,6 +245,12 @@ pub struct RenderGraphEditorState {
 }
 impl RenderGraphEditorState {
     pub fn new() -> Self { Self { pass_count: 4, next_resource_id: 0 } }
+}
+
+impl Default for RenderGraphEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct DialogueEditorState {
@@ -232,6 +263,12 @@ impl DialogueEditorState {
     }
 }
 
+impl Default for DialogueEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct QuestEditorState {
     pub root: QuestStartNode,
     pub objective_count: u32,
@@ -239,6 +276,12 @@ pub struct QuestEditorState {
 impl QuestEditorState {
     pub fn new() -> Self {
         Self { root: QuestStartNode::new(0), objective_count: 0 }
+    }
+}
+
+impl Default for QuestEditorState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -257,6 +300,12 @@ impl SplineEditorState {
     }
 }
 
+impl Default for SplineEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct CinematicState {
     pub timecode: Timecode,
     pub track_count: u32,
@@ -264,6 +313,12 @@ pub struct CinematicState {
 impl CinematicState {
     pub fn new() -> Self {
         Self { timecode: Timecode::new(0, 0, 0, 0), track_count: 0 }
+    }
+}
+
+impl Default for CinematicState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -277,11 +332,23 @@ impl InventoryEditorState {
     }
 }
 
+impl Default for InventoryEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct AbilityEditorState {
     pub ability_count: u32,
 }
 impl AbilityEditorState {
     pub fn new() -> Self { Self { ability_count: 0 } }
+}
+
+impl Default for AbilityEditorState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct LevelStreamingState {
@@ -290,6 +357,12 @@ pub struct LevelStreamingState {
 }
 impl LevelStreamingState {
     pub fn new() -> Self { Self { loaded_regions: 0, streaming_budget_mb: 512.0 } }
+}
+
+impl Default for LevelStreamingState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct AudioMixerState {
@@ -304,6 +377,12 @@ impl AudioMixerState {
             master_volume: 1.0,
             channel_count: 8,
         }
+    }
+}
+
+impl Default for AudioMixerState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -482,12 +561,11 @@ impl EditorApp {
             EditorPanel::WorldEditor, EditorPanel::AiBehavior, EditorPanel::Physics,
         ];
         for (i, &key) in fkeys.iter().enumerate() {
-            if inp.just_pressed(key) {
-                if i < fkey_panels.len() {
+            if inp.just_pressed(key)
+                && i < fkey_panels.len() {
                     self.focused_panel = fkey_panels[i];
                     self.status.notify(format!("Panel: {}", self.focused_panel.label()));
                 }
-            }
         }
 
         // Play / Pause
@@ -955,13 +1033,12 @@ impl EditorApp {
     }
 
     fn render_panel_cinematic(&mut self, engine: &mut ProofEngine) {
-        let text = format!("Cinematic Sequencer — {} tracks | {}",
+        let text = format!("Cinematic Sequencer — {} tracks | {:02}:{:02}:{:02}:{:02}",
             self.cinematic.track_count,
-            format!("{:02}:{:02}:{:02}:{:02}",
-                self.cinematic.timecode.hours,
-                self.cinematic.timecode.minutes,
-                self.cinematic.timecode.seconds,
-                self.cinematic.timecode.frames));
+            self.cinematic.timecode.hours,
+            self.cinematic.timecode.minutes,
+            self.cinematic.timecode.seconds,
+            self.cinematic.timecode.frames);
         self.render_label(engine, &text, 0.0, 4.0, 0.32, 0.9, 0.2, 0.8, 1.0);
         // Film strip
         for i in 0..20 {
@@ -1082,6 +1159,12 @@ impl EditorApp {
                 });
             }
         }
+    }
+}
+
+impl Default for EditorApp {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

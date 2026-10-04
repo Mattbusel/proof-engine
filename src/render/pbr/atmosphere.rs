@@ -992,7 +992,7 @@ pub fn light_space_matrix(
     (view, proj)
 }
 
-/// Bias matrix to map NDC [-1,1] to UV [0,1] and depth [0,1].
+/// Bias matrix to map NDC [-1,1] to UV \[0,1\] and depth \[0,1\].
 pub fn bias_matrix() -> Mat4 {
     Mat4::from_cols_array(&[
         0.5, 0.0, 0.0, 0.0, // col 0

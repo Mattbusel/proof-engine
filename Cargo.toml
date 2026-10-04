@@ -2,6 +2,7 @@
 name = "proof-engine"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.88"
 authors = ["Matthew Busel <matt@tensorust.com>"]
 license = "MIT"
 description = "Real-time graphics from math: glyphs and particles moved by ODEs, strange attractors and force fields, drawn with HDR bloom on OpenGL."
@@ -13,6 +14,9 @@ categories = ["game-engines", "graphics", "rendering", "simulation", "mathematic
 readme = "README.md"
 # Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.
 exclude = ["*.png", "*.gif", "*.jpg", "assets/", "docs/", "*.py", ".github/", "ci/"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 # OpenGL and windowing: glutin-winit bridges the two and handles version alignment
@@ -57,6 +61,15 @@ env_logger = "0.11"
 # Bitflags (used by scene_io SceneFlags)
 bitflags = "2"
 
+# Multi-core helpers (optional), e.g. math::attractors::rk4_step_all
+rayon = { version = "1", optional = true }
+
+# Networking (optional): real HTTP for networking::http / leaderboard and
+# real WebSockets for networking::websocket. rustls only, no OpenSSL.
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
+tungstenite = { version = "0.28", optional = true, default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
+
 [features]
 default = ["rhai-scripts"]
 # math::scripted: dynamical systems written in Rhai, hot reloaded from disk.
@@ -64,9 +77,20 @@ default = ["rhai-scripts"]
 # `String + &String` needs an explicit `.as_str()`. Turn this feature off
 # (default-features = false) if that bites.
 rhai-scripts = ["dep:rhai"]
+# networking::http (and the leaderboard and analytics clients built on it)
+# make real requests with ureq. Without it, requests fail with a clear error.
+http = ["dep:ureq"]
+# networking::websocket opens real connections with tungstenite.
+websocket = ["dep:tungstenite", "dep:rustls"]
+# Both of the above.
+net = ["http", "websocket"]
+# Spread per-point work across CPU cores with rayon (rk4_step_all).
+parallel = ["dep:rayon"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# Reference RK4 for tests/ode_cross_check.rs
+ode_solvers = "0.6"
 
 [[bench]]
 name = "particle_bench"
@@ -74,6 +98,10 @@ harness = false
 
 [[bench]]
 name = "glyph_bench"
+harness = false
+
+[[bench]]
+name = "attractor_bench"
 harness = false
 
 [[example]]

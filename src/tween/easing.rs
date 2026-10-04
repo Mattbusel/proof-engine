@@ -214,17 +214,24 @@ impl Easing {
             }
 
             Easing::Spring { stiffness, damping } => {
-                // Underdamped spring analytical solution
+                // Underdamped spring analytical solution. The raw response at
+                // t = 1 has not fully settled (1.0022 for stiffness 100,
+                // damping 10), so an animation using it ended slightly off
+                // target. Add the missing amount linearly over t so the
+                // curve still starts at 0 and now ends exactly at 1.
                 let omega = stiffness.sqrt();
                 let zeta  = damping / (2.0 * omega).max(f32::EPSILON);
-                if zeta >= 1.0 {
-                    1.0 - (1.0 + omega * t) * (-omega * t).exp()
-                } else {
-                    let omega_d = omega * (1.0 - zeta * zeta).sqrt();
-                    let decay   = (-zeta * omega * t).exp();
-                    1.0 - decay * ((omega_d * t).cos() +
-                          (zeta / (1.0 - zeta * zeta).sqrt()) * (omega_d * t).sin())
-                }
+                let response = |t: f32| -> f32 {
+                    if zeta >= 1.0 {
+                        1.0 - (1.0 + omega * t) * (-omega * t).exp()
+                    } else {
+                        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+                        let decay   = (-zeta * omega * t).exp();
+                        1.0 - decay * ((omega_d * t).cos() +
+                              (zeta / (1.0 - zeta * zeta).sqrt()) * (omega_d * t).sin())
+                    }
+                };
+                response(t) + (1.0 - response(1.0)) * t
             }
 
             Easing::Hermite { p0, m0, p1, m1 } => {

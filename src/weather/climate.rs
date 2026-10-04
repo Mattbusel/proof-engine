@@ -255,7 +255,7 @@ pub struct SeasonalCycle {
     pub monthly_temp_c: [f32; 12],
     /// Monthly precipitation (mm) — 12 values.
     pub monthly_precip_mm: [f32; 12],
-    /// Monthly mean humidity [0,1].
+    /// Monthly mean humidity \[0,1\].
     pub monthly_humidity: [f32; 12],
     /// Monthly sunshine hours (average per day).
     pub monthly_sunshine_h: [f32; 12],
@@ -450,7 +450,7 @@ pub struct ClimateInterpolator {
     pub zone_b: BiomeZone,
     pub cycle_a: SeasonalCycle,
     pub cycle_b: SeasonalCycle,
-    /// Blend factor [0,1]; 0 = pure A, 1 = pure B.
+    /// Blend factor \[0,1\]; 0 = pure A, 1 = pure B.
     pub blend: f32,
     /// Target blend (for smooth transitions).
     pub target_blend: f32,
@@ -525,7 +525,7 @@ pub struct WeatherPattern {
     pub centre: [f32; 2],
     /// Radius of influence (m).
     pub radius: f32,
-    /// Pattern intensity [0,1].
+    /// Pattern intensity \[0,1\].
     pub intensity: f32,
     /// Drift velocity (m/s).
     pub drift: [f32; 2],
@@ -535,7 +535,7 @@ pub struct WeatherPattern {
     pub pressure_anomaly_pa: f32,
     /// Associated temperature anomaly (°C).
     pub temp_anomaly_c: f32,
-    /// Associated precipitation modifier [0,2]; 1 = no change.
+    /// Associated precipitation modifier \[0,2\]; 1 = no change.
     pub precip_modifier: f32,
 }
 
@@ -636,9 +636,9 @@ pub struct StormFront {
     pub max_lifetime: f32,
     /// Temperature change across the front (°C, positive = warmer air behind).
     pub temp_gradient_c: f32,
-    /// Precipitation intensity on the leading edge [0,1].
+    /// Precipitation intensity on the leading edge \[0,1\].
     pub leading_precip: f32,
-    /// Precipitation intensity on the trailing edge [0,1].
+    /// Precipitation intensity on the trailing edge \[0,1\].
     pub trailing_precip: f32,
     /// Whether the front has become occluded.
     pub occluded: bool,
@@ -839,7 +839,7 @@ impl ColdSnap {
 pub struct WeatherTransition {
     pub from_pattern: WeatherPatternKind,
     pub to_pattern: WeatherPatternKind,
-    /// Transition progress [0,1].
+    /// Transition progress \[0,1\].
     pub progress: f32,
     /// Total transition duration (seconds).
     pub duration_s: f32,
@@ -921,7 +921,7 @@ impl WindPattern {
         Self { direction: std::f32::consts::PI, speed: 9.0, direction_variability: 0.5, speed_variability: 4.0, gust_factor: 2.2 }
     }
 
-    /// Sample wind given a noise value `n` in [0,1].
+    /// Sample wind given a noise value `n` in \[0,1\].
     pub fn sample(&self, n: f32) -> Vec3 {
         let dir = self.direction + (n * 2.0 - 1.0) * self.direction_variability;
         let spd = (self.speed + (n - 0.5) * self.speed_variability * 2.0).max(0.0);

@@ -291,10 +291,15 @@ pub fn alpha_decay_lifetime(z_daughter: u32, e_alpha_mev: f64, r_nucleus_fm: f64
     let mu = 4.0 * 931.5; // reduced mass in MeV/c^2 (alpha on heavy nucleus)
     let hbar_c = 197.3; // MeV*fm
 
-    let g = (2.0_f64 * mu).sqrt() / hbar_c
-        * 2.0 * z * e_sq
-        * ((r_t / r_n).sqrt().acos() - (r_n / r_t * (1.0 - r_n / r_t)).sqrt())
-        * r_t.sqrt();
+    // G = (1/hbar) * integral from R to r_t of sqrt(2 mu (V(r) - E)) dr
+    //   = sqrt(2 mu E) / (hbar c) * r_t * (acos(sqrt(x)) - sqrt(x (1 - x))),
+    // with x = R / r_t. The old code took acos(sqrt(r_t / R)) of a number
+    // above 1 (NaN, so the lifetime was NaN) and used the barrier height
+    // 2 Z e^2 where sqrt(2 mu E) belongs.
+    let x = r_n / r_t;
+    let g = (2.0_f64 * mu * e).sqrt() / hbar_c
+        * r_t
+        * (x.sqrt().acos() - (x * (1.0 - x)).sqrt());
 
     let transmission = (-2.0_f64 * g).exp();
 
@@ -390,7 +395,10 @@ mod tests {
     fn test_alpha_decay() {
         // Polonium-212 alpha decay: Z_daughter=82, E_alpha~8.78 MeV, R~7.1 fm
         let lifetime = alpha_decay_lifetime(82, 8.78, 7.1);
-        // Should be a very short lifetime (sub-microsecond)
-        assert!(lifetime > 0.0 && lifetime.is_finite());
+        // Measured: 0.43 microseconds. This one-dimensional Gamow model with
+        // a sharp 7.1 fm radius lands within a few orders of magnitude
+        // (about 3e-4 s); check it is finite, positive and well under a second.
+        assert!(lifetime > 0.0 && lifetime.is_finite(), "{lifetime}");
+        assert!(lifetime < 1e-2, "{lifetime}");
     }
 }

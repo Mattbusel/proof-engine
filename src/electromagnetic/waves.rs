@@ -475,13 +475,13 @@ mod tests {
     #[test]
     fn test_spherical_wave_decay() {
         let wave = SphericalWave::new(Vec3::ZERO, 1.0, 1.0);
-        let a1 = wave.evaluate_scalar(Vec3::new(1.0, 0.0, 0.0), 0.0).abs();
-        let a2 = wave.evaluate_scalar(Vec3::new(2.0, 0.0, 0.0), 0.0).abs();
-        // 1/r decay: ratio should be ~2
-        if a2 > 1e-10 {
-            let ratio = a1 / a2;
-            assert!((ratio - 2.0).abs() < 0.1, "1/r decay ratio: {}", ratio);
-        }
+        // With c = 1 and f = 1 the wavelength is 1, so r = 1 and r = 2 are
+        // zeros of sin(kr) and the old test compared two rounding errors.
+        // Sample at crests instead (kr = 2.5 pi and 4.5 pi): r = 1.25, 2.25.
+        let a1 = wave.evaluate_scalar(Vec3::new(1.25, 0.0, 0.0), 0.0).abs();
+        let a2 = wave.evaluate_scalar(Vec3::new(2.25, 0.0, 0.0), 0.0).abs();
+        let ratio = a1 / a2;
+        assert!((ratio - 2.25 / 1.25).abs() < 0.01, "1/r decay ratio: {}", ratio);
     }
 
     #[test]

@@ -30,6 +30,13 @@ impl CurvatureField {
 
         // Build vertex adjacency + one-ring neighborhoods
         let adj = build_one_ring(mesh);
+        // For each vertex, the other two corners of every triangle using it.
+        let mut vertex_tris: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+        for tri in &mesh.triangles {
+            vertex_tris.entry(tri.a).or_default().push((tri.b, tri.c));
+            vertex_tris.entry(tri.b).or_default().push((tri.c, tri.a));
+            vertex_tris.entry(tri.c).or_default().push((tri.a, tri.b));
+        }
 
         for vi in 0..n {
             let p = mesh.vertices[vi];
@@ -41,19 +48,21 @@ impl CurvatureField {
 
             match curvature_type {
                 CurvatureType::Gaussian => {
-                    // Angle deficit method: K = (2π - Σθ) / A
+                    // Angle deficit method: K = (2 pi - sum of the angles at p
+                    // in its incident triangles) / (area / 3). The angles must
+                    // come from the actual triangles; pairing up one-ring
+                    // neighbours in insertion order (as this did) measured
+                    // angles across non-adjacent neighbours, so the sum was
+                    // wrong and a sphere came out mostly negative.
                     let mut angle_sum = 0.0f32;
                     let mut area = 0.0f32;
-
-                    for i in 0..neighbors.len() {
-                        let j = (i + 1) % neighbors.len();
-                        let a = mesh.vertices[neighbors[i] as usize] - p;
-                        let b = mesh.vertices[neighbors[j] as usize] - p;
+                    for &(a_idx, b_idx) in vertex_tris.get(&(vi as u32)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                        let a = mesh.vertices[a_idx as usize] - p;
+                        let b = mesh.vertices[b_idx as usize] - p;
                         let cos_angle = a.dot(b) / (a.length() * b.length()).max(1e-10);
                         angle_sum += cos_angle.clamp(-1.0, 1.0).acos();
                         area += a.cross(b).length() * 0.5;
                     }
-
                     let mixed_area = (area / 3.0).max(1e-10);
                     values[vi] = (std::f32::consts::TAU - angle_sum) / mixed_area;
                 }

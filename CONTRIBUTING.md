@@ -4,10 +4,10 @@ Thank you for your interest in contributing to Proof Engine! This document provi
 
 ## Getting Started
 
-1. **Fork** the repository on GitHub
+1. **Fork** the repository on GitLab (https://gitlab.com/mattbusel/proof-engine)
 2. **Clone** your fork locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/proof-engine.git
+   git clone https://gitlab.com/YOUR_USERNAME/proof-engine.git
    cd proof-engine
    ```
 3. **Build** the project and run a demo:
@@ -27,7 +27,7 @@ Thank you for your interest in contributing to Proof Engine! This document provi
 
 ### Reporting Bugs
 
-- Open an issue on GitHub with a clear description
+- Open an issue on GitLab with a clear description
 - Include the Rust version (`rustc --version`) and OS
 - Provide a minimal reproduction if possible
 

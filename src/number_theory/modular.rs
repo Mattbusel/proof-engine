@@ -40,8 +40,8 @@ pub fn mod_inverse(a: u64, m: u64) -> Option<u64> {
     Some(((x % m as i64 + m as i64) % m as i64) as u64)
 }
 
-/// Chinese Remainder Theorem: given residues[i] and moduli[i],
-/// find x such that x ≡ residues[i] (mod moduli[i]) for all i.
+/// Chinese Remainder Theorem: given residues\[i\] and moduli\[i\],
+/// find x such that x ≡ residues\[i\] (mod moduli\[i\]) for all i.
 /// Returns None if the system is inconsistent.
 pub fn chinese_remainder_theorem(residues: &[u64], moduli: &[u64]) -> Option<u64> {
     if residues.len() != moduli.len() || residues.is_empty() {

@@ -136,7 +136,7 @@ pub struct ClimateCell {
 
 /// Classify a biome using the Whittaker biome diagram.
 ///
-/// Inputs are normalized temperature [0,1] and moisture [0,1].
+/// Inputs are normalized temperature \[0,1\] and moisture \[0,1\].
 /// Additional altitude/continentality corrections are applied.
 pub struct WhittakerClassifier;
 

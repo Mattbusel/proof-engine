@@ -82,7 +82,7 @@ impl RpcParam {
         }
     }
 
-    /// Serialise to bytes: [type_tag(1)] + [payload].
+    /// Serialise to bytes: [type_tag(1)] + \[payload\].
     pub fn serialize(&self, out: &mut Vec<u8>) {
         out.push(self.type_tag());
         match self {

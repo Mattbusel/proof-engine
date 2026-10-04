@@ -5277,7 +5277,9 @@ pub fn diff_render_graphs(old: &RenderGraphEditor, new: &RenderGraphEditor) -> V
     // Check modified passes (simplified: check reads/writes changed)
     for (pid, new_pass) in &new.passes {
         if let Some(old_pass) = old.passes.get(pid) {
-            if old_pass.reads != new_pass.reads || old_pass.writes != new_pass.writes || !old_pass.enabled == !new_pass.enabled {
+            // The enabled check used to be `!a == !b` ("unchanged"), so every
+            // unchanged pass was reported as modified.
+            if old_pass.reads != new_pass.reads || old_pass.writes != new_pass.writes || old_pass.enabled != new_pass.enabled {
                 diffs.push(GraphDiff::PassModified(*pid, new_pass.name.clone()));
             }
         }
@@ -7462,6 +7464,8 @@ mod integration_tests {
         // Diffing against itself: only connections may still match (no adds/removes)
         let adds_removes: Vec<_> = diffs.iter().filter(|d| matches!(d, GraphDiff::PassAdded(_, _) | GraphDiff::PassRemoved(_, _))).collect();
         assert!(adds_removes.is_empty());
+        // A graph diffed against itself has no differences at all.
+        assert!(diffs.is_empty(), "{:?}", diffs);
     }
 
     #[test]
@@ -7831,7 +7835,10 @@ pub fn sphere_screen_size_pixels(center_vs: Vec3, radius: f32, proj: Mat4, scree
 
 /// Convert a linear depth value to a NDC z for a given near/far
 pub fn linear_depth_to_ndc(linear: f32, near: f32, far: f32) -> f32 {
-    let a = -(far + near) / (far - near);
+    // OpenGL perspective depth for a positive view distance d:
+    // z_ndc = (f + n)/(f - n) - 2 f n / ((f - n) d), which is -1 at d = n
+    // and +1 at d = f. Both terms had the wrong sign (d = n gave -3.0).
+    let a = (far + near) / (far - near);
     let b = -2.0 * far * near / (far - near);
     a + b / linear
 }
@@ -7926,6 +7933,8 @@ mod util_tests {
     fn test_linear_depth_to_ndc() {
         let ndc = linear_depth_to_ndc(1.0, 0.1, 100.0);
         assert!(ndc >= -1.0 && ndc <= 1.0);
+        assert!((linear_depth_to_ndc(0.1, 0.1, 100.0) + 1.0).abs() < 1e-5);
+        assert!((linear_depth_to_ndc(100.0, 0.1, 100.0) - 1.0).abs() < 1e-5);
     }
 
     #[test]

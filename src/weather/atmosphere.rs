@@ -878,7 +878,7 @@ impl Atmosphere {
 
     // ── Public Query Methods ──────────────────────────────────────────────────
 
-    /// Return surface (layer 0) relative humidity [0,1].
+    /// Return surface (layer 0) relative humidity \[0,1\].
     pub fn surface_humidity(&self) -> f32 {
         self.humidity_map.sample(
             (self.config.grid_width / 2) as f32,

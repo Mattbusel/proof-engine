@@ -10,7 +10,7 @@
 //! Run: `cargo run --example heartbeat`
 
 use proof_engine::prelude::*;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 fn main() {
     env_logger::init();
@@ -29,7 +29,7 @@ fn main() {
     });
 
     // The creature's body — a diamond formation of glyphs
-    let body_chars = [
+    let _body_chars = [
         '♥', '♥', '♥', '♥', '♥',
         '◆', '◆', '◆', '◆',
         '●', '●', '●', '●', '●', '●',

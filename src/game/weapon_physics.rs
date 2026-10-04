@@ -990,7 +990,7 @@ pub fn spawn_debris(
 /// impact point.
 #[derive(Debug, Clone)]
 pub struct ShockwaveRing {
-    /// Screen-space centre (normalised [0,1]).
+    /// Screen-space centre (normalised \[0,1\]).
     pub center: Vec2,
     /// Current ring radius (normalised screen units).
     pub radius: f32,

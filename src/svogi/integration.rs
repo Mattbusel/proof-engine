@@ -263,7 +263,10 @@ impl SvogiSystem {
     /// Get statistics.
     pub fn stats(&self) -> SvogiStats {
         SvogiStats {
-            voxel_count: self.octree.leaf_count(),
+            // Occupied voxels only. leaf_count() also counts the empty root
+            // of an unused octree, so an empty scene reported 1 voxel per
+            // cascade.
+            voxel_count: self.octree.iter_leaves().count(),
             update_time_ms: 0.0,
             trace_time_ms: 0.0,
             memory_mb: self.octree.memory_usage() as f32 / (1024.0 * 1024.0),
@@ -414,8 +417,10 @@ mod tests {
         let mut system = SvogiSystem::init(bounds, config);
 
         let triangles = make_test_triangles();
+        // The test triangles face +Z. A light shining along -Y grazes them
+        // (N . L = 0), so the old test lit nothing; shine along -Z instead.
         let light = LightSource::Directional(DirectionalLight {
-            direction: Vec3::new(0.0, -1.0, 0.0),
+            direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::ONE,
             intensity: 2.0,
         });

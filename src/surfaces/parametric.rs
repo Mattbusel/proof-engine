@@ -1262,7 +1262,7 @@ impl Surface for RevolutionSurface {
 
 /// Create a ruled surface between two space curves.
 ///
-/// Given curves `a(t)` and `b(t)` for t in [0,1], the ruled surface is
+/// Given curves `a(t)` and `b(t)` for t in \[0,1\], the ruled surface is
 /// `S(u, v) = (1-v) * a(u) + v * b(u)`.
 pub struct RuledSurface {
     pub curve_a: Box<dyn Fn(f32) -> Vec3 + Send + Sync>,

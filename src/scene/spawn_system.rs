@@ -429,7 +429,12 @@ impl WaveManager {
             if self.wave_timer <= 0.0 {
                 self.activate_current_wave();
             }
-            return events;
+            // Spawn in the same tick the wave activates. Returning here made
+            // every wave start one tick late, so a wave with no pre-delay
+            // spawned nothing on its first tick.
+            if !self.active || self.finished {
+                return events;
+            }
         }
 
         // Post-delay
@@ -708,8 +713,16 @@ mod tests {
         let mut mgr = WaveManager::new(vec![w1, w2], lib);
         mgr.start();
 
-        // Drain wave 1
-        for _ in 0..30 { mgr.tick(0.1); }
+        // Tick until wave 1 is done. The old test ran 30 ticks, long enough
+        // to finish wave 2 as well (both are one non-blocking spawn), after
+        // which there is no current wave; it then expected "w2".
+        let mut ticks = 0;
+        while mgr.current_wave_name() == "w1" && ticks < 30 {
+            mgr.tick(0.1);
+            ticks += 1;
+        }
         assert_eq!(mgr.current_wave_name(), "w2");
+        for _ in 0..30 { mgr.tick(0.1); }
+        assert_eq!(mgr.current_wave_name(), "none", "both waves done");
     }
 }

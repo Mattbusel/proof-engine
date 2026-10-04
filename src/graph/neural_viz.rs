@@ -19,7 +19,7 @@ pub struct SynapseEdge {
 #[derive(Debug, Clone)]
 pub struct NeuralNetGraph {
     pub graph: Graph<NeuronNode, SynapseEdge>,
-    /// layer_index -> Vec<NodeId> of neurons in that layer
+    /// layer_index -> Vec`<NodeId>` of neurons in that layer
     pub layers: Vec<Vec<NodeId>>,
     pub layer_count: usize,
 }

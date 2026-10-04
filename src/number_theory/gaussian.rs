@@ -1,4 +1,4 @@
-//! Gaussian integers Z[i]: arithmetic, primes, factorization, and lattice rendering.
+//! Gaussian integers Z\[i\]: arithmetic, primes, factorization, and lattice rendering.
 
 use glam::{Vec2, Vec3, Vec4};
 

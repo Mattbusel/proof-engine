@@ -543,15 +543,22 @@ impl FirDesign {
     /// Windowed-sinc bandpass FIR design.
     pub fn bandpass_windowed(low_norm: f32, high_norm: f32, num_taps: usize, window: WindowFunction) -> FirFilter {
         let m = (num_taps - 1) as f32 / 2.0;
+        // Ideal bandpass = lowpass(high) - lowpass(low), using the same
+        // normalisation as `lowpass_windowed` (0.5 = Nyquist). The old code
+        // dropped the factor 2 and the 2*fc amplitudes, so it passed a band
+        // at half the requested frequencies with the wrong shape.
         let mut coeffs: Vec<f32> = (0..num_taps).map(|n| {
             let x = n as f32 - m;
-            sinc(high_norm * x) - sinc(low_norm * x)
+            2.0 * high_norm * sinc(2.0 * high_norm * x) - 2.0 * low_norm * sinc(2.0 * low_norm * x)
         }).collect();
         window.apply(&mut coeffs);
-        // Normalize to peak unity at center frequency
-        let peak: f32 = coeffs.iter().map(|&c| c.abs()).fold(0.0, f32::max);
-        if peak > 1e-10 {
-            for c in coeffs.iter_mut() { *c /= peak; }
+        // Normalize to unity gain at the centre of the band.
+        let fc = 0.5 * (low_norm + high_norm);
+        let gain: f32 = coeffs.iter().enumerate()
+            .map(|(n, &c)| c * (2.0 * PI * fc * (n as f32 - m)).cos())
+            .sum();
+        if gain.abs() > 1e-10 {
+            for c in coeffs.iter_mut() { *c /= gain; }
         }
         FirFilter::new(coeffs)
     }
@@ -872,8 +879,12 @@ impl AllpassDelay {
         let n = self.delay_line.len();
         let read_pos = (self.write_pos + n - self.delay_samples) % n;
         let buf = self.delay_line[read_pos];
-        let out = -self.feedback * x + buf;
-        self.delay_line[self.write_pos] = x + self.feedback * buf;
+        // Schroeder allpass: w[n] = x[n] + g w[n-D], y[n] = -g w[n] + w[n-D].
+        // The output must use w[n], not x[n]; with x[n] the section was not
+        // allpass (an impulse came out with 58% more energy).
+        let w = x + self.feedback * buf;
+        let out = -self.feedback * w + buf;
+        self.delay_line[self.write_pos] = w;
         self.write_pos = (self.write_pos + 1) % n;
         out
     }
@@ -1306,8 +1317,10 @@ mod tests {
     #[test]
     fn test_allpass_delay_unity_magnitude() {
         let mut ap = AllpassDelay::new(50, 0.5);
+        // 400 samples so the tail (echoes every 50 samples, decaying by 0.5)
+        // is captured; at 200 samples 1.2% of the energy is still to come.
         let impulse: Vec<f32> = {
-            let mut v = vec![0.0f32; 200];
+            let mut v = vec![0.0f32; 400];
             v[0] = 1.0;
             v
         };
@@ -1398,9 +1411,12 @@ mod tests {
     fn test_fir_bandpass() {
         let sr = 44100.0;
         let fir = FirDesign::bandpass_windowed(0.1, 0.3, 127, WindowFunction::Blackman);
+        // Frequencies are fractions of the sample rate (0.5 = Nyquist), so
+        // the band is 4410 to 13230 Hz. The old test put "mid" at 3000 Hz,
+        // below the band, and "hi" at 10000 Hz, inside it.
         let lo = sine_buf(100.0, sr, 4410);
-        let hi = sine_buf(10000.0, sr, 4410);
-        let mid = sine_buf(3000.0, sr, 4410);
+        let hi = sine_buf(20000.0, sr, 4410);
+        let mid = sine_buf(8820.0, sr, 4410);
         let process = |f: &FirFilter, buf: &[f32]| -> f32 {
             let mut b = buf.to_vec();
             let mut ff = f.clone();

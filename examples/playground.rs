@@ -29,7 +29,6 @@
 
 use proof_engine::prelude::*;
 use proof_engine::math::attractors::AttractorType;
-use proof_engine::glyph;
 use proof_engine::particle;
 use std::f32::consts::TAU;
 
@@ -176,12 +175,8 @@ fn main() {
     let mut glyph_count = 0u32;
     let mut field_count = 0u32;
     let mut spawn_counter = 0u32;
-    let mut time = 0.0f32;
     let mut cam_x = 0.0f32;
     let mut cam_y = 0.0f32;
-
-    // HUD glyphs (pre-spawned, updated each frame)
-    let mut hud_ids: Vec<glyph::GlyphId> = Vec::new();
 
     // Spawn a grid of dots as reference background
     for y in -20..=20 {
@@ -200,7 +195,6 @@ fn main() {
     }
 
     engine.run(move |engine, dt| {
-        time += dt;
         let input = engine.input.clone();
 
         // ── Tool switching (1-5) ────────────────────────────────────────
@@ -392,11 +386,10 @@ fn main() {
             let hud_y = cam_y + 9.0;
             let tc = tool.color();
 
-            // Spawn HUD text as glyphs (they'll be recreated each frame
-            // in a real implementation — for now, this is the concept)
+            // HUD text, respawned as short-lived glyphs every frame.
             let lines = [
-                format!("PROOF ENGINE PLAYGROUND"),
-                format!(""),
+                "PROOF ENGINE PLAYGROUND".to_string(),
+                String::new(),
                 format!("Tool: {} [1-5]", tool.name()),
                 format!("Chars: {} [Q/E]", CHAR_SET_NAMES[char_set_idx]),
                 format!("Color: {} [R/F]", PALETTE_NAMES[palette_idx]),
@@ -406,14 +399,12 @@ fn main() {
                 format!("Bloom: {} {:.1} [B/N/M]",
                     if engine.config.render.bloom_enabled { "ON" } else { "OFF" },
                     engine.config.render.bloom_intensity),
-                format!(""),
+                String::new(),
                 format!("Glyphs: {}  Fields: {}", glyph_count, field_count),
-                format!("Click to place | Space=shake"),
-                format!("WASD=pan | Tab=HUD | Bksp=clear"),
+                "Click to place | Space=shake".to_string(),
+                "WASD=pan | Tab=HUD | Bksp=clear".to_string(),
             ];
 
-            // We render HUD by spawning short-lived glyphs for each character
-            // This is hacky but demonstrates the engine's capability
             for (row, line) in lines.iter().enumerate() {
                 for (col, ch) in line.chars().enumerate() {
                     if ch == ' ' { continue; }

@@ -160,7 +160,12 @@ impl Table {
         let d = self.inner.borrow();
         if let Some(i) = int_key(key) {
             if i >= 1 {
-                return d.array.get((i - 1) as usize).cloned().unwrap_or(Value::Nil);
+                if let Some(v) = d.array.get((i - 1) as usize) {
+                    return v.clone();
+                }
+                // Integer keys beyond the array part (t[5] = x on a shorter
+                // table) are stored in the hash; look there too instead of
+                // returning nil.
             }
         }
         TableKey::from_value(key)
@@ -341,6 +346,8 @@ struct CallFrame {
     upvalues: Vec<UpvalueCell>,
     ip:       usize,
     base:     usize,
+    /// Stack height recorded by `MarkReturn`.
+    ret_mark: usize,
 }
 
 // ── Vm ────────────────────────────────────────────────────────────────────────
@@ -356,6 +363,18 @@ pub struct Vm {
 }
 
 impl Vm {
+    /// Push call results, padded with nil or truncated to `nret` (0 = all).
+    fn push_results(stack: &mut Vec<Value>, results: Vec<Value>, nret: usize) {
+        if nret == 0 {
+            stack.extend(results);
+            return;
+        }
+        let mut it = results.into_iter();
+        for _ in 0..nret {
+            stack.push(it.next().unwrap_or(Value::Nil));
+        }
+    }
+
     pub fn new() -> Self {
         Vm {
             stack:   Vec::with_capacity(64),
@@ -424,9 +443,18 @@ impl Vm {
         while self.stack.len() < base + param_count {
             self.stack.push(Value::Nil);
         }
-        self.frames.push(CallFrame { chunk, upvalues, ip: 0, base });
+        let frame_count = self.frames.len();
+        self.frames.push(CallFrame { chunk, upvalues, ip: 0, base, ret_mark: base });
         let result = self.run();
         self.depth -= 1;
+        if result.is_err() {
+            // Unwind what the failed call left behind. Without this, a
+            // runtime error caught by pcall left the dead frame on the frame
+            // stack, so the caller carried on in the wrong frame (pcall's
+            // error message was lost).
+            self.frames.truncate(frame_count);
+            self.stack.truncate(base);
+        }
         result
     }
 
@@ -693,16 +721,20 @@ impl Vm {
                     self.frames[fi].ip = abs_ip;
                 }
 
-                Instruction::Call(nargs) => {
+                Instruction::Call(nargs, nret) => {
                     let top  = self.stack.len();
                     let base = top.saturating_sub(nargs + 1);
                     let args: Vec<Value> = self.stack.drain(base + 1..).collect();
                     let callee = self.stack.pop().unwrap_or(Value::Nil);
                     let results = self.call(callee, args)?;
-                    for r in results { self.stack.push(r); }
+                    // Push exactly `nret` values (nret 0: all of them). The
+                    // compiler counts on one value per call expression; a
+                    // function returning none (table.sort) used to push
+                    // nothing, so the following Pop removed a local.
+                    Self::push_results(&mut self.stack, results, nret);
                 }
 
-                Instruction::CallMethod(method_name, nargs) => {
+                Instruction::CallMethod(method_name, nargs, nret) => {
                     let top  = self.stack.len();
                     let base = top.saturating_sub(nargs + 1);
                     let extra: Vec<Value> = self.stack.drain(base + 1..).collect();
@@ -716,7 +748,22 @@ impl Vm {
                     let mut args = vec![obj];
                     args.extend(extra);
                     let results = self.call(method, args)?;
-                    for r in results { self.stack.push(r); }
+                    Self::push_results(&mut self.stack, results, nret);
+                }
+
+                Instruction::MarkReturn => {
+                    let fi = self.frames.len() - 1;
+                    self.frames[fi].ret_mark = self.stack.len();
+                }
+
+                Instruction::ReturnFromMark => {
+                    let fi   = self.frames.len() - 1;
+                    let mark = self.frames[fi].ret_mark.min(self.stack.len());
+                    let returns: Vec<Value> = self.stack.drain(mark..).collect();
+                    let base = self.frames[fi].base;
+                    self.stack.truncate(base);
+                    self.frames.pop();
+                    return Ok(returns);
                 }
 
                 Instruction::Return(nret) => {

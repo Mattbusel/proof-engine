@@ -239,7 +239,7 @@ impl Default for ClimateSimulator {
 impl ClimateSimulator {
     pub fn new() -> Self { Self::default() }
 
-    /// Compute temperature at a given normalized position (x, y in [0,1]) and altitude.
+    /// Compute temperature at a given normalized position (x, y in \[0,1\]) and altitude.
     pub fn temperature(&self, nx: f32, ny: f32, altitude: f32) -> f32 {
         // Latitude gradient: equator hot, poles cold
         let (lat_s, lat_n) = self.latitude_range;
@@ -758,9 +758,11 @@ impl TransitionZone {
         if self.sharp_boundary {
             if t < 0.5 { 0.0 } else { 1.0 }
         } else {
-            // Smooth sigmoid
+            // Smooth step through 0.5 with zero slope at both ends. The
+            // extra "* 0.5" made it run from 0.25 to 0.75, so neither biome
+            // was ever fully reached.
             let x = t * 2.0 - 1.0;
-            0.5 + x * (1.0 - x.abs() * 0.5) * 0.5
+            0.5 + x * (1.0 - x.abs() * 0.5)
         }
     }
 }
@@ -976,10 +978,17 @@ mod tests {
 
     #[test]
     fn test_transition_zone() {
-        let tz = TransitionZone::new(BiomeType::Grassland, BiomeType::Desert, 10.0);
+        // Grassland to desert is one of the pairs declared sharp, so the old
+        // test's "mid strictly between 0 and 1" could never hold for it.
+        let sharp = TransitionZone::new(BiomeType::Grassland, BiomeType::Desert, 10.0);
+        assert_eq!(sharp.blend_factor(0.25), 0.0);
+        assert_eq!(sharp.blend_factor(0.75), 1.0);
+        let tz = TransitionZone::new(BiomeType::Grassland, BiomeType::TemperateForest, 10.0);
         assert!((tz.blend_factor(0.0) - 0.0).abs() < 0.01);
+        assert!((tz.blend_factor(1.0) - 1.0).abs() < 0.01);
         let mid = tz.blend_factor(0.5);
         assert!(mid > 0.0 && mid < 1.0);
+        assert!(tz.blend_factor(0.3) < tz.blend_factor(0.7));
     }
 }
 

@@ -614,7 +614,7 @@ impl CubicBezier2D {
         + (self.p3 - self.p2) * (3.0 * t2)
     }
 
-    /// CSS cubic-bezier ease convenience function (control points on [0,1]).
+    /// CSS cubic-bezier ease convenience function (control points on \[0,1\]).
     /// Standard CSS ease: cubic-bezier(0.25, 0.1, 0.25, 1.0).
     pub fn css_ease() -> Self {
         Self::new(

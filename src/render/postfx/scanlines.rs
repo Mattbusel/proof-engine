@@ -44,7 +44,9 @@ impl Default for ScanlineParams {
 
 impl ScanlineParams {
     /// Disabled (no scanlines).
-    pub fn none() -> Self { Self::default() }
+    /// No scanlines: disabled and at zero intensity, so blending from
+    /// `none()` fades in from nothing (it used to start at the default 0.05).
+    pub fn none() -> Self { Self { enabled: false, intensity: 0.0, ..Default::default() } }
 
     /// Subtle scanlines (barely visible, just adds texture).
     pub fn subtle() -> Self {

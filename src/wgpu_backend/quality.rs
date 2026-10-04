@@ -480,11 +480,22 @@ mod tests {
 
     #[test]
     fn quality_manager_should_upgrade_downgrade() {
+        // With no cooldown, tick() acts at once: 120 fps against a 60 fps
+        // target climbs a level per tick until the top, where there is
+        // nothing left to upgrade to. The old test then expected
+        // should_upgrade() to be true. Use a cooldown so tick() only
+        // observes, and check the prediction.
         let mut mgr = QualityManager::new(QualityLevel::Medium, 60.0);
-        mgr.cooldown_seconds = 0.0;
+        mgr.cooldown_seconds = 100.0;
         for _ in 0..5 { mgr.tick(120.0, 0.008); }
+        assert_eq!(mgr.current, QualityLevel::Medium);
         assert!(mgr.should_upgrade());
         assert!(!mgr.should_downgrade());
+
+        let mut eager = QualityManager::new(QualityLevel::Medium, 60.0);
+        eager.cooldown_seconds = 0.0;
+        eager.tick(120.0, 0.008);
+        assert_ne!(eager.current, QualityLevel::Medium, "upgrades straight away");
     }
 
     #[test]

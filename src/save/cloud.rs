@@ -1,5 +1,5 @@
 //! Cloud save synchronisation: upload/download queuing, conflict resolution,
-//! offline buffering, encryption, and rotating local backups.
+//! offline buffering, XOR obfuscation (not encryption, see [`SaveEncryption`]) and rotating local backups.
 //!
 //! No real network I/O is performed — all "remote" state is simulated in
 //! memory so the module compiles and tests without external dependencies.

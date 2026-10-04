@@ -65,7 +65,7 @@ impl ContinuedFraction {
     }
 
     /// Compute convergents (rational approximations) as (numerator, denominator) pairs.
-    /// Returns all convergents from [a0] to [a0; a1, ..., an].
+    /// Returns all convergents from \[a0\] to [a0; a1, ..., an].
     pub fn convergents(&self) -> Vec<(i64, i64)> {
         let mut result = Vec::new();
         let mut h_prev: i64 = 1;

@@ -43,7 +43,7 @@ fn main() {
 
     // ── Background particles (redrawn each frame so they can drift) ──
     // We store their positions and update them
-    let mut bg: Vec<(f32,f32,char,f32)> = (0..250).map(|i| {
+    let bg: Vec<(f32,f32,char,f32)> = (0..250).map(|i| {
         (hf(i,0)*18.0-9.0, hf(i,1)*11.0-5.5, ['.', '+', 'x', '*', '-', '=', 'o', '#'][i%8], 0.04+hf(i,3)*0.05)
     }).collect();
 

@@ -74,11 +74,12 @@ impl SymMatrix {
             return a.sub(b);
         }
         let mut det = Expr::zero();
+        // Laplace expansion along row 0. The cofactor already carries the
+        // (-1)^(i+j) sign; alternating add/sub as well applied it twice, so
+        // every 3x3 and larger determinant had wrong-signed odd terms.
         for j in 0..n {
             let cofactor = self.cofactor(0, j);
-            let term = self.data[0][j].clone().mul(cofactor);
-            if j % 2 == 0 { det = det.add(term); }
-            else { det = det.sub(term); }
+            det = det.add(self.data[0][j].clone().mul(cofactor));
         }
         det
     }

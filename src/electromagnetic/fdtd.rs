@@ -598,8 +598,12 @@ mod tests {
     fn test_pml_absorbs_energy() {
         let mut grid = FdtdGrid2D::new(60, 60, 1.0, 0.4);
         grid.add_source(30, 30, 5.0);
+        // 20 steps (as before) only carries the pulse about 8 cells from the
+        // centre, nowhere near the 8-cell layer at the edge 22 cells away,
+        // so both runs had equal energy. Run long enough to reach it.
+        let steps = 150;
         // Run without PML first
-        for _ in 0..20 {
+        for _ in 0..steps {
             grid.step();
         }
         let e_no_pml = grid.field_energy();
@@ -607,7 +611,7 @@ mod tests {
         // Reset and run with PML
         let mut grid2 = FdtdGrid2D::new(60, 60, 1.0, 0.4);
         grid2.add_source(30, 30, 5.0);
-        for _ in 0..20 {
+        for _ in 0..steps {
             grid2.step();
             grid2.apply_pml_boundary(8);
         }

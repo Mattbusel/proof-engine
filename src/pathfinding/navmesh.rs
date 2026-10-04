@@ -4,7 +4,6 @@
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::cmp::Ordering;
-use std::f32;
 
 // ── Basic geometry types ─────────────────────────────────────────────────────
 
@@ -736,7 +735,7 @@ pub fn path_length(waypoints: &[Vec2]) -> f32 {
     waypoints.windows(2).map(|w| w[0].dist(w[1])).sum()
 }
 
-/// Sample a position along a waypoint path at arc-length parameter `t` in [0,1].
+/// Sample a position along a waypoint path at arc-length parameter `t` in \[0,1\].
 pub fn path_sample(waypoints: &[Vec2], t: f32) -> Vec2 {
     if waypoints.is_empty() { return Vec2::zero(); }
     if waypoints.len() == 1 { return waypoints[0]; }
