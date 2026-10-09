@@ -1,5 +1,7 @@
 <h1 align="center">Proof Engine</h1>
 
+<p align="center">English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a></p>
+
 <p align="center"><b>Write the equations, and Proof Engine draws what they do: moving pictures made from math, in real time, with glowing HDR light.</b></p>
 
 <p align="center">A Rust graphics engine and a set of ready-to-run demos. For creative coders, generative artists, and anyone who wants to watch a strange attractor or a physical sky move.</p>
