@@ -1,25 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Proof Engine: real-time math graphics in Rust</title>
-<meta name="description" content="Proof Engine is a Rust engine that turns equations into moving pictures: strange attractors, force fields and a physical sky, drawn in HDR. Windows demos.">
-<link rel="canonical" href="https://proof-engine-rs.vercel.app/">
+<title>Proof Engine：Rust 製リアルタイム数学グラフィックスエンジン（無料・オープンソース）</title>
+<meta name="description" content="Proof Engine は、数式を動く映像に変える Rust 製のオープンソースエンジンです。ストレンジアトラクタ、力場、物理ベースの空を HDR で描画。数学の可視化やジェネラティブアートに。Windows 用デモあり。">
+<link rel="canonical" href="https://proof-engine-rs.vercel.app/ja/">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#05060a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Proof Engine">
-<meta property="og:title" content="Proof Engine: real-time math graphics in Rust">
-<meta property="og:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta property="og:title" content="Proof Engine：Rust 製リアルタイム数学グラフィックスエンジン（無料・オープンソース）">
+<meta property="og:description" content="数式を書けば、その動きを描き出します。ストレンジアトラクタ、力場、物理ベースの空を、HDR ブルーム付きでリアルタイムに。">
 <meta property="og:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Proof Engine: a sunset computed from a scattering integral next to 40,000 points on the Lorenz attractor">
-<meta property="og:url" content="https://proof-engine-rs.vercel.app/">
+<meta property="og:image:alt" content="Proof Engine：散乱積分から計算した夕焼けと、ローレンツアトラクタ上の 40,000 個の点">
+<meta property="og:url" content="https://proof-engine-rs.vercel.app/ja/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Proof Engine: real-time math graphics in Rust">
-<meta name="twitter:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta name="twitter:title" content="Proof Engine：Rust 製リアルタイム数学グラフィックスエンジン（無料・オープンソース）">
+<meta name="twitter:description" content="数式を書けば、その動きを描き出します。ストレンジアトラクタ、力場、物理ベースの空を、HDR ブルーム付きでリアルタイムに。">
 <meta name="twitter:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Proof Engine","alternateName":"proof-engine","description":"A Rust library and set of demos for real-time graphics from math: glyphs and particles moved by differential equations, strange attractors and force fields, drawn with HDR bloom on OpenGL.","url":"https://proof-engine-rs.vercel.app/","codeRepository":"https://gitlab.com/mattbusel/proof-engine","programmingLanguage":"Rust","license":"https://opensource.org/licenses/MIT","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","downloadUrl":"https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip","image":"https://proof-engine-rs.vercel.app/assets/og-image.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Matthew Busel","url":"https://gitlab.com/mattbusel"}}
@@ -191,24 +191,24 @@
 <link rel="alternate" hreflang="ja" href="https://proof-engine-rs.vercel.app/ja/">
 <link rel="alternate" hreflang="ko" href="https://proof-engine-rs.vercel.app/ko/">
 <link rel="alternate" hreflang="x-default" href="https://proof-engine-rs.vercel.app/">
-<meta property="og:locale" content="en_US">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:locale:alternate" content="en_US">
 <meta property="og:locale:alternate" content="zh_CN">
-<meta property="og:locale:alternate" content="ja_JP">
 <meta property="og:locale:alternate" content="ko_KR">
 <style>.i18n-switch{display:block!important;position:relative;z-index:40;box-sizing:border-box;max-width:1200px;margin:0 auto!important;padding:6px 16px 0!important;border:0!important;background:none!important;text-align:right!important;font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif!important;letter-spacing:normal!important;text-transform:none!important;opacity:.8}.i18n-switch a,.i18n-switch span{display:inline!important;margin:0!important;padding:0!important;font:inherit!important;color:inherit!important;background:none!important;border:0!important}.i18n-switch a{text-decoration:underline!important;text-underline-offset:2px}.i18n-switch [aria-current]{font-weight:600!important}</style>
 <!-- /i18n -->
 </head>
 <body>
-<a class="skip" href="#start">Skip to quick start</a>
-<div class="i18n-switch" role="navigation" aria-label="Language"><span aria-current="true">English</span> | <a href="zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a> | <a href="ja/" hreflang="ja" lang="ja">日本語</a> | <a href="ko/" hreflang="ko" lang="ko">한국어</a></div>
+<a class="skip" href="#start">クイックスタートへ移動</a>
+<div class="i18n-switch" role="navigation" aria-label="言語"><a href="../" hreflang="en" lang="en">English</a> | <a href="../zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a> | <span aria-current="true">日本語</span> | <a href="../ko/" hreflang="ko" lang="ko">한국어</a></div>
 
 <header class="top">
   <div class="wrap">
     <a class="brand" href="./"><i aria-hidden="true"></i>proof-engine</a>
-    <nav aria-label="Primary">
-      <a href="#start">Start</a>
-      <a class="hide-s" href="#demos">Demos</a>
-      <a class="hide-s" href="https://docs.rs/proof-engine">Docs</a>
+    <nav aria-label="メインナビゲーション">
+      <a href="#start">はじめる</a>
+      <a class="hide-s" href="#demos">デモ</a>
+      <a class="hide-s" href="https://docs.rs/proof-engine">ドキュメント</a>
       <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a>
     </nav>
   </div>
@@ -216,43 +216,43 @@
 
 <main>
 <div class="hero">
-  <img class="poster" src="assets/sky-poster.jpg" alt="" aria-hidden="true">
-  <video autoplay muted loop playsinline preload="auto" poster="assets/sky-poster.jpg" aria-label="The sky demo: the sun lowers over a mountain range and the sky turns from blue to orange to dusk">
-    <source src="assets/sky.webm" type="video/webm">
-    <source src="assets/sky.mp4" type="video/mp4">
+  <img class="poster" src="../assets/sky-poster.jpg" alt="" aria-hidden="true">
+  <video autoplay muted loop playsinline preload="auto" poster="../assets/sky-poster.jpg" aria-label="sky デモ：山並みの上で太陽が沈み、空が青からオレンジ、そして夕暮れへと移り変わる">
+    <source src="../assets/sky.webm" type="video/webm">
+    <source src="../assets/sky.mp4" type="video/mp4">
   </video>
   <div class="wrap">
     <h1>Proof Engine<span class="qed" aria-hidden="true"></span></h1>
-    <p class="lede">A Rust rendering engine where every visual is the output of a mathematical function. Glyphs and particles are moved by differential equations and force fields, and drawn in HDR.</p>
+    <p class="lede">すべてのビジュアルが数学関数の出力である、Rust 製のレンダリングエンジン。グリフとパーティクルを微分方程式と力場で動かし、HDR で描画します。</p>
     <div class="cta">
-      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">Copy</button></div>
-      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Download demos for Windows</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS and Linux</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">Source</a>
+      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">コピー</button></div>
+      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Windows 版デモをダウンロード</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS / Linux</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">ソースコード</a>
     </div>
-    <p class="figcap"><b>FIG. 1</b>The <code>sky</code> example from 16:20 to dusk, captured frame by frame with <code>PROOF_SHOT</code> and played forward and back. Every cell of that sky is a scattering integral.</p>
+    <p class="figcap"><b>図 1</b><code>sky</code> サンプルの 16:20 から夕暮れまで。<code>PROOF_SHOT</code> でフレームごとにキャプチャし、順再生と逆再生でつないでいます。この空のセルはすべて散乱積分です。</p>
   </div>
 </div>
 
 <section id="sky" aria-labelledby="sky-h">
   <div class="wrap split">
     <div>
-      <p class="kicker">Nishita sky</p>
-      <h2 id="sky-h">Drag the sun.</h2>
+      <p class="kicker">Nishita スカイ</p>
+      <h2 id="sky-h">太陽をドラッグ。</h2>
       <div class="prose">
-        <p>The sky is 120 by 56 cells. For each one, every frame, <code>nishita_sky::compute_sky_color</code> integrates Rayleigh and Mie single scattering along the view ray and along a second ray toward the sun.</p>
-        <p>No gradient is painted anywhere. The blue at three o'clock, the orange band at sunset and the dark teal after it are the same integral with the sun somewhere else. The mountains are sums of sines lit by the sky just above the horizon.</p>
+        <p>空は 120 × 56 のセルでできています。毎フレーム、各セルについて <code>nishita_sky::compute_sky_color</code> が、視線方向のレイと太陽へ向かう別のレイに沿って、レイリー散乱とミー散乱（単一散乱）を積分します。</p>
+        <p>グラデーションはどこにも描いていません。午後三時の青も、日没時のオレンジの帯も、その後の深い青緑も、太陽の位置が違うだけの同じ積分です。山並みはサイン波の和で、地平線のすぐ上の空の光で照らされています。</p>
       </div>
     </div>
     <figure>
-      <div class="frame"><img id="sun-img" src="assets/sun/00.jpg" width="960" height="480" alt="The sky demo at 14:48, sun elevation 36.8 degrees" decoding="async"></div>
+      <div class="frame"><img id="sun-img" src="../assets/sun/00.jpg" width="960" height="480" alt="14:48 の sky デモ、太陽高度 36.8 度" decoding="async"></div>
       <div class="scrub">
-        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">sun elevation <span id="sun-el">+36.8&deg;</span></span></div>
-        <label class="skip" for="sun">Time of day</label>
+        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">太陽高度 <span id="sun-el">+36.8&deg;</span></span></div>
+        <label class="skip" for="sun">時刻</label>
         <input id="sun" type="range" min="0" max="39" value="0" step="1">
-        <div class="scrub-ends"><span>afternoon</span><span>dusk</span></div>
+        <div class="scrub-ends"><span>午後</span><span>夕暮れ</span></div>
       </div>
-      <p class="figcap"><b>FIG. 2</b>Forty real frames from <code>cargo run --release --example sky</code>. Times and elevations are the ones the demo prints.</p>
+      <p class="figcap"><b>図 2</b><code>cargo run --release --example sky</code> の実際の四十フレーム。時刻と高度はデモが出力した値そのままです。</p>
     </figure>
   </div>
 </section>
@@ -260,16 +260,16 @@
 <section id="lorenz" aria-labelledby="lz-h">
   <div class="wrap split rev">
     <figure>
-      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/lorenz-poster.jpg" width="720" height="480" aria-label="Forty thousand points circling the two wings of the Lorenz attractor"><source src="assets/lorenz.mp4" type="video/mp4"></video></div>
-      <p class="figcap"><b>FIG. 3</b><code>cargo run --release --example lorenz</code>. Teal is slow, amber is fast.</p>
+      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/lorenz-poster.jpg" width="720" height="480" aria-label="ローレンツアトラクタの二つの翼を周回する 40,000 個の点"><source src="../assets/lorenz.mp4" type="video/mp4"></video></div>
+      <p class="figcap"><b>図 3</b><code>cargo run --release --example lorenz</code>。青緑は遅く、琥珀色は速い。</p>
     </figure>
     <div>
-      <p class="kicker cool">Strange attractors</p>
-      <h2 id="lz-h">Forty thousand points, one equation.</h2>
-      <div class="eq" aria-label="The Lorenz equations">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
-      <div class="prose"><p>Each point is a state advanced every frame by the engine's own RK4 step. Nobody drew the two wings; that is where the equations send the points. The same module carries Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras and more, and any of them can drive a force field.</p></div>
+      <p class="kicker cool">ストレンジアトラクタ</p>
+      <h2 id="lz-h">四万個の点、ひとつの方程式。</h2>
+      <div class="eq" aria-label="ローレンツ方程式">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
+      <div class="prose"><p>各点はひとつの状態で、エンジン自前の RK4 ステップで毎フレーム進められます。二つの翼は誰かが描いたものではなく、方程式が点を運んだ先です。同じモジュールには Rossler、Chen、Halvorsen、Aizawa、Thomas、Dadras なども入っていて、どれでも力場を駆動できます。</p></div>
       <div class="code">
-        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">Copy</button></div>
+        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">コピー</button></div>
 <pre id="lz-code"><span class="k">for</span> p <span class="k">in</span> points.<span class="f">iter_mut</span>() {
     <span class="k">for</span> _ <span class="k">in</span> <span class="n">0</span>..SUBSTEPS {
         *p = <span class="f">rk4_step</span>(lorenz, *p, h);
@@ -282,15 +282,15 @@
 
 <section id="start" aria-labelledby="start-h">
   <div class="wrap">
-    <p class="kicker">Quick start</p>
-    <h2 id="start-h">Running in two commands.</h2>
-    <div class="prose"><p>You need stable Rust and a GPU with OpenGL 3.3. Windows and macOS need nothing else. On Linux, install the ALSA headers first: <code>sudo apt install libasound2-dev pkg-config</code>.</p></div>
+    <p class="kicker">クイックスタート</p>
+    <h2 id="start-h">二つのコマンドで動きます。</h2>
+    <div class="prose"><p>必要なのは stable 版の Rust と、OpenGL 3.3 対応の GPU です。Windows と macOS ではほかに何もいりません。Linux では先に ALSA のヘッダーをインストールしてください：<code>sudo apt install libasound2-dev pkg-config</code>。</p></div>
     <div class="steps">
       <div class="step">
-        <h3><span>01</span>Run the demos</h3>
-        <p>The first build compiles the whole engine and takes a few minutes. Use <code>--release</code>; the demos simulate tens of thousands of particles a frame.</p>
+        <h3><span>01</span>デモを実行</h3>
+        <p>初回ビルドはエンジン全体をコンパイルするので数分かかります。<code>--release</code> を付けてください。デモは毎フレーム数万個のパーティクルをシミュレートします。</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">コピー</button></div>
 <pre id="c1">git clone https://gitlab.com/mattbusel/proof-engine.git
 cd proof-engine
 cargo run --release --example sky
@@ -298,15 +298,15 @@ cargo run --release --example lorenz</pre>
         </div>
       </div>
       <div class="step">
-        <h3><span>02</span>Use it as a library</h3>
-        <p>5,000 points start on one short line and follow the Lorenz equations. Also in the repo as <code>examples/quickstart.rs</code>.</p>
+        <h3><span>02</span>ライブラリとして使う</h3>
+        <p>5,000 個の点が短い線分から出発し、ローレンツ方程式に従って動きます。リポジトリにも <code>examples/quickstart.rs</code> として入っています。</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">コピー</button></div>
 <pre id="c2">cargo new lorenz-demo &amp;&amp; cd lorenz-demo
 cargo add proof-engine</pre>
         </div>
         <div class="code">
-          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">Copy</button></div>
+          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">コピー</button></div>
 <pre id="c3"><span class="k">use</span> proof_engine::math::attractors::rk4_step;
 <span class="k">use</span> proof_engine::prelude::*;
 <span class="k">use</span> proof_engine::render::ui_layer::UiParticle;
@@ -336,87 +336,87 @@ cargo add proof-engine</pre>
     });
 }</pre>
         </div>
-        <p class="note"><code>cargo run --release</code>. For about ten seconds the points travel as one streak; then chaos pulls them apart into the butterfly.</p>
+        <p class="note"><code>cargo run --release</code> で実行。約十秒間は点がひと筋の線になって進み、その後カオスによって引き裂かれて蝶の形になります。</p>
       </div>
     </div>
     <figure style="margin-top:36px">
-      <div class="frame"><img src="assets/quickstart-steps.jpg" width="1710" height="420" alt="Four frames of the quickstart program at 1, 13.5, 16 and 18.5 seconds: a speck, a thin arc, loops splitting apart, and the full Lorenz butterfly." loading="lazy"></div>
-      <p class="figcap"><b>FIG. 3B</b>That program, frames written by the engine at 1, 13.5, 16 and 18.5 seconds.</p>
+      <div class="frame"><img src="../assets/quickstart-steps.jpg" width="1710" height="420" alt="quickstart プログラムの 1、13.5、16、18.5 秒時点の四つのフレーム。小さな点、細い弧、分かれていくループ、そして完成したローレンツの蝶。" loading="lazy"></div>
+      <p class="figcap"><b>図 3B</b>上のプログラムで、エンジンが 1、13.5、16、18.5 秒時点で書き出したフレーム。</p>
     </figure>
   </div>
 </section>
 
 <section id="inside" aria-labelledby="inside-h">
   <div class="wrap">
-    <p class="kicker">What is inside</p>
-    <h2 id="inside-h">Math first, then light.</h2>
+    <p class="kicker">中身</p>
+    <h2 id="inside-h">まず数学、それから光。</h2>
     <div class="grid">
-      <div class="cell"><span class="mod">math</span><h3>Functions as animation</h3><p>Attractors, Perlin noise, logistic map, Collatz, Lissajous, Mandelbrot escape, springs. Any glyph can carry a <code>life_function</code> that drives its position or colour.</p></div>
-      <div class="cell"><span class="mod">math::fields</span><h3>Composable force fields</h3><p>Gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, dipole, with linear, inverse-square, exponential or Gaussian falloff.</p></div>
-      <div class="cell"><span class="mod">entity</span><h3>Particle-built bodies</h3><p>Entities are glyph clusters held by force cohesion. Binding strength follows HP, so a hit knocks matter loose instead of playing an animation.</p></div>
-      <div class="cell"><span class="mod">render</span><h3>An HDR pipeline</h3><p>Half-float scene buffers, a bloom pyramid, ACES, lens, light shafts, shadows from matter, grain and dither. Every standing parameter is a field on <code>RenderConfig</code>.</p></div>
-      <div class="cell"><span class="mod">physics &middot; audio</span><h3>Simulation and sound</h3><p>Rigid bodies with SAT, soft bodies, Eulerian fluid. 48 kHz synthesis with FM, filters, drive and reverb. Sound is synthesised, not sampled.</p></div>
-      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>Procedural everything</h3><p>Tectonics, erosion, climate, rivers, settlements and history; Lotka-Volterra and SIR ecology; a bytecode VM with closures.</p></div>
+      <div class="cell"><span class="mod">math</span><h3>関数をアニメーションに</h3><p>アトラクタ、パーリンノイズ、ロジスティック写像、コラッツ、リサージュ、マンデルブロの発散判定、ばね。どのグリフにも <code>life_function</code> を持たせて、位置や色を動かせます。</p></div>
+      <div class="cell"><span class="mod">math::fields</span><h3>組み合わせ自在の力場</h3><p>重力、渦、電磁場、ストレンジアトラクタ、衝撃波、潮汐、流れ、双極子。減衰は線形、逆二乗、指数、ガウスから選べます。</p></div>
+      <div class="cell"><span class="mod">entity</span><h3>パーティクルでできた体</h3><p>エンティティは、凝集力でまとまったグリフの集まりです。結合の強さは HP に連動するので、攻撃を受けるとアニメーションを再生するのではなく、実際に物質がはがれ落ちます。</p></div>
+      <div class="cell"><span class="mod">render</span><h3>HDR パイプライン</h3><p>半精度浮動小数点のシーンバッファ、ブルームピラミッド、ACES、レンズ効果、光芒、物質が落とす影、グレインとディザ。常設のパラメータはすべて <code>RenderConfig</code> のフィールドです。</p></div>
+      <div class="cell"><span class="mod">physics &middot; audio</span><h3>シミュレーションとサウンド</h3><p>SAT による剛体、ソフトボディ、オイラー法の流体。FM、フィルター、ドライブ、リバーブを備えた 48 kHz のシンセシス。サウンドはサンプリングではなく合成です。</p></div>
+      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>すべてをプロシージャルに</h3><p>プレートテクトニクス、侵食、気候、河川、集落、歴史。ロトカ・ヴォルテラと SIR の生態モデル。クロージャ対応のバイトコード VM。</p></div>
     </div>
     <div class="pipe">
-      <img src="img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="How math becomes a frame, for one frame of the lorenz example: RK4 steps 40,000 Lorenz states on the CPU, each state becomes a glyph instance coloured by speed, the glyph pass writes into a half-float HDR buffer with trails and bloom, and the composite tonemaps it with the HUD painted on top." loading="lazy">
-      <p class="figcap"><b>FIG. 4</b>How math becomes a frame, drawn from a real Lorenz integration with the example's own palette.</p>
+      <img src="../img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="lorenz サンプルの 1 フレームを例に、数学がフレームになるまでを示す図。CPU 上で RK4 が 40,000 個のローレンツ状態を進め、各状態が速度で色付けされたグリフインスタンスになり、グリフパスがトレイルとブルーム付きの半精度浮動小数点 HDR バッファに書き込み、最後にコンポジットでトーンマッピングして HUD を上に描く。" loading="lazy">
+      <p class="figcap"><b>図 4</b>数学がフレームになるまで。実際のローレンツ積分から、サンプル自身のパレットで描いています。</p>
     </div>
     <div class="pipe">
-      <img src="img/frame-stages.jpg" width="1704" height="597" alt="The lorenz example captured by the engine at the same frame three ways: the glyph pass alone, a grainy butterfly of dots; with trails and bloom, the loops fill in and glow; with the tonemap and grade, deeper blacks and warmer highlights." loading="lazy">
-      <p class="figcap"><b>FIG. 5</b>The same frame read back from the GPU three times with <code>PROOF_HIDDEN=1 PROOF_SHOT</code>, switching bloom, trails and the tonemap off in <code>RenderConfig</code>.</p>
+      <img src="../img/frame-stages.jpg" width="1704" height="597" alt="エンジンが lorenz サンプルの同じフレームを三通りにキャプチャしたもの。グリフパスだけでは粒状の点でできた蝶、トレイルとブルームを加えるとループが埋まって光り、トーンマップとグレーディングを加えると黒が締まりハイライトが暖かくなる。" loading="lazy">
+      <p class="figcap"><b>図 5</b><code>PROOF_HIDDEN=1 PROOF_SHOT</code> で同じフレームを GPU から三回読み戻し、<code>RenderConfig</code> でブルーム、トレイル、トーンマップをオフにしたもの。</p>
     </div>
     <div class="pipe">
-      <img src="assets/pipeline.svg" width="1200" height="400" alt="The screen pipeline: the 3D glyph pass and UI world pass draw into an HDR buffer, emission feeds a bloom pyramid, both meet in the composite, then FXAA, the screen, and the HUD painted sharp on top." loading="lazy">
-      <p class="figcap"><b>FIG. 6</b>What runs on the GPU every frame. A game drawn as screen-space matter gets bloom, grade and grain on all of it, with a readable HUD over the top.</p>
+      <img src="../assets/pipeline.svg" width="1200" height="400" alt="画面のパイプライン。3D グリフパスと UI ワールドパスが HDR バッファに描画し、発光成分がブルームピラミッドへ送られ、両者がコンポジットで合流し、FXAA を経て画面へ。最後に HUD をくっきりと上に描く。" loading="lazy">
+      <p class="figcap"><b>図 6</b>毎フレーム GPU で動いている処理。スクリーン空間の物質として描かれたゲームは、画面全体にブルーム、グレーディング、グレインがかかり、その上に読みやすい HUD が乗ります。</p>
     </div>
   </div>
 </section>
 
 <section id="demos" aria-labelledby="demos-h">
   <div class="wrap">
-    <p class="kicker">Demos</p>
-    <h2 id="demos-h">Twenty-one demos, one command each.</h2>
-    <div class="prose"><p>Every one is <code>cargo run --release --example &lt;name&gt;</code>. Close the window, or press Esc where the demo says so, to quit. These are the ones to start with.</p></div>
+    <p class="kicker">デモ</p>
+    <h2 id="demos-h">二十一のデモ、どれもコマンドひとつ。</h2>
+    <div class="prose"><p>どれも <code>cargo run --release --example &lt;name&gt;</code> で動きます。終了するにはウィンドウを閉じるか、デモに表示があれば Esc を押してください。まずは次のデモから。</p></div>
     <div class="vids">
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/galaxy-poster.jpg" width="960" height="540" aria-label="The galaxy example: glyph stars on four spiral arms turning as the camera circles"><source src="assets/galaxy.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>galaxy</b>3,000 glyphs, each on its own orbit.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/galaxy-poster.jpg" width="960" height="540" aria-label="galaxy サンプル：四本の渦状腕に並ぶグリフの星が、周回するカメラの前で回転する"><source src="../assets/galaxy.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>galaxy</b>3,000 個のグリフが、それぞれ独自の軌道を回ります。</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="Seven strange attractors turning slowly, 1,500 points each"><source src="assets/strange-attractors.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>strange_attractors</b>Seven chaotic systems, RK4, colour is speed.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="ゆっくり回転する七つのストレンジアトラクタ、各 1,500 点"><source src="../assets/strange-attractors.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>strange_attractors</b>七つのカオス系、RK4、色は速度。</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/math-rain-poster.jpg" width="960" height="540" aria-label="Columns of green mathematical symbols falling"><source src="assets/math-rain.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>math_rain</b>Column speeds from a sine, flicker from a logistic map.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/math-rain-poster.jpg" width="960" height="540" aria-label="緑色の数学記号の列が降ってくる"><source src="../assets/math-rain.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>math_rain</b>列の速度はサイン関数から、ちらつきはロジスティック写像から。</p>
       </figure>
     </div>
     <div class="split start" style="margin-top:36px">
       <figure>
-        <div class="frame"><img src="assets/convergence.jpg" width="1400" height="520" alt="Two particle-built fighters; the red one is coming apart after a hit" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 7</b><code>convergence</code>: the red fighter has taken damage and its binding is failing.</p>
+        <div class="frame"><img src="../assets/convergence.jpg" width="1400" height="520" alt="パーティクルでできた二体のファイター。赤い方は攻撃を受けて崩れかけている" loading="lazy"></div>
+        <p class="figcap"><b>図 7</b><code>convergence</code>：赤いファイターがダメージを受け、結合が崩れつつある。</p>
       </figure>
       <figure>
-        <div class="frame"><img src="assets/editor.jpg" width="1600" height="868" alt="The Proof Editor, an egui scene editor with a viewport, inspector and hierarchy" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 8</b>Proof Editor: place glyphs, fields and entities; save scenes as JSON.</p>
+        <div class="frame"><img src="../assets/editor.jpg" width="1600" height="868" alt="Proof Editor。ビューポート、インスペクタ、ヒエラルキーを備えた egui 製のシーンエディタ" loading="lazy"></div>
+        <p class="figcap"><b>図 8</b>Proof Editor：グリフ、力場、エンティティを配置し、シーンを JSON で保存。</p>
       </figure>
     </div>
     <div class="tblwrap">
     <table class="tbl">
-      <thead><tr><th>Example</th><th>What you see</th></tr></thead>
+      <thead><tr><th>サンプル</th><th>表示内容</th></tr></thead>
       <tbody>
-        <tr><td>sky</td><td>A day over a mountain range, every sky cell a Nishita scattering integral. Space pauses, Up/Down change speed.</td></tr>
-        <tr><td>lorenz</td><td>40,000 points on the Lorenz attractor, integrated with RK4 and drawn into the HDR world pass. Left/Right turn the view.</td></tr>
-        <tr><td>galaxy</td><td>About 3,000 glyphs on four spiral arms, each on its own orbit, with a hot core and drifting nebula dust.</td></tr>
-        <tr><td>strange_attractors</td><td>Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras side by side, 1,500 points each. Space pauses.</td></tr>
-        <tr><td>math_rain</td><td>Digital rain of mathematical symbols; speeds from a sine, flicker from a logistic map.</td></tr>
-        <tr><td>quickstart</td><td>The program above: 5,000 points that chaos tears apart into the Lorenz butterfly.</td></tr>
-        <tr><td>convergence</td><td>Two particle-built fighters in an arena with an orbiting camera; hits knock matter loose.</td></tr>
-        <tr><td>supernova</td><td>A star pulses, collapses, explodes and settles into a Lorenz nebula.</td></tr>
-        <tr><td>hello_glyph</td><td>The smallest program: one breathing <code>@</code> and a gravity field.</td></tr>
-        <tr><td>colossus</td><td>GPU density entities: millions of particles from sixteen bones. Needs a strong GPU.</td></tr>
-        <tr><td>apotheosis</td><td>A character built on signed distance fields, about 10.8 million particles. Needs OpenGL 4.3.</td></tr>
+        <tr><td>sky</td><td>山並みの上の一日。空のセルはすべて Nishita 散乱積分。Space で一時停止、上下キーで速度変更。</td></tr>
+        <tr><td>lorenz</td><td>ローレンツアトラクタ上の 40,000 個の点を RK4 で積分し、HDR ワールドパスに描画。左右キーで視点を回転。</td></tr>
+        <tr><td>galaxy</td><td>約 3,000 個のグリフが四本の渦状腕に並び、それぞれ独自の軌道を回る。中心は高温に輝き、星雲の塵が漂う。</td></tr>
+        <tr><td>strange_attractors</td><td>Lorenz、Rossler、Chen、Halvorsen、Aizawa、Thomas、Dadras を並べて表示、各 1,500 点。Space で一時停止。</td></tr>
+        <tr><td>math_rain</td><td>数学記号のデジタルレイン。速度はサイン関数から、ちらつきはロジスティック写像から。</td></tr>
+        <tr><td>quickstart</td><td>上のプログラム。5,000 個の点がカオスによって引き裂かれ、ローレンツの蝶になる。</td></tr>
+        <tr><td>convergence</td><td>周回カメラのあるアリーナで戦う、パーティクルでできた二体のファイター。攻撃を受けると物質がはがれ落ちる。</td></tr>
+        <tr><td>supernova</td><td>恒星が脈動し、崩壊し、爆発して、ローレンツ星雲に落ち着く。</td></tr>
+        <tr><td>hello_glyph</td><td>最小のプログラム。呼吸する <code>@</code> ひとつと重力場。</td></tr>
+        <tr><td>colossus</td><td>GPU 密度エンティティ。十六本のボーンから数百万個のパーティクル。高性能な GPU が必要です。</td></tr>
+        <tr><td>apotheosis</td><td>符号付き距離場（SDF）で組み立てたキャラクター、約 10.8M 個のパーティクル。OpenGL 4.3 が必要です。</td></tr>
       </tbody>
     </table>
     </div>
@@ -426,22 +426,22 @@ cargo add proof-engine</pre>
 <section id="capture" aria-labelledby="cap-h">
   <div class="wrap split">
     <div>
-      <p class="kicker cool">Capture</p>
-      <h2 id="cap-h">Record the engine&rsquo;s own frames.</h2>
+      <p class="kicker cool">キャプチャ</p>
+      <h2 id="cap-h">エンジン自身のフレームを録画。</h2>
       <div class="prose">
-        <p>Any program built on Proof Engine can write its own frames, read straight back off the GPU after post-processing, with no code changes. <code>PROOF_HIDDEN=1</code> keeps the window invisible and unfocused, so it runs while you use the machine.</p>
-        <p>Every demo frame and video on this page was written this way.</p>
+        <p>Proof Engine で作ったプログラムなら、コードを一切変えずに自分のフレームを書き出せます。ポストプロセス後の画像を GPU から直接読み戻します。<code>PROOF_HIDDEN=1</code> を付けるとウィンドウは非表示のままフォーカスも奪わないので、PC を使いながら実行できます。</p>
+        <p>このページのデモ画像と動画は、すべてこの方法で書き出しました。</p>
       </div>
     </div>
     <div>
       <div class="code">
-        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">Copy</button></div>
+        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">コピー</button></div>
 <pre id="c4">PROOF_HIDDEN=1 PROOF_FIXED_DT=60 \
 PROOF_SHOT='frames/f_{n}.bmp' PROOF_SHOT_AT=560 \
 PROOF_SHOT_EVERY=2 PROOF_SHOT_COUNT=240 \
 cargo run --release --example sky</pre>
       </div>
-      <p class="note"><code>PROOF_FIXED_DT</code> steps the simulation at a fixed rate, so a sequence plays back at true speed however long each frame took to capture. <code>PROOF_WINDOW=1920x1080</code> sets the size.</p>
+      <p class="note"><code>PROOF_FIXED_DT</code> はシミュレーションを固定レートで進めるので、各フレームのキャプチャにどれだけ時間がかかっても、連番は実際の速度で再生されます。サイズは <code>PROOF_WINDOW=1920x1080</code> で指定します。</p>
     </div>
   </div>
 </section>
@@ -449,30 +449,30 @@ cargo run --release --example sky</pre>
 
 <footer>
   <div class="wrap">
-    <span>Proof Engine is MIT licensed. Built by <a href="https://gitlab.com/mattbusel">Matthew Busel</a>.</span>
-    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
+    <span>Proof Engine は MIT ライセンスです。作者：<a href="https://gitlab.com/mattbusel">Matthew Busel</a>。</span>
+    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> はこのエンジンで動いています &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
   </div>
 </footer>
 
 <script>
   // Copy buttons.
-  function flash(b) { const t = b.textContent; b.textContent = 'Copied'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
+  function flash(b) { const t = b.textContent; b.textContent = 'コピーしました'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
   document.querySelectorAll('button[data-copy], button[data-copy-from]').forEach(b => b.addEventListener('click', async () => {
     const text = b.dataset.copy || document.getElementById(b.dataset.copyFrom).innerText;
-    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = 'Select and copy'; }
+    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = '選択してコピーしてください'; }
   }));
 
   // Sun scrubber: forty frames captured from the sky example.
   const SUN = [["14:48",36.8],["14:54",35.8],["15:00",34.8],["15:05",33.7],["15:11",32.7],["15:17",31.6],["15:23",30.5],["15:28",29.5],["15:34",28.4],["15:40",27.3],["15:46",26.2],["15:51",25.1],["15:57",24.0],["16:03",22.9],["16:09",21.8],["16:14",20.6],["16:20",19.5],["16:26",18.4],["16:32",17.3],["16:37",16.2],["16:43",15.0],["16:49",13.9],["16:55",12.8],["17:00",11.6],["17:06",10.5],["17:12",9.4],["17:18",8.2],["17:23",7.1],["17:29",6.0],["17:35",4.8],["17:41",3.7],["17:47",2.6],["17:52",1.4],["17:58",0.3],["18:04",-0.9],["18:10",-2.0],["18:15",-3.1],["18:21",-4.3],["18:27",-5.4],["18:33",-6.5]];
   const img = document.getElementById('sun-img'), range = document.getElementById('sun');
-  const src = i => 'assets/sun/' + String(i).padStart(2, '0') + '.jpg';
+  const src = i => '../assets/sun/' + String(i).padStart(2, '0') + '.jpg';
   const fmt = e => (e >= 0 ? '+' : '−') + Math.abs(e).toFixed(1) + '°';
   let warmed = false;
   function warm() { if (warmed) return; warmed = true; SUN.forEach((_, i) => { const im = new Image(); im.src = src(i); }); }
   function show(i) {
     const [t, e] = SUN[i];
     img.src = src(i);
-    img.alt = 'The sky demo at ' + t + ', sun elevation ' + e.toFixed(1) + ' degrees';
+    img.alt = t + ' の sky デモ、太陽高度 ' + e.toFixed(1) + ' 度';
     document.getElementById('sun-t').textContent = t;
     document.getElementById('sun-el').textContent = fmt(e);
   }

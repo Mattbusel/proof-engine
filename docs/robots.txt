@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://proof-engine-rs.vercel.app/sitemap.xml

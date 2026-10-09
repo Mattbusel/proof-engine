@@ -1,25 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Proof Engine: real-time math graphics in Rust</title>
-<meta name="description" content="Proof Engine is a Rust engine that turns equations into moving pictures: strange attractors, force fields and a physical sky, drawn in HDR. Windows demos.">
-<link rel="canonical" href="https://proof-engine-rs.vercel.app/">
+<title>Proof Engine: Rust 실시간 수학 그래픽 엔진, 무료 오픈소스</title>
+<meta name="description" content="Proof Engine은 방정식을 움직이는 그림으로 바꾸는 Rust 오픈소스 엔진입니다. 스트레인지 어트랙터, 힘의 장, 물리 기반 하늘을 HDR로 렌더링합니다. 수학 시각화와 제너러티브 아트용, Windows 데모 제공.">
+<link rel="canonical" href="https://proof-engine-rs.vercel.app/ko/">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#05060a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Proof Engine">
-<meta property="og:title" content="Proof Engine: real-time math graphics in Rust">
-<meta property="og:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta property="og:title" content="Proof Engine: Rust 실시간 수학 그래픽 엔진, 무료 오픈소스">
+<meta property="og:description" content="방정식을 쓰면 그 움직임을 그려 줍니다. 스트레인지 어트랙터, 힘의 장, 물리 기반 하늘을 HDR 블룸과 함께 실시간으로.">
 <meta property="og:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Proof Engine: a sunset computed from a scattering integral next to 40,000 points on the Lorenz attractor">
-<meta property="og:url" content="https://proof-engine-rs.vercel.app/">
+<meta property="og:image:alt" content="Proof Engine: 산란 적분으로 계산한 노을과 로렌츠 어트랙터 위의 40,000개 점">
+<meta property="og:url" content="https://proof-engine-rs.vercel.app/ko/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Proof Engine: real-time math graphics in Rust">
-<meta name="twitter:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta name="twitter:title" content="Proof Engine: Rust 실시간 수학 그래픽 엔진, 무료 오픈소스">
+<meta name="twitter:description" content="방정식을 쓰면 그 움직임을 그려 줍니다. 스트레인지 어트랙터, 힘의 장, 물리 기반 하늘을 HDR 블룸과 함께 실시간으로.">
 <meta name="twitter:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Proof Engine","alternateName":"proof-engine","description":"A Rust library and set of demos for real-time graphics from math: glyphs and particles moved by differential equations, strange attractors and force fields, drawn with HDR bloom on OpenGL.","url":"https://proof-engine-rs.vercel.app/","codeRepository":"https://gitlab.com/mattbusel/proof-engine","programmingLanguage":"Rust","license":"https://opensource.org/licenses/MIT","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","downloadUrl":"https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip","image":"https://proof-engine-rs.vercel.app/assets/og-image.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Matthew Busel","url":"https://gitlab.com/mattbusel"}}
@@ -191,24 +191,24 @@
 <link rel="alternate" hreflang="ja" href="https://proof-engine-rs.vercel.app/ja/">
 <link rel="alternate" hreflang="ko" href="https://proof-engine-rs.vercel.app/ko/">
 <link rel="alternate" hreflang="x-default" href="https://proof-engine-rs.vercel.app/">
-<meta property="og:locale" content="en_US">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:locale:alternate" content="en_US">
 <meta property="og:locale:alternate" content="zh_CN">
 <meta property="og:locale:alternate" content="ja_JP">
-<meta property="og:locale:alternate" content="ko_KR">
 <style>.i18n-switch{display:block!important;position:relative;z-index:40;box-sizing:border-box;max-width:1200px;margin:0 auto!important;padding:6px 16px 0!important;border:0!important;background:none!important;text-align:right!important;font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif!important;letter-spacing:normal!important;text-transform:none!important;opacity:.8}.i18n-switch a,.i18n-switch span{display:inline!important;margin:0!important;padding:0!important;font:inherit!important;color:inherit!important;background:none!important;border:0!important}.i18n-switch a{text-decoration:underline!important;text-underline-offset:2px}.i18n-switch [aria-current]{font-weight:600!important}</style>
 <!-- /i18n -->
 </head>
 <body>
-<a class="skip" href="#start">Skip to quick start</a>
-<div class="i18n-switch" role="navigation" aria-label="Language"><span aria-current="true">English</span> | <a href="zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a> | <a href="ja/" hreflang="ja" lang="ja">日本語</a> | <a href="ko/" hreflang="ko" lang="ko">한국어</a></div>
+<a class="skip" href="#start">빠른 시작으로 건너뛰기</a>
+<div class="i18n-switch" role="navigation" aria-label="언어"><a href="../" hreflang="en" lang="en">English</a> | <a href="../zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a> | <a href="../ja/" hreflang="ja" lang="ja">日本語</a> | <span aria-current="true">한국어</span></div>
 
 <header class="top">
   <div class="wrap">
     <a class="brand" href="./"><i aria-hidden="true"></i>proof-engine</a>
-    <nav aria-label="Primary">
-      <a href="#start">Start</a>
-      <a class="hide-s" href="#demos">Demos</a>
-      <a class="hide-s" href="https://docs.rs/proof-engine">Docs</a>
+    <nav aria-label="주요 메뉴">
+      <a href="#start">시작</a>
+      <a class="hide-s" href="#demos">데모</a>
+      <a class="hide-s" href="https://docs.rs/proof-engine">문서</a>
       <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a>
     </nav>
   </div>
@@ -216,43 +216,43 @@
 
 <main>
 <div class="hero">
-  <img class="poster" src="assets/sky-poster.jpg" alt="" aria-hidden="true">
-  <video autoplay muted loop playsinline preload="auto" poster="assets/sky-poster.jpg" aria-label="The sky demo: the sun lowers over a mountain range and the sky turns from blue to orange to dusk">
-    <source src="assets/sky.webm" type="video/webm">
-    <source src="assets/sky.mp4" type="video/mp4">
+  <img class="poster" src="../assets/sky-poster.jpg" alt="" aria-hidden="true">
+  <video autoplay muted loop playsinline preload="auto" poster="../assets/sky-poster.jpg" aria-label="sky 데모: 산맥 위로 해가 지면서 하늘이 파란색에서 주황색으로, 다시 해 질 녘으로 바뀐다">
+    <source src="../assets/sky.webm" type="video/webm">
+    <source src="../assets/sky.mp4" type="video/mp4">
   </video>
   <div class="wrap">
     <h1>Proof Engine<span class="qed" aria-hidden="true"></span></h1>
-    <p class="lede">A Rust rendering engine where every visual is the output of a mathematical function. Glyphs and particles are moved by differential equations and force fields, and drawn in HDR.</p>
+    <p class="lede">화면에 보이는 모든 것이 수학 함수의 출력인 Rust 렌더링 엔진입니다. 글리프와 파티클을 미분방정식과 힘의 장으로 움직이고 HDR로 그립니다.</p>
     <div class="cta">
-      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">Copy</button></div>
-      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Download demos for Windows</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS and Linux</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">Source</a>
+      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">복사</button></div>
+      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Windows용 데모 다운로드</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS 및 Linux</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">소스 코드</a>
     </div>
-    <p class="figcap"><b>FIG. 1</b>The <code>sky</code> example from 16:20 to dusk, captured frame by frame with <code>PROOF_SHOT</code> and played forward and back. Every cell of that sky is a scattering integral.</p>
+    <p class="figcap"><b>그림 1</b><code>sky</code> 예제의 16:20부터 해 질 녘까지. <code>PROOF_SHOT</code>으로 프레임마다 캡처해 정방향과 역방향으로 재생했습니다. 이 하늘의 모든 셀이 하나의 산란 적분입니다.</p>
   </div>
 </div>
 
 <section id="sky" aria-labelledby="sky-h">
   <div class="wrap split">
     <div>
-      <p class="kicker">Nishita sky</p>
-      <h2 id="sky-h">Drag the sun.</h2>
+      <p class="kicker">Nishita 하늘</p>
+      <h2 id="sky-h">해를 끌어 보세요.</h2>
       <div class="prose">
-        <p>The sky is 120 by 56 cells. For each one, every frame, <code>nishita_sky::compute_sky_color</code> integrates Rayleigh and Mie single scattering along the view ray and along a second ray toward the sun.</p>
-        <p>No gradient is painted anywhere. The blue at three o'clock, the orange band at sunset and the dark teal after it are the same integral with the sun somewhere else. The mountains are sums of sines lit by the sky just above the horizon.</p>
+        <p>하늘은 120 × 56개의 셀로 이루어져 있습니다. 매 프레임마다 각 셀에 대해 <code>nishita_sky::compute_sky_color</code>가 시선 방향 광선과, 태양을 향하는 또 다른 광선을 따라 레일리 산란과 미 산란(단일 산란)을 적분합니다.</p>
+        <p>그라데이션은 어디에도 직접 칠하지 않았습니다. 오후 세 시의 파란색, 해 질 녘의 주황색 띠, 그 뒤의 짙은 청록색은 모두 태양 위치만 다른 같은 적분입니다. 산맥은 사인 함수의 합이며, 지평선 바로 위 하늘의 빛을 받습니다.</p>
       </div>
     </div>
     <figure>
-      <div class="frame"><img id="sun-img" src="assets/sun/00.jpg" width="960" height="480" alt="The sky demo at 14:48, sun elevation 36.8 degrees" decoding="async"></div>
+      <div class="frame"><img id="sun-img" src="../assets/sun/00.jpg" width="960" height="480" alt="14:48의 sky 데모, 태양 고도 36.8도" decoding="async"></div>
       <div class="scrub">
-        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">sun elevation <span id="sun-el">+36.8&deg;</span></span></div>
-        <label class="skip" for="sun">Time of day</label>
+        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">태양 고도 <span id="sun-el">+36.8&deg;</span></span></div>
+        <label class="skip" for="sun">시각</label>
         <input id="sun" type="range" min="0" max="39" value="0" step="1">
-        <div class="scrub-ends"><span>afternoon</span><span>dusk</span></div>
+        <div class="scrub-ends"><span>오후</span><span>해 질 녘</span></div>
       </div>
-      <p class="figcap"><b>FIG. 2</b>Forty real frames from <code>cargo run --release --example sky</code>. Times and elevations are the ones the demo prints.</p>
+      <p class="figcap"><b>그림 2</b><code>cargo run --release --example sky</code>에서 나온 실제 프레임 마흔 장. 시각과 고도는 데모가 출력한 값 그대로입니다.</p>
     </figure>
   </div>
 </section>
@@ -260,16 +260,16 @@
 <section id="lorenz" aria-labelledby="lz-h">
   <div class="wrap split rev">
     <figure>
-      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/lorenz-poster.jpg" width="720" height="480" aria-label="Forty thousand points circling the two wings of the Lorenz attractor"><source src="assets/lorenz.mp4" type="video/mp4"></video></div>
-      <p class="figcap"><b>FIG. 3</b><code>cargo run --release --example lorenz</code>. Teal is slow, amber is fast.</p>
+      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/lorenz-poster.jpg" width="720" height="480" aria-label="로렌츠 어트랙터의 두 날개를 도는 40,000개의 점"><source src="../assets/lorenz.mp4" type="video/mp4"></video></div>
+      <p class="figcap"><b>그림 3</b><code>cargo run --release --example lorenz</code>. 청록색은 느리고 호박색은 빠릅니다.</p>
     </figure>
     <div>
-      <p class="kicker cool">Strange attractors</p>
-      <h2 id="lz-h">Forty thousand points, one equation.</h2>
-      <div class="eq" aria-label="The Lorenz equations">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
-      <div class="prose"><p>Each point is a state advanced every frame by the engine's own RK4 step. Nobody drew the two wings; that is where the equations send the points. The same module carries Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras and more, and any of them can drive a force field.</p></div>
+      <p class="kicker cool">스트레인지 어트랙터</p>
+      <h2 id="lz-h">점 사만 개, 방정식 하나.</h2>
+      <div class="eq" aria-label="로렌츠 방정식">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
+      <div class="prose"><p>각 점은 하나의 상태이며, 엔진 자체의 RK4 스텝으로 매 프레임 진행됩니다. 두 날개는 누가 그린 것이 아니라 방정식이 점들을 보내는 곳입니다. 같은 모듈에 Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras 등이 들어 있으며, 어느 것이든 힘의 장을 구동할 수 있습니다.</p></div>
       <div class="code">
-        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">Copy</button></div>
+        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">복사</button></div>
 <pre id="lz-code"><span class="k">for</span> p <span class="k">in</span> points.<span class="f">iter_mut</span>() {
     <span class="k">for</span> _ <span class="k">in</span> <span class="n">0</span>..SUBSTEPS {
         *p = <span class="f">rk4_step</span>(lorenz, *p, h);
@@ -282,15 +282,15 @@
 
 <section id="start" aria-labelledby="start-h">
   <div class="wrap">
-    <p class="kicker">Quick start</p>
-    <h2 id="start-h">Running in two commands.</h2>
-    <div class="prose"><p>You need stable Rust and a GPU with OpenGL 3.3. Windows and macOS need nothing else. On Linux, install the ALSA headers first: <code>sudo apt install libasound2-dev pkg-config</code>.</p></div>
+    <p class="kicker">빠른 시작</p>
+    <h2 id="start-h">명령어 두 줄이면 실행됩니다.</h2>
+    <div class="prose"><p>stable Rust와 OpenGL 3.3을 지원하는 GPU가 필요합니다. Windows와 macOS에서는 그 밖에 필요한 것이 없습니다. Linux에서는 먼저 ALSA 헤더를 설치하세요: <code>sudo apt install libasound2-dev pkg-config</code>.</p></div>
     <div class="steps">
       <div class="step">
-        <h3><span>01</span>Run the demos</h3>
-        <p>The first build compiles the whole engine and takes a few minutes. Use <code>--release</code>; the demos simulate tens of thousands of particles a frame.</p>
+        <h3><span>01</span>데모 실행</h3>
+        <p>첫 빌드는 엔진 전체를 컴파일하므로 몇 분 걸립니다. <code>--release</code>를 사용하세요. 데모는 프레임마다 수만 개의 파티클을 시뮬레이션합니다.</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">복사</button></div>
 <pre id="c1">git clone https://gitlab.com/mattbusel/proof-engine.git
 cd proof-engine
 cargo run --release --example sky
@@ -298,15 +298,15 @@ cargo run --release --example lorenz</pre>
         </div>
       </div>
       <div class="step">
-        <h3><span>02</span>Use it as a library</h3>
-        <p>5,000 points start on one short line and follow the Lorenz equations. Also in the repo as <code>examples/quickstart.rs</code>.</p>
+        <h3><span>02</span>라이브러리로 사용하기</h3>
+        <p>5,000개의 점이 짧은 선 하나에서 출발해 로렌츠 방정식을 따라 움직입니다. 저장소에도 <code>examples/quickstart.rs</code>로 들어 있습니다.</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">복사</button></div>
 <pre id="c2">cargo new lorenz-demo &amp;&amp; cd lorenz-demo
 cargo add proof-engine</pre>
         </div>
         <div class="code">
-          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">Copy</button></div>
+          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">복사</button></div>
 <pre id="c3"><span class="k">use</span> proof_engine::math::attractors::rk4_step;
 <span class="k">use</span> proof_engine::prelude::*;
 <span class="k">use</span> proof_engine::render::ui_layer::UiParticle;
@@ -336,87 +336,87 @@ cargo add proof-engine</pre>
     });
 }</pre>
         </div>
-        <p class="note"><code>cargo run --release</code>. For about ten seconds the points travel as one streak; then chaos pulls them apart into the butterfly.</p>
+        <p class="note"><code>cargo run --release</code>로 실행하세요. 십 초 정도는 점들이 한 줄기로 함께 움직이다가, 이후 카오스가 이들을 떼어 놓아 나비 모양이 됩니다.</p>
       </div>
     </div>
     <figure style="margin-top:36px">
-      <div class="frame"><img src="assets/quickstart-steps.jpg" width="1710" height="420" alt="Four frames of the quickstart program at 1, 13.5, 16 and 18.5 seconds: a speck, a thin arc, loops splitting apart, and the full Lorenz butterfly." loading="lazy"></div>
-      <p class="figcap"><b>FIG. 3B</b>That program, frames written by the engine at 1, 13.5, 16 and 18.5 seconds.</p>
+      <div class="frame"><img src="../assets/quickstart-steps.jpg" width="1710" height="420" alt="quickstart 프로그램의 1, 13.5, 16, 18.5초 시점 프레임 네 장: 작은 점, 가는 호, 갈라지는 고리, 그리고 완전한 로렌츠 나비." loading="lazy"></div>
+      <p class="figcap"><b>그림 3B</b>위 프로그램에서 엔진이 1, 13.5, 16, 18.5초에 기록한 프레임.</p>
     </figure>
   </div>
 </section>
 
 <section id="inside" aria-labelledby="inside-h">
   <div class="wrap">
-    <p class="kicker">What is inside</p>
-    <h2 id="inside-h">Math first, then light.</h2>
+    <p class="kicker">구성 요소</p>
+    <h2 id="inside-h">먼저 수학, 그다음 빛.</h2>
     <div class="grid">
-      <div class="cell"><span class="mod">math</span><h3>Functions as animation</h3><p>Attractors, Perlin noise, logistic map, Collatz, Lissajous, Mandelbrot escape, springs. Any glyph can carry a <code>life_function</code> that drives its position or colour.</p></div>
-      <div class="cell"><span class="mod">math::fields</span><h3>Composable force fields</h3><p>Gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, dipole, with linear, inverse-square, exponential or Gaussian falloff.</p></div>
-      <div class="cell"><span class="mod">entity</span><h3>Particle-built bodies</h3><p>Entities are glyph clusters held by force cohesion. Binding strength follows HP, so a hit knocks matter loose instead of playing an animation.</p></div>
-      <div class="cell"><span class="mod">render</span><h3>An HDR pipeline</h3><p>Half-float scene buffers, a bloom pyramid, ACES, lens, light shafts, shadows from matter, grain and dither. Every standing parameter is a field on <code>RenderConfig</code>.</p></div>
-      <div class="cell"><span class="mod">physics &middot; audio</span><h3>Simulation and sound</h3><p>Rigid bodies with SAT, soft bodies, Eulerian fluid. 48 kHz synthesis with FM, filters, drive and reverb. Sound is synthesised, not sampled.</p></div>
-      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>Procedural everything</h3><p>Tectonics, erosion, climate, rivers, settlements and history; Lotka-Volterra and SIR ecology; a bytecode VM with closures.</p></div>
+      <div class="cell"><span class="mod">math</span><h3>함수가 곧 애니메이션</h3><p>어트랙터, 펄린 노이즈, 로지스틱 맵, 콜라츠, 리사주, 망델브로 탈출, 스프링. 어떤 글리프든 위치나 색을 구동하는 <code>life_function</code>을 가질 수 있습니다.</p></div>
+      <div class="cell"><span class="mod">math::fields</span><h3>조합 가능한 힘의 장</h3><p>중력, 소용돌이, 전자기, 스트레인지 어트랙터, 충격파, 조석, 흐름, 쌍극자. 감쇠는 선형, 역제곱, 지수, 가우시안 중에서 고를 수 있습니다.</p></div>
+      <div class="cell"><span class="mod">entity</span><h3>파티클로 만든 몸체</h3><p>엔티티는 응집력으로 묶인 글리프 덩어리입니다. 결합 강도가 HP를 따르므로, 공격을 받으면 애니메이션을 재생하는 대신 실제로 물질이 떨어져 나갑니다.</p></div>
+      <div class="cell"><span class="mod">render</span><h3>HDR 파이프라인</h3><p>반정밀도 씬 버퍼, 블룸 피라미드, ACES, 렌즈 효과, 빛줄기, 물질이 드리우는 그림자, 그레인과 디더링. 상시 파라미터는 모두 <code>RenderConfig</code>의 필드입니다.</p></div>
+      <div class="cell"><span class="mod">physics &middot; audio</span><h3>시뮬레이션과 사운드</h3><p>SAT 기반 강체, 소프트 바디, 오일러 방식 유체. FM, 필터, 드라이브, 리버브를 갖춘 48 kHz 합성. 소리는 샘플이 아니라 합성으로 만듭니다.</p></div>
+      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>모든 것을 절차적으로</h3><p>판 구조, 침식, 기후, 강, 정착지와 역사, 로트카-볼테라와 SIR 생태 모델, 클로저를 지원하는 바이트코드 VM.</p></div>
     </div>
     <div class="pipe">
-      <img src="img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="How math becomes a frame, for one frame of the lorenz example: RK4 steps 40,000 Lorenz states on the CPU, each state becomes a glyph instance coloured by speed, the glyph pass writes into a half-float HDR buffer with trails and bloom, and the composite tonemaps it with the HUD painted on top." loading="lazy">
-      <p class="figcap"><b>FIG. 4</b>How math becomes a frame, drawn from a real Lorenz integration with the example's own palette.</p>
+      <img src="../img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="lorenz 예제의 한 프레임을 예로, 수학이 프레임이 되는 과정: CPU에서 RK4가 40,000개의 로렌츠 상태를 진행하고, 각 상태는 속도에 따라 색이 입혀진 글리프 인스턴스가 되며, 글리프 패스가 잔상과 블룸이 있는 반정밀도 HDR 버퍼에 기록하고, 마지막으로 합성 단계에서 톤 매핑한 뒤 HUD를 위에 그린다." loading="lazy">
+      <p class="figcap"><b>그림 4</b>수학이 프레임이 되는 과정. 실제 로렌츠 적분 결과를 예제 자체의 팔레트로 그렸습니다.</p>
     </div>
     <div class="pipe">
-      <img src="img/frame-stages.jpg" width="1704" height="597" alt="The lorenz example captured by the engine at the same frame three ways: the glyph pass alone, a grainy butterfly of dots; with trails and bloom, the loops fill in and glow; with the tonemap and grade, deeper blacks and warmer highlights." loading="lazy">
-      <p class="figcap"><b>FIG. 5</b>The same frame read back from the GPU three times with <code>PROOF_HIDDEN=1 PROOF_SHOT</code>, switching bloom, trails and the tonemap off in <code>RenderConfig</code>.</p>
+      <img src="../img/frame-stages.jpg" width="1704" height="597" alt="엔진이 lorenz 예제의 같은 프레임을 세 가지 방식으로 캡처한 모습: 글리프 패스만 있으면 거친 점으로 된 나비, 잔상과 블룸을 더하면 고리가 채워지며 빛나고, 톤 매핑과 그레이딩을 더하면 검은색은 더 깊고 하이라이트는 더 따뜻해진다." loading="lazy">
+      <p class="figcap"><b>그림 5</b><code>PROOF_HIDDEN=1 PROOF_SHOT</code>으로 같은 프레임을 GPU에서 세 번 읽어 오면서 <code>RenderConfig</code>에서 블룸, 잔상, 톤 매핑을 껐습니다.</p>
     </div>
     <div class="pipe">
-      <img src="assets/pipeline.svg" width="1200" height="400" alt="The screen pipeline: the 3D glyph pass and UI world pass draw into an HDR buffer, emission feeds a bloom pyramid, both meet in the composite, then FXAA, the screen, and the HUD painted sharp on top." loading="lazy">
-      <p class="figcap"><b>FIG. 6</b>What runs on the GPU every frame. A game drawn as screen-space matter gets bloom, grade and grain on all of it, with a readable HUD over the top.</p>
+      <img src="../assets/pipeline.svg" width="1200" height="400" alt="화면 파이프라인: 3D 글리프 패스와 UI 월드 패스가 HDR 버퍼에 그리고, 발광 성분은 블룸 피라미드로 들어가며, 둘이 합성 단계에서 만난 뒤 FXAA를 거쳐 화면으로 가고, 맨 위에 HUD를 선명하게 그린다." loading="lazy">
+      <p class="figcap"><b>그림 6</b>매 프레임 GPU에서 실행되는 과정. 화면 공간의 물질로 그린 게임은 전체에 블룸, 그레이딩, 그레인이 적용되고, 그 위에 읽기 쉬운 HUD가 얹힙니다.</p>
     </div>
   </div>
 </section>
 
 <section id="demos" aria-labelledby="demos-h">
   <div class="wrap">
-    <p class="kicker">Demos</p>
-    <h2 id="demos-h">Twenty-one demos, one command each.</h2>
-    <div class="prose"><p>Every one is <code>cargo run --release --example &lt;name&gt;</code>. Close the window, or press Esc where the demo says so, to quit. These are the ones to start with.</p></div>
+    <p class="kicker">데모</p>
+    <h2 id="demos-h">데모 스물한 개, 각각 명령어 하나로.</h2>
+    <div class="prose"><p>모두 <code>cargo run --release --example &lt;name&gt;</code>로 실행합니다. 종료하려면 창을 닫거나, 데모에 안내가 있으면 Esc를 누르세요. 처음이라면 아래 데모부터 시작해 보세요.</p></div>
     <div class="vids">
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/galaxy-poster.jpg" width="960" height="540" aria-label="The galaxy example: glyph stars on four spiral arms turning as the camera circles"><source src="assets/galaxy.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>galaxy</b>3,000 glyphs, each on its own orbit.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/galaxy-poster.jpg" width="960" height="540" aria-label="galaxy 예제: 네 개의 나선팔 위 글리프 별들이 카메라가 도는 동안 회전한다"><source src="../assets/galaxy.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>galaxy</b>3,000개의 글리프가 각자의 궤도를 돕니다.</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="Seven strange attractors turning slowly, 1,500 points each"><source src="assets/strange-attractors.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>strange_attractors</b>Seven chaotic systems, RK4, colour is speed.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="천천히 회전하는 일곱 개의 스트레인지 어트랙터, 각각 1,500개의 점"><source src="../assets/strange-attractors.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>strange_attractors</b>카오스 시스템 일곱 개, RK4, 색은 속도.</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/math-rain-poster.jpg" width="960" height="540" aria-label="Columns of green mathematical symbols falling"><source src="assets/math-rain.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>math_rain</b>Column speeds from a sine, flicker from a logistic map.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/math-rain-poster.jpg" width="960" height="540" aria-label="초록색 수학 기호가 줄지어 떨어진다"><source src="../assets/math-rain.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>math_rain</b>열의 속도는 사인 함수에서, 깜빡임은 로지스틱 맵에서.</p>
       </figure>
     </div>
     <div class="split start" style="margin-top:36px">
       <figure>
-        <div class="frame"><img src="assets/convergence.jpg" width="1400" height="520" alt="Two particle-built fighters; the red one is coming apart after a hit" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 7</b><code>convergence</code>: the red fighter has taken damage and its binding is failing.</p>
+        <div class="frame"><img src="../assets/convergence.jpg" width="1400" height="520" alt="파티클로 만든 두 전투원. 빨간 쪽은 공격을 받고 부서지는 중이다" loading="lazy"></div>
+        <p class="figcap"><b>그림 7</b><code>convergence</code>: 빨간 전투원이 피해를 입어 결합이 풀리고 있습니다.</p>
       </figure>
       <figure>
-        <div class="frame"><img src="assets/editor.jpg" width="1600" height="868" alt="The Proof Editor, an egui scene editor with a viewport, inspector and hierarchy" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 8</b>Proof Editor: place glyphs, fields and entities; save scenes as JSON.</p>
+        <div class="frame"><img src="../assets/editor.jpg" width="1600" height="868" alt="Proof Editor. 뷰포트, 인스펙터, 계층 구조 패널을 갖춘 egui 기반 씬 에디터" loading="lazy"></div>
+        <p class="figcap"><b>그림 8</b>Proof Editor: 글리프, 힘의 장, 엔티티를 배치하고 씬을 JSON으로 저장합니다.</p>
       </figure>
     </div>
     <div class="tblwrap">
     <table class="tbl">
-      <thead><tr><th>Example</th><th>What you see</th></tr></thead>
+      <thead><tr><th>예제</th><th>보이는 것</th></tr></thead>
       <tbody>
-        <tr><td>sky</td><td>A day over a mountain range, every sky cell a Nishita scattering integral. Space pauses, Up/Down change speed.</td></tr>
-        <tr><td>lorenz</td><td>40,000 points on the Lorenz attractor, integrated with RK4 and drawn into the HDR world pass. Left/Right turn the view.</td></tr>
-        <tr><td>galaxy</td><td>About 3,000 glyphs on four spiral arms, each on its own orbit, with a hot core and drifting nebula dust.</td></tr>
-        <tr><td>strange_attractors</td><td>Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras side by side, 1,500 points each. Space pauses.</td></tr>
-        <tr><td>math_rain</td><td>Digital rain of mathematical symbols; speeds from a sine, flicker from a logistic map.</td></tr>
-        <tr><td>quickstart</td><td>The program above: 5,000 points that chaos tears apart into the Lorenz butterfly.</td></tr>
-        <tr><td>convergence</td><td>Two particle-built fighters in an arena with an orbiting camera; hits knock matter loose.</td></tr>
-        <tr><td>supernova</td><td>A star pulses, collapses, explodes and settles into a Lorenz nebula.</td></tr>
-        <tr><td>hello_glyph</td><td>The smallest program: one breathing <code>@</code> and a gravity field.</td></tr>
-        <tr><td>colossus</td><td>GPU density entities: millions of particles from sixteen bones. Needs a strong GPU.</td></tr>
-        <tr><td>apotheosis</td><td>A character built on signed distance fields, about 10.8 million particles. Needs OpenGL 4.3.</td></tr>
+        <tr><td>sky</td><td>산맥 위의 하루. 하늘의 모든 셀이 Nishita 산란 적분입니다. Space로 일시정지, 위/아래 키로 속도 조절.</td></tr>
+        <tr><td>lorenz</td><td>로렌츠 어트랙터 위의 40,000개 점을 RK4로 적분해 HDR 월드 패스에 그립니다. 왼쪽/오른쪽 키로 시점 회전.</td></tr>
+        <tr><td>galaxy</td><td>약 3,000개의 글리프가 네 개의 나선팔 위에서 각자의 궤도를 돌고, 뜨거운 중심부와 떠다니는 성운 먼지가 있습니다.</td></tr>
+        <tr><td>strange_attractors</td><td>Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras를 나란히, 각각 1,500개의 점. Space로 일시정지.</td></tr>
+        <tr><td>math_rain</td><td>수학 기호로 된 디지털 비. 속도는 사인 함수에서, 깜빡임은 로지스틱 맵에서.</td></tr>
+        <tr><td>quickstart</td><td>위의 프로그램. 5,000개의 점이 카오스에 의해 찢겨 로렌츠 나비가 됩니다.</td></tr>
+        <tr><td>convergence</td><td>카메라가 주위를 도는 경기장에서 싸우는, 파티클로 만든 두 전투원. 공격을 받으면 물질이 떨어져 나갑니다.</td></tr>
+        <tr><td>supernova</td><td>별이 맥동하고 붕괴하고 폭발한 뒤 로렌츠 성운으로 자리 잡습니다.</td></tr>
+        <tr><td>hello_glyph</td><td>가장 작은 프로그램. 숨 쉬는 <code>@</code> 하나와 중력장.</td></tr>
+        <tr><td>colossus</td><td>GPU 밀도 엔티티: 본 열여섯 개에서 나오는 수백만 개의 파티클. 고성능 GPU가 필요합니다.</td></tr>
+        <tr><td>apotheosis</td><td>부호 있는 거리장(SDF)으로 만든 캐릭터, 약 10.8M개의 파티클. OpenGL 4.3이 필요합니다.</td></tr>
       </tbody>
     </table>
     </div>
@@ -426,22 +426,22 @@ cargo add proof-engine</pre>
 <section id="capture" aria-labelledby="cap-h">
   <div class="wrap split">
     <div>
-      <p class="kicker cool">Capture</p>
-      <h2 id="cap-h">Record the engine&rsquo;s own frames.</h2>
+      <p class="kicker cool">캡처</p>
+      <h2 id="cap-h">엔진이 직접 만든 프레임을 녹화하세요.</h2>
       <div class="prose">
-        <p>Any program built on Proof Engine can write its own frames, read straight back off the GPU after post-processing, with no code changes. <code>PROOF_HIDDEN=1</code> keeps the window invisible and unfocused, so it runs while you use the machine.</p>
-        <p>Every demo frame and video on this page was written this way.</p>
+        <p>Proof Engine으로 만든 프로그램이라면 코드를 바꾸지 않고도 자기 프레임을 기록할 수 있습니다. 후처리를 마친 화면을 GPU에서 바로 읽어 옵니다. <code>PROOF_HIDDEN=1</code>을 쓰면 창이 보이지 않고 포커스도 가져가지 않으므로, 컴퓨터를 쓰는 동안에도 실행됩니다.</p>
+        <p>이 페이지의 모든 데모 프레임과 영상은 이렇게 기록했습니다.</p>
       </div>
     </div>
     <div>
       <div class="code">
-        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">Copy</button></div>
+        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">복사</button></div>
 <pre id="c4">PROOF_HIDDEN=1 PROOF_FIXED_DT=60 \
 PROOF_SHOT='frames/f_{n}.bmp' PROOF_SHOT_AT=560 \
 PROOF_SHOT_EVERY=2 PROOF_SHOT_COUNT=240 \
 cargo run --release --example sky</pre>
       </div>
-      <p class="note"><code>PROOF_FIXED_DT</code> steps the simulation at a fixed rate, so a sequence plays back at true speed however long each frame took to capture. <code>PROOF_WINDOW=1920x1080</code> sets the size.</p>
+      <p class="note"><code>PROOF_FIXED_DT</code>는 시뮬레이션을 고정 간격으로 진행하므로, 각 프레임 캡처에 시간이 얼마나 걸리든 시퀀스가 실제 속도로 재생됩니다. 크기는 <code>PROOF_WINDOW=1920x1080</code>으로 정합니다.</p>
     </div>
   </div>
 </section>
@@ -449,30 +449,30 @@ cargo run --release --example sky</pre>
 
 <footer>
   <div class="wrap">
-    <span>Proof Engine is MIT licensed. Built by <a href="https://gitlab.com/mattbusel">Matthew Busel</a>.</span>
-    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
+    <span>Proof Engine은 MIT 라이선스입니다. 만든 사람: <a href="https://gitlab.com/mattbusel">Matthew Busel</a>.</span>
+    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> 게임이 이 엔진으로 동작합니다 &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
   </div>
 </footer>
 
 <script>
   // Copy buttons.
-  function flash(b) { const t = b.textContent; b.textContent = 'Copied'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
+  function flash(b) { const t = b.textContent; b.textContent = '복사됨'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
   document.querySelectorAll('button[data-copy], button[data-copy-from]').forEach(b => b.addEventListener('click', async () => {
     const text = b.dataset.copy || document.getElementById(b.dataset.copyFrom).innerText;
-    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = 'Select and copy'; }
+    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = '선택해서 복사하세요'; }
   }));
 
   // Sun scrubber: forty frames captured from the sky example.
   const SUN = [["14:48",36.8],["14:54",35.8],["15:00",34.8],["15:05",33.7],["15:11",32.7],["15:17",31.6],["15:23",30.5],["15:28",29.5],["15:34",28.4],["15:40",27.3],["15:46",26.2],["15:51",25.1],["15:57",24.0],["16:03",22.9],["16:09",21.8],["16:14",20.6],["16:20",19.5],["16:26",18.4],["16:32",17.3],["16:37",16.2],["16:43",15.0],["16:49",13.9],["16:55",12.8],["17:00",11.6],["17:06",10.5],["17:12",9.4],["17:18",8.2],["17:23",7.1],["17:29",6.0],["17:35",4.8],["17:41",3.7],["17:47",2.6],["17:52",1.4],["17:58",0.3],["18:04",-0.9],["18:10",-2.0],["18:15",-3.1],["18:21",-4.3],["18:27",-5.4],["18:33",-6.5]];
   const img = document.getElementById('sun-img'), range = document.getElementById('sun');
-  const src = i => 'assets/sun/' + String(i).padStart(2, '0') + '.jpg';
+  const src = i => '../assets/sun/' + String(i).padStart(2, '0') + '.jpg';
   const fmt = e => (e >= 0 ? '+' : '−') + Math.abs(e).toFixed(1) + '°';
   let warmed = false;
   function warm() { if (warmed) return; warmed = true; SUN.forEach((_, i) => { const im = new Image(); im.src = src(i); }); }
   function show(i) {
     const [t, e] = SUN[i];
     img.src = src(i);
-    img.alt = 'The sky demo at ' + t + ', sun elevation ' + e.toFixed(1) + ' degrees';
+    img.alt = t + '의 sky 데모, 태양 고도 ' + e.toFixed(1) + '도';
     document.getElementById('sun-t').textContent = t;
     document.getElementById('sun-el').textContent = fmt(e);
   }

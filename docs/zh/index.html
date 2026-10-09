@@ -1,25 +1,25 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Proof Engine: real-time math graphics in Rust</title>
-<meta name="description" content="Proof Engine is a Rust engine that turns equations into moving pictures: strange attractors, force fields and a physical sky, drawn in HDR. Windows demos.">
-<link rel="canonical" href="https://proof-engine-rs.vercel.app/">
+<title>Proof Engine：Rust 实时数学图形引擎，开源数学可视化与生成艺术</title>
+<meta name="description" content="Proof Engine 是一个开源 Rust 图形引擎，把方程变成动态画面：奇异吸引子、力场和物理天空，以 HDR 实时渲染。适合数学可视化和生成艺术，提供 Windows 演示程序。">
+<link rel="canonical" href="https://proof-engine-rs.vercel.app/zh/">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#05060a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Proof Engine">
-<meta property="og:title" content="Proof Engine: real-time math graphics in Rust">
-<meta property="og:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta property="og:title" content="Proof Engine：Rust 实时数学图形引擎，开源数学可视化与生成艺术">
+<meta property="og:description" content="写下方程，它就把方程的运动画出来：奇异吸引子、力场和物理天空，实时渲染，带 HDR 泛光。">
 <meta property="og:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Proof Engine: a sunset computed from a scattering integral next to 40,000 points on the Lorenz attractor">
-<meta property="og:url" content="https://proof-engine-rs.vercel.app/">
+<meta property="og:image:alt" content="Proof Engine：由散射积分计算出的日落，旁边是洛伦兹吸引子上的 40,000 个点">
+<meta property="og:url" content="https://proof-engine-rs.vercel.app/zh/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Proof Engine: real-time math graphics in Rust">
-<meta name="twitter:description" content="Write the equations, it draws what they do: strange attractors, force fields and a physical sky, in real time with HDR bloom.">
+<meta name="twitter:title" content="Proof Engine：Rust 实时数学图形引擎，开源数学可视化与生成艺术">
+<meta name="twitter:description" content="写下方程，它就把方程的运动画出来：奇异吸引子、力场和物理天空，实时渲染，带 HDR 泛光。">
 <meta name="twitter:image" content="https://proof-engine-rs.vercel.app/assets/og-image.png">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Proof Engine","alternateName":"proof-engine","description":"A Rust library and set of demos for real-time graphics from math: glyphs and particles moved by differential equations, strange attractors and force fields, drawn with HDR bloom on OpenGL.","url":"https://proof-engine-rs.vercel.app/","codeRepository":"https://gitlab.com/mattbusel/proof-engine","programmingLanguage":"Rust","license":"https://opensource.org/licenses/MIT","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","downloadUrl":"https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip","image":"https://proof-engine-rs.vercel.app/assets/og-image.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Matthew Busel","url":"https://gitlab.com/mattbusel"}}
@@ -191,24 +191,24 @@
 <link rel="alternate" hreflang="ja" href="https://proof-engine-rs.vercel.app/ja/">
 <link rel="alternate" hreflang="ko" href="https://proof-engine-rs.vercel.app/ko/">
 <link rel="alternate" hreflang="x-default" href="https://proof-engine-rs.vercel.app/">
-<meta property="og:locale" content="en_US">
-<meta property="og:locale:alternate" content="zh_CN">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:locale:alternate" content="en_US">
 <meta property="og:locale:alternate" content="ja_JP">
 <meta property="og:locale:alternate" content="ko_KR">
 <style>.i18n-switch{display:block!important;position:relative;z-index:40;box-sizing:border-box;max-width:1200px;margin:0 auto!important;padding:6px 16px 0!important;border:0!important;background:none!important;text-align:right!important;font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif!important;letter-spacing:normal!important;text-transform:none!important;opacity:.8}.i18n-switch a,.i18n-switch span{display:inline!important;margin:0!important;padding:0!important;font:inherit!important;color:inherit!important;background:none!important;border:0!important}.i18n-switch a{text-decoration:underline!important;text-underline-offset:2px}.i18n-switch [aria-current]{font-weight:600!important}</style>
 <!-- /i18n -->
 </head>
 <body>
-<a class="skip" href="#start">Skip to quick start</a>
-<div class="i18n-switch" role="navigation" aria-label="Language"><span aria-current="true">English</span> | <a href="zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a> | <a href="ja/" hreflang="ja" lang="ja">日本語</a> | <a href="ko/" hreflang="ko" lang="ko">한국어</a></div>
+<a class="skip" href="#start">跳到快速开始</a>
+<div class="i18n-switch" role="navigation" aria-label="语言"><a href="../" hreflang="en" lang="en">English</a> | <span aria-current="true">简体中文</span> | <a href="../ja/" hreflang="ja" lang="ja">日本語</a> | <a href="../ko/" hreflang="ko" lang="ko">한국어</a></div>
 
 <header class="top">
   <div class="wrap">
     <a class="brand" href="./"><i aria-hidden="true"></i>proof-engine</a>
-    <nav aria-label="Primary">
-      <a href="#start">Start</a>
-      <a class="hide-s" href="#demos">Demos</a>
-      <a class="hide-s" href="https://docs.rs/proof-engine">Docs</a>
+    <nav aria-label="主导航">
+      <a href="#start">开始</a>
+      <a class="hide-s" href="#demos">演示</a>
+      <a class="hide-s" href="https://docs.rs/proof-engine">文档</a>
       <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a>
     </nav>
   </div>
@@ -216,43 +216,43 @@
 
 <main>
 <div class="hero">
-  <img class="poster" src="assets/sky-poster.jpg" alt="" aria-hidden="true">
-  <video autoplay muted loop playsinline preload="auto" poster="assets/sky-poster.jpg" aria-label="The sky demo: the sun lowers over a mountain range and the sky turns from blue to orange to dusk">
-    <source src="assets/sky.webm" type="video/webm">
-    <source src="assets/sky.mp4" type="video/mp4">
+  <img class="poster" src="../assets/sky-poster.jpg" alt="" aria-hidden="true">
+  <video autoplay muted loop playsinline preload="auto" poster="../assets/sky-poster.jpg" aria-label="sky 演示：太阳在山脉上方缓缓落下，天空从蓝色变为橙色，再进入黄昏">
+    <source src="../assets/sky.webm" type="video/webm">
+    <source src="../assets/sky.mp4" type="video/mp4">
   </video>
   <div class="wrap">
     <h1>Proof Engine<span class="qed" aria-hidden="true"></span></h1>
-    <p class="lede">A Rust rendering engine where every visual is the output of a mathematical function. Glyphs and particles are moved by differential equations and force fields, and drawn in HDR.</p>
+    <p class="lede">一个 Rust 渲染引擎，画面中的每一个元素都是数学函数的输出。字形和粒子由微分方程和力场驱动，并以 HDR 绘制。</p>
     <div class="cta">
-      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">Copy</button></div>
-      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">Download demos for Windows</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS and Linux</a>
-      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">Source</a>
+      <div class="copy"><code>cargo add proof-engine</code><button type="button" data-copy="cargo add proof-engine">复制</button></div>
+      <a class="btn primary" href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-windows-x64.zip">下载 Windows 版演示</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine/-/blob/main/docs/INSTALL.md">macOS 和 Linux</a>
+      <a class="btn" href="https://gitlab.com/mattbusel/proof-engine">源代码</a>
     </div>
-    <p class="figcap"><b>FIG. 1</b>The <code>sky</code> example from 16:20 to dusk, captured frame by frame with <code>PROOF_SHOT</code> and played forward and back. Every cell of that sky is a scattering integral.</p>
+    <p class="figcap"><b>图 1</b><code>sky</code> 示例从 16:20 到黄昏的画面，用 <code>PROOF_SHOT</code> 逐帧截取，再正向和反向播放。天空中的每个格子都是一次散射积分。</p>
   </div>
 </div>
 
 <section id="sky" aria-labelledby="sky-h">
   <div class="wrap split">
     <div>
-      <p class="kicker">Nishita sky</p>
-      <h2 id="sky-h">Drag the sun.</h2>
+      <p class="kicker">Nishita 天空</p>
+      <h2 id="sky-h">拖动太阳。</h2>
       <div class="prose">
-        <p>The sky is 120 by 56 cells. For each one, every frame, <code>nishita_sky::compute_sky_color</code> integrates Rayleigh and Mie single scattering along the view ray and along a second ray toward the sun.</p>
-        <p>No gradient is painted anywhere. The blue at three o'clock, the orange band at sunset and the dark teal after it are the same integral with the sun somewhere else. The mountains are sums of sines lit by the sky just above the horizon.</p>
+        <p>天空由 120 × 56 个格子组成。每一帧，<code>nishita_sky::compute_sky_color</code> 都会为每个格子沿视线方向、以及另一条指向太阳的光线，对瑞利散射和米氏散射（单次散射）进行积分。</p>
+        <p>这里没有任何手绘的渐变。下午三点的蓝色、日落时的橙色光带、以及之后的深青色，都是同一个积分，只是太阳的位置不同。山脉是正弦函数的叠加，由地平线正上方的天空光照亮。</p>
       </div>
     </div>
     <figure>
-      <div class="frame"><img id="sun-img" src="assets/sun/00.jpg" width="960" height="480" alt="The sky demo at 14:48, sun elevation 36.8 degrees" decoding="async"></div>
+      <div class="frame"><img id="sun-img" src="../assets/sun/00.jpg" width="960" height="480" alt="sky 演示，14:48，太阳高度角 36.8 度" decoding="async"></div>
       <div class="scrub">
-        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">sun elevation <span id="sun-el">+36.8&deg;</span></span></div>
-        <label class="skip" for="sun">Time of day</label>
+        <div class="scrub-read" aria-live="polite"><span class="t" id="sun-t">14:48</span><span class="el">太阳高度角 <span id="sun-el">+36.8&deg;</span></span></div>
+        <label class="skip" for="sun">时间</label>
         <input id="sun" type="range" min="0" max="39" value="0" step="1">
-        <div class="scrub-ends"><span>afternoon</span><span>dusk</span></div>
+        <div class="scrub-ends"><span>下午</span><span>黄昏</span></div>
       </div>
-      <p class="figcap"><b>FIG. 2</b>Forty real frames from <code>cargo run --release --example sky</code>. Times and elevations are the ones the demo prints.</p>
+      <p class="figcap"><b>图 2</b>来自 <code>cargo run --release --example sky</code> 的四十帧真实画面。时间和高度角都是演示程序自己输出的数值。</p>
     </figure>
   </div>
 </section>
@@ -260,16 +260,16 @@
 <section id="lorenz" aria-labelledby="lz-h">
   <div class="wrap split rev">
     <figure>
-      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/lorenz-poster.jpg" width="720" height="480" aria-label="Forty thousand points circling the two wings of the Lorenz attractor"><source src="assets/lorenz.mp4" type="video/mp4"></video></div>
-      <p class="figcap"><b>FIG. 3</b><code>cargo run --release --example lorenz</code>. Teal is slow, amber is fast.</p>
+      <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/lorenz-poster.jpg" width="720" height="480" aria-label="40,000 个点绕着洛伦兹吸引子的两翼运动"><source src="../assets/lorenz.mp4" type="video/mp4"></video></div>
+      <p class="figcap"><b>图 3</b><code>cargo run --release --example lorenz</code>。青色表示慢，琥珀色表示快。</p>
     </figure>
     <div>
-      <p class="kicker cool">Strange attractors</p>
-      <h2 id="lz-h">Forty thousand points, one equation.</h2>
-      <div class="eq" aria-label="The Lorenz equations">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
-      <div class="prose"><p>Each point is a state advanced every frame by the engine's own RK4 step. Nobody drew the two wings; that is where the equations send the points. The same module carries Rossler, Chen, Halvorsen, Aizawa, Thomas, Dadras and more, and any of them can drive a force field.</p></div>
+      <p class="kicker cool">奇异吸引子</p>
+      <h2 id="lz-h">四万个点，一组方程。</h2>
+      <div class="eq" aria-label="洛伦兹方程">dx/dt = 10 (y &minus; x)<br>dy/dt = x (28 &minus; z) &minus; y<br>dz/dt = x y &minus; <sup>8</sup>&frasl;<sub>3</sub> z</div>
+      <div class="prose"><p>每个点都是一个状态，每帧由引擎自带的 RK4 步进推进。两翼不是任何人画出来的，而是方程把点送到了那里。同一个模块还包含 Rossler、Chen、Halvorsen、Aizawa、Thomas、Dadras 等吸引子，任何一个都可以驱动力场。</p></div>
       <div class="code">
-        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">Copy</button></div>
+        <div class="bar"><span>examples/lorenz.rs</span><button type="button" data-copy-from="lz-code">复制</button></div>
 <pre id="lz-code"><span class="k">for</span> p <span class="k">in</span> points.<span class="f">iter_mut</span>() {
     <span class="k">for</span> _ <span class="k">in</span> <span class="n">0</span>..SUBSTEPS {
         *p = <span class="f">rk4_step</span>(lorenz, *p, h);
@@ -282,15 +282,15 @@
 
 <section id="start" aria-labelledby="start-h">
   <div class="wrap">
-    <p class="kicker">Quick start</p>
-    <h2 id="start-h">Running in two commands.</h2>
-    <div class="prose"><p>You need stable Rust and a GPU with OpenGL 3.3. Windows and macOS need nothing else. On Linux, install the ALSA headers first: <code>sudo apt install libasound2-dev pkg-config</code>.</p></div>
+    <p class="kicker">快速开始</p>
+    <h2 id="start-h">两条命令即可运行。</h2>
+    <div class="prose"><p>你需要 stable 版 Rust 和支持 OpenGL 3.3 的 GPU。Windows 和 macOS 无需其他依赖。在 Linux 上，请先安装 ALSA 头文件：<code>sudo apt install libasound2-dev pkg-config</code>。</p></div>
     <div class="steps">
       <div class="step">
-        <h3><span>01</span>Run the demos</h3>
-        <p>The first build compiles the whole engine and takes a few minutes. Use <code>--release</code>; the demos simulate tens of thousands of particles a frame.</p>
+        <h3><span>01</span>运行演示</h3>
+        <p>第一次构建会编译整个引擎，需要几分钟。请使用 <code>--release</code>，因为演示每帧要模拟数万个粒子。</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c1">复制</button></div>
 <pre id="c1">git clone https://gitlab.com/mattbusel/proof-engine.git
 cd proof-engine
 cargo run --release --example sky
@@ -298,15 +298,15 @@ cargo run --release --example lorenz</pre>
         </div>
       </div>
       <div class="step">
-        <h3><span>02</span>Use it as a library</h3>
-        <p>5,000 points start on one short line and follow the Lorenz equations. Also in the repo as <code>examples/quickstart.rs</code>.</p>
+        <h3><span>02</span>作为库使用</h3>
+        <p>5,000 个点从一条短线段出发，沿着洛伦兹方程运动。仓库中也有这个示例：<code>examples/quickstart.rs</code>。</p>
         <div class="code">
-          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">Copy</button></div>
+          <div class="bar"><span>shell</span><button type="button" data-copy-from="c2">复制</button></div>
 <pre id="c2">cargo new lorenz-demo &amp;&amp; cd lorenz-demo
 cargo add proof-engine</pre>
         </div>
         <div class="code">
-          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">Copy</button></div>
+          <div class="bar"><span>src/main.rs</span><button type="button" data-copy-from="c3">复制</button></div>
 <pre id="c3"><span class="k">use</span> proof_engine::math::attractors::rk4_step;
 <span class="k">use</span> proof_engine::prelude::*;
 <span class="k">use</span> proof_engine::render::ui_layer::UiParticle;
@@ -336,87 +336,87 @@ cargo add proof-engine</pre>
     });
 }</pre>
         </div>
-        <p class="note"><code>cargo run --release</code>. For about ten seconds the points travel as one streak; then chaos pulls them apart into the butterfly.</p>
+        <p class="note"><code>cargo run --release</code>。大约十秒内，这些点会像一道光带一样一起移动；随后混沌把它们拉开，形成蝴蝶。</p>
       </div>
     </div>
     <figure style="margin-top:36px">
-      <div class="frame"><img src="assets/quickstart-steps.jpg" width="1710" height="420" alt="Four frames of the quickstart program at 1, 13.5, 16 and 18.5 seconds: a speck, a thin arc, loops splitting apart, and the full Lorenz butterfly." loading="lazy"></div>
-      <p class="figcap"><b>FIG. 3B</b>That program, frames written by the engine at 1, 13.5, 16 and 18.5 seconds.</p>
+      <div class="frame"><img src="../assets/quickstart-steps.jpg" width="1710" height="420" alt="quickstart 程序在 1、13.5、16 和 18.5 秒时的四帧画面：一个小点、一道细弧、正在分开的环线，以及完整的洛伦兹蝴蝶。" loading="lazy"></div>
+      <p class="figcap"><b>图 3B</b>上面那个程序，由引擎在 1、13.5、16 和 18.5 秒时写出的帧。</p>
     </figure>
   </div>
 </section>
 
 <section id="inside" aria-labelledby="inside-h">
   <div class="wrap">
-    <p class="kicker">What is inside</p>
-    <h2 id="inside-h">Math first, then light.</h2>
+    <p class="kicker">内部构成</p>
+    <h2 id="inside-h">先有数学，再有光。</h2>
     <div class="grid">
-      <div class="cell"><span class="mod">math</span><h3>Functions as animation</h3><p>Attractors, Perlin noise, logistic map, Collatz, Lissajous, Mandelbrot escape, springs. Any glyph can carry a <code>life_function</code> that drives its position or colour.</p></div>
-      <div class="cell"><span class="mod">math::fields</span><h3>Composable force fields</h3><p>Gravity, vortex, electromagnetic, strange attractor, shockwave, tidal, flow, dipole, with linear, inverse-square, exponential or Gaussian falloff.</p></div>
-      <div class="cell"><span class="mod">entity</span><h3>Particle-built bodies</h3><p>Entities are glyph clusters held by force cohesion. Binding strength follows HP, so a hit knocks matter loose instead of playing an animation.</p></div>
-      <div class="cell"><span class="mod">render</span><h3>An HDR pipeline</h3><p>Half-float scene buffers, a bloom pyramid, ACES, lens, light shafts, shadows from matter, grain and dither. Every standing parameter is a field on <code>RenderConfig</code>.</p></div>
-      <div class="cell"><span class="mod">physics &middot; audio</span><h3>Simulation and sound</h3><p>Rigid bodies with SAT, soft bodies, Eulerian fluid. 48 kHz synthesis with FM, filters, drive and reverb. Sound is synthesised, not sampled.</p></div>
-      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>Procedural everything</h3><p>Tectonics, erosion, climate, rivers, settlements and history; Lotka-Volterra and SIR ecology; a bytecode VM with closures.</p></div>
+      <div class="cell"><span class="mod">math</span><h3>函数即动画</h3><p>吸引子、Perlin 噪声、Logistic 映射、Collatz、Lissajous、Mandelbrot 逃逸、弹簧。任何字形都可以带一个 <code>life_function</code>，用来驱动它的位置或颜色。</p></div>
+      <div class="cell"><span class="mod">math::fields</span><h3>可组合的力场</h3><p>引力、涡旋、电磁、奇异吸引子、冲击波、潮汐、流场、偶极子，支持线性、平方反比、指数或高斯衰减。</p></div>
+      <div class="cell"><span class="mod">entity</span><h3>由粒子构成的身体</h3><p>实体是靠力的凝聚维系在一起的字形簇。结合强度随 HP 变化，所以受到攻击时会真的打散物质，而不是播放一段动画。</p></div>
+      <div class="cell"><span class="mod">render</span><h3>HDR 渲染管线</h3><p>半精度浮点场景缓冲、泛光金字塔、ACES、镜头效果、光束、物质投射的阴影、颗粒和抖动。所有常驻参数都是 <code>RenderConfig</code> 上的字段。</p></div>
+      <div class="cell"><span class="mod">physics &middot; audio</span><h3>模拟与声音</h3><p>基于 SAT 的刚体、软体、欧拉流体。48 kHz 音频合成，支持 FM、滤波器、过载和混响。声音靠合成，而不是采样。</p></div>
+      <div class="cell"><span class="mod">worldgen &middot; scripting</span><h3>一切皆可程序化生成</h3><p>板块构造、侵蚀、气候、河流、聚落和历史；Lotka-Volterra 与 SIR 生态模型；支持闭包的字节码虚拟机。</p></div>
     </div>
     <div class="pipe">
-      <img src="img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="How math becomes a frame, for one frame of the lorenz example: RK4 steps 40,000 Lorenz states on the CPU, each state becomes a glyph instance coloured by speed, the glyph pass writes into a half-float HDR buffer with trails and bloom, and the composite tonemaps it with the HUD painted on top." loading="lazy">
-      <p class="figcap"><b>FIG. 4</b>How math becomes a frame, drawn from a real Lorenz integration with the example's own palette.</p>
+      <img src="../img/how-math-becomes-a-frame.svg" width="1200" height="590" alt="以 lorenz 示例的一帧为例，展示数学如何变成画面：在 CPU 上用 RK4 推进 40,000 个洛伦兹状态，每个状态变成一个按速度着色的字形实例，字形通道写入带拖尾和泛光的半精度浮点 HDR 缓冲区，最后在合成阶段进行色调映射，并在上方绘制 HUD。" loading="lazy">
+      <p class="figcap"><b>图 4</b>数学如何变成一帧画面。图中数据来自一次真实的洛伦兹积分，配色沿用示例自己的调色板。</p>
     </div>
     <div class="pipe">
-      <img src="img/frame-stages.jpg" width="1704" height="597" alt="The lorenz example captured by the engine at the same frame three ways: the glyph pass alone, a grainy butterfly of dots; with trails and bloom, the loops fill in and glow; with the tonemap and grade, deeper blacks and warmer highlights." loading="lazy">
-      <p class="figcap"><b>FIG. 5</b>The same frame read back from the GPU three times with <code>PROOF_HIDDEN=1 PROOF_SHOT</code>, switching bloom, trails and the tonemap off in <code>RenderConfig</code>.</p>
+      <img src="../img/frame-stages.jpg" width="1704" height="597" alt="引擎以三种方式截取 lorenz 示例的同一帧：只有字形通道时，是一只颗粒感很强的点状蝴蝶；加上拖尾和泛光后，环线被填满并发光；再加上色调映射和调色，黑色更深，高光更暖。" loading="lazy">
+      <p class="figcap"><b>图 5</b>用 <code>PROOF_HIDDEN=1 PROOF_SHOT</code> 从 GPU 读回同一帧三次，并在 <code>RenderConfig</code> 中关闭泛光、拖尾和色调映射。</p>
     </div>
     <div class="pipe">
-      <img src="assets/pipeline.svg" width="1200" height="400" alt="The screen pipeline: the 3D glyph pass and UI world pass draw into an HDR buffer, emission feeds a bloom pyramid, both meet in the composite, then FXAA, the screen, and the HUD painted sharp on top." loading="lazy">
-      <p class="figcap"><b>FIG. 6</b>What runs on the GPU every frame. A game drawn as screen-space matter gets bloom, grade and grain on all of it, with a readable HUD over the top.</p>
+      <img src="../assets/pipeline.svg" width="1200" height="400" alt="屏幕渲染管线：3D 字形通道和 UI 世界通道绘制到 HDR 缓冲区，自发光输入泛光金字塔，两者在合成阶段汇合，然后经过 FXAA 输出到屏幕，最上层清晰地绘制 HUD。" loading="lazy">
+      <p class="figcap"><b>图 6</b>每一帧在 GPU 上运行的内容。以屏幕空间物质绘制的游戏，整个画面都会获得泛光、调色和颗粒效果，上方仍保留清晰可读的 HUD。</p>
     </div>
   </div>
 </section>
 
 <section id="demos" aria-labelledby="demos-h">
   <div class="wrap">
-    <p class="kicker">Demos</p>
-    <h2 id="demos-h">Twenty-one demos, one command each.</h2>
-    <div class="prose"><p>Every one is <code>cargo run --release --example &lt;name&gt;</code>. Close the window, or press Esc where the demo says so, to quit. These are the ones to start with.</p></div>
+    <p class="kicker">演示</p>
+    <h2 id="demos-h">二十一个演示，每个只需一条命令。</h2>
+    <div class="prose"><p>每个都是 <code>cargo run --release --example &lt;name&gt;</code>。关闭窗口即可退出，演示中有提示时也可以按 Esc。建议先从下面这些开始。</p></div>
     <div class="vids">
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/galaxy-poster.jpg" width="960" height="540" aria-label="The galaxy example: glyph stars on four spiral arms turning as the camera circles"><source src="assets/galaxy.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>galaxy</b>3,000 glyphs, each on its own orbit.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/galaxy-poster.jpg" width="960" height="540" aria-label="galaxy 示例：由字形构成的恒星分布在四条旋臂上，随着镜头环绕而转动"><source src="../assets/galaxy.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>galaxy</b>3,000 个字形，各自沿自己的轨道运行。</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="Seven strange attractors turning slowly, 1,500 points each"><source src="assets/strange-attractors.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>strange_attractors</b>Seven chaotic systems, RK4, colour is speed.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/strange-attractors-poster.jpg" width="960" height="540" aria-label="七个奇异吸引子缓缓旋转，每个 1,500 个点"><source src="../assets/strange-attractors.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>strange_attractors</b>七个混沌系统，RK4，颜色表示速度。</p>
       </figure>
       <figure>
-        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="assets/math-rain-poster.jpg" width="960" height="540" aria-label="Columns of green mathematical symbols falling"><source src="assets/math-rain.mp4" type="video/mp4"></video></div>
-        <p class="figcap"><b>math_rain</b>Column speeds from a sine, flicker from a logistic map.</p>
+        <div class="frame"><video autoplay muted loop playsinline preload="metadata" poster="../assets/math-rain-poster.jpg" width="960" height="540" aria-label="一列列绿色数学符号不断落下"><source src="../assets/math-rain.mp4" type="video/mp4"></video></div>
+        <p class="figcap"><b>math_rain</b>每列速度来自正弦函数，闪烁来自 Logistic 映射。</p>
       </figure>
     </div>
     <div class="split start" style="margin-top:36px">
       <figure>
-        <div class="frame"><img src="assets/convergence.jpg" width="1400" height="520" alt="Two particle-built fighters; the red one is coming apart after a hit" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 7</b><code>convergence</code>: the red fighter has taken damage and its binding is failing.</p>
+        <div class="frame"><img src="../assets/convergence.jpg" width="1400" height="520" alt="两个由粒子构成的战士，红色的那个在受击后正在崩解" loading="lazy"></div>
+        <p class="figcap"><b>图 7</b><code>convergence</code>：红色战士受到伤害，结合力正在瓦解。</p>
       </figure>
       <figure>
-        <div class="frame"><img src="assets/editor.jpg" width="1600" height="868" alt="The Proof Editor, an egui scene editor with a viewport, inspector and hierarchy" loading="lazy"></div>
-        <p class="figcap"><b>FIG. 8</b>Proof Editor: place glyphs, fields and entities; save scenes as JSON.</p>
+        <div class="frame"><img src="../assets/editor.jpg" width="1600" height="868" alt="Proof Editor，一个基于 egui 的场景编辑器，带有视口、检查器和层级面板" loading="lazy"></div>
+        <p class="figcap"><b>图 8</b>Proof Editor：放置字形、力场和实体，并把场景保存为 JSON。</p>
       </figure>
     </div>
     <div class="tblwrap">
     <table class="tbl">
-      <thead><tr><th>Example</th><th>What you see</th></tr></thead>
+      <thead><tr><th>示例</th><th>你会看到</th></tr></thead>
       <tbody>
-        <tr><td>sky</td><td>A day over a mountain range, every sky cell a Nishita scattering integral. Space pauses, Up/Down change speed.</td></tr>
-        <tr><td>lorenz</td><td>40,000 points on the Lorenz attractor, integrated with RK4 and drawn into the HDR world pass. Left/Right turn the view.</td></tr>
-        <tr><td>galaxy</td><td>About 3,000 glyphs on four spiral arms, each on its own orbit, with a hot core and drifting nebula dust.</td></tr>
-        <tr><td>strange_attractors</td><td>Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras side by side, 1,500 points each. Space pauses.</td></tr>
-        <tr><td>math_rain</td><td>Digital rain of mathematical symbols; speeds from a sine, flicker from a logistic map.</td></tr>
-        <tr><td>quickstart</td><td>The program above: 5,000 points that chaos tears apart into the Lorenz butterfly.</td></tr>
-        <tr><td>convergence</td><td>Two particle-built fighters in an arena with an orbiting camera; hits knock matter loose.</td></tr>
-        <tr><td>supernova</td><td>A star pulses, collapses, explodes and settles into a Lorenz nebula.</td></tr>
-        <tr><td>hello_glyph</td><td>The smallest program: one breathing <code>@</code> and a gravity field.</td></tr>
-        <tr><td>colossus</td><td>GPU density entities: millions of particles from sixteen bones. Needs a strong GPU.</td></tr>
-        <tr><td>apotheosis</td><td>A character built on signed distance fields, about 10.8 million particles. Needs OpenGL 4.3.</td></tr>
+        <tr><td>sky</td><td>山脉上空的一天，每个天空格子都是一次 Nishita 散射积分。按空格暂停，上/下方向键调节速度。</td></tr>
+        <tr><td>lorenz</td><td>洛伦兹吸引子上的 40,000 个点，用 RK4 积分，并绘制到 HDR 世界通道中。左/右方向键旋转视角。</td></tr>
+        <tr><td>galaxy</td><td>约 3,000 个字形分布在四条旋臂上，各自沿自己的轨道运行，核心炽热，星云尘埃缓缓飘动。</td></tr>
+        <tr><td>strange_attractors</td><td>Lorenz、Rossler、Chen、Halvorsen、Aizawa、Thomas 和 Dadras 并排展示，每个 1,500 个点。按空格暂停。</td></tr>
+        <tr><td>math_rain</td><td>由数学符号组成的数字雨；速度来自正弦函数，闪烁来自 Logistic 映射。</td></tr>
+        <tr><td>quickstart</td><td>上面那个程序：5,000 个点被混沌撕开，形成洛伦兹蝴蝶。</td></tr>
+        <tr><td>convergence</td><td>竞技场中两个由粒子构成的战士，镜头环绕拍摄；受击时物质会被打散。</td></tr>
+        <tr><td>supernova</td><td>一颗恒星脉动、坍缩、爆炸，最后沉淀为洛伦兹星云。</td></tr>
+        <tr><td>hello_glyph</td><td>最小的程序：一个会呼吸的 <code>@</code> 和一个引力场。</td></tr>
+        <tr><td>colossus</td><td>GPU 密度实体：由十六根骨骼生成数百万个粒子。需要性能强劲的 GPU。</td></tr>
+        <tr><td>apotheosis</td><td>基于有符号距离场（SDF）构建的角色，约 10.8M 个粒子。需要 OpenGL 4.3。</td></tr>
       </tbody>
     </table>
     </div>
@@ -426,22 +426,22 @@ cargo add proof-engine</pre>
 <section id="capture" aria-labelledby="cap-h">
   <div class="wrap split">
     <div>
-      <p class="kicker cool">Capture</p>
-      <h2 id="cap-h">Record the engine&rsquo;s own frames.</h2>
+      <p class="kicker cool">录制</p>
+      <h2 id="cap-h">录制引擎自身输出的帧。</h2>
       <div class="prose">
-        <p>Any program built on Proof Engine can write its own frames, read straight back off the GPU after post-processing, with no code changes. <code>PROOF_HIDDEN=1</code> keeps the window invisible and unfocused, so it runs while you use the machine.</p>
-        <p>Every demo frame and video on this page was written this way.</p>
+        <p>任何基于 Proof Engine 的程序都能写出自己的帧：后处理完成后直接从 GPU 读回，无需修改任何代码。<code>PROOF_HIDDEN=1</code> 会让窗口保持隐藏且不抢焦点，所以你可以一边用电脑一边让它运行。</p>
+        <p>本页所有的演示画面和视频都是这样录制的。</p>
       </div>
     </div>
     <div>
       <div class="code">
-        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">Copy</button></div>
+        <div class="bar"><span>shell</span><button type="button" data-copy-from="c4">复制</button></div>
 <pre id="c4">PROOF_HIDDEN=1 PROOF_FIXED_DT=60 \
 PROOF_SHOT='frames/f_{n}.bmp' PROOF_SHOT_AT=560 \
 PROOF_SHOT_EVERY=2 PROOF_SHOT_COUNT=240 \
 cargo run --release --example sky</pre>
       </div>
-      <p class="note"><code>PROOF_FIXED_DT</code> steps the simulation at a fixed rate, so a sequence plays back at true speed however long each frame took to capture. <code>PROOF_WINDOW=1920x1080</code> sets the size.</p>
+      <p class="note"><code>PROOF_FIXED_DT</code> 以固定步长推进模拟，所以无论每帧截取花了多长时间，序列回放时都是真实速度。<code>PROOF_WINDOW=1920x1080</code> 用于设置窗口大小。</p>
     </div>
   </div>
 </section>
@@ -449,30 +449,30 @@ cargo run --release --example sky</pre>
 
 <footer>
   <div class="wrap">
-    <span>Proof Engine is MIT licensed. Built by <a href="https://gitlab.com/mattbusel">Matthew Busel</a>.</span>
-    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> runs on it &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
+    <span>Proof Engine 采用 MIT 许可证开源。作者：<a href="https://gitlab.com/mattbusel">Matthew Busel</a>。</span>
+    <span><a href="https://gitlab.com/mattbusel/chaos-rpg">chaos-rpg</a> 基于本引擎运行 &middot; <a href="https://crates.io/crates/proof-engine">crates.io</a> &middot; <a href="https://docs.rs/proof-engine">docs.rs</a> &middot; <a href="https://gitlab.com/mattbusel/proof-engine">GitHub</a></span>
   </div>
 </footer>
 
 <script>
   // Copy buttons.
-  function flash(b) { const t = b.textContent; b.textContent = 'Copied'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
+  function flash(b) { const t = b.textContent; b.textContent = '已复制'; b.classList.add('ok'); setTimeout(() => { b.textContent = t; b.classList.remove('ok'); }, 1400); }
   document.querySelectorAll('button[data-copy], button[data-copy-from]').forEach(b => b.addEventListener('click', async () => {
     const text = b.dataset.copy || document.getElementById(b.dataset.copyFrom).innerText;
-    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = 'Select and copy'; }
+    try { await navigator.clipboard.writeText(text); flash(b); } catch (e) { b.textContent = '请手动选择并复制'; }
   }));
 
   // Sun scrubber: forty frames captured from the sky example.
   const SUN = [["14:48",36.8],["14:54",35.8],["15:00",34.8],["15:05",33.7],["15:11",32.7],["15:17",31.6],["15:23",30.5],["15:28",29.5],["15:34",28.4],["15:40",27.3],["15:46",26.2],["15:51",25.1],["15:57",24.0],["16:03",22.9],["16:09",21.8],["16:14",20.6],["16:20",19.5],["16:26",18.4],["16:32",17.3],["16:37",16.2],["16:43",15.0],["16:49",13.9],["16:55",12.8],["17:00",11.6],["17:06",10.5],["17:12",9.4],["17:18",8.2],["17:23",7.1],["17:29",6.0],["17:35",4.8],["17:41",3.7],["17:47",2.6],["17:52",1.4],["17:58",0.3],["18:04",-0.9],["18:10",-2.0],["18:15",-3.1],["18:21",-4.3],["18:27",-5.4],["18:33",-6.5]];
   const img = document.getElementById('sun-img'), range = document.getElementById('sun');
-  const src = i => 'assets/sun/' + String(i).padStart(2, '0') + '.jpg';
+  const src = i => '../assets/sun/' + String(i).padStart(2, '0') + '.jpg';
   const fmt = e => (e >= 0 ? '+' : '−') + Math.abs(e).toFixed(1) + '°';
   let warmed = false;
   function warm() { if (warmed) return; warmed = true; SUN.forEach((_, i) => { const im = new Image(); im.src = src(i); }); }
   function show(i) {
     const [t, e] = SUN[i];
     img.src = src(i);
-    img.alt = 'The sky demo at ' + t + ', sun elevation ' + e.toFixed(1) + ' degrees';
+    img.alt = 'sky 演示，' + t + '，太阳高度角 ' + e.toFixed(1) + ' 度';
     document.getElementById('sun-t').textContent = t;
     document.getElementById('sun-el').textContent = fmt(e);
   }
