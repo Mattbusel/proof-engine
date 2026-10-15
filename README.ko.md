@@ -180,4 +180,4 @@ MIT. [LICENSE](LICENSE)를 참고하세요.
 
 ## 개발자에게 의뢰하기
 
-**여러분의 제품에도 이런 엔지니어링이 필요하신가요?** 소수의 클라이언트 프로젝트를 맡고 있습니다. LLM 기능, iOS 앱, 성능 개선 작업을 고정 가격으로 진행합니다. [서비스와 가격](https://mattbusel.vercel.app/) · [이메일](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
+**여러분의 제품에도 이런 엔지니어링이 필요하신가요?** 소수의 클라이언트 프로젝트를 맡고 있습니다. LLM 기능, iOS 앱, 성능 개선 작업을 고정 가격으로 진행합니다. [서비스와 가격](https://tensorust.com/) · [이메일](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)

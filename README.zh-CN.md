@@ -180,4 +180,4 @@ MIT，见 [LICENSE](LICENSE)。
 
 ## 聘请作者
 
-**你的产品需要这类工程能力吗？** 我承接少量客户项目：LLM 功能、iOS 应用和性能优化，固定报价。[服务与价格](https://mattbusel.vercel.app/) · [邮件](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
+**你的产品需要这类工程能力吗？** 我承接少量客户项目：LLM 功能、iOS 应用和性能优化，固定报价。[服务与价格](https://tensorust.com/) · [邮件](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)

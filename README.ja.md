@@ -180,4 +180,4 @@ MIT。[LICENSE](LICENSE) を参照してください。
 
 ## 作者に依頼する
 
-**あなたのプロダクトにもこうしたエンジニアリングが必要ですか？** 少数のクライアント案件をお受けしています。LLM 機能、iOS アプリ、パフォーマンス改善を固定価格で。[サービスと料金](https://mattbusel.vercel.app/) · [メール](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
+**あなたのプロダクトにもこうしたエンジニアリングが必要ですか？** 少数のクライアント案件をお受けしています。LLM 機能、iOS アプリ、パフォーマンス改善を固定価格で。[サービスと料金](https://tensorust.com/) · [メール](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
