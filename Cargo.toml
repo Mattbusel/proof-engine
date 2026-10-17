@@ -1,15 +1,15 @@
 [package]
 name = "proof-engine"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Matthew Busel <matt@tensorust.com>"]
 license = "MIT"
 description = "Real-time graphics from math: glyphs and particles moved by ODEs, strange attractors and force fields, drawn with HDR bloom on OpenGL."
-repository = "https://gitlab.com/mattbusel/proof-engine"
+repository = "https://github.com/Mattbusel/proof-engine"
 homepage = "https://proof-engine-rs.vercel.app/"
 documentation = "https://docs.rs/proof-engine"
-keywords = ["generative-art", "creative-coding", "attractor", "game-engine", "opengl"]
+keywords = ["generative-art", "creative-coding", "graphics", "game-engine", "opengl"]
 categories = ["game-engines", "graphics", "rendering", "simulation", "mathematics"]
 readme = "README.md"
 # Screenshots, GIFs and repo tooling stay on GitHub; the README links resolve there.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-10-17)
+
+- `repository` now points at GitHub (GitLab stays as the mirror and hosts the release downloads); crates.io keyword `attractor` replaced by `graphics`. README: CI and MSRV badges. No code changes.
+
 ## 0.3.0
 
 This release swaps several pieces the engine had written by hand for well-known open-source crates, fixes the bugs that turned up along the way, and adds what those crates make easy.

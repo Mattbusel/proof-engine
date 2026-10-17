@@ -12,6 +12,8 @@
   <a href="https://proof-engine-rs.vercel.app/">Site</a> &nbsp;&middot;&nbsp;
   <a href="https://docs.rs/proof-engine">docs.rs</a> &nbsp;&middot;&nbsp;
   <a href="https://crates.io/crates/proof-engine"><img src="https://img.shields.io/crates/v/proof-engine.svg" alt="crates.io version" align="center"></a>
+  &nbsp;<a href="https://github.com/Mattbusel/proof-engine/actions/workflows/ci.yml"><img src="https://github.com/Mattbusel/proof-engine/actions/workflows/ci.yml/badge.svg" alt="CI" align="center"></a>
+  &nbsp;<img src="https://img.shields.io/badge/MSRV-1.88-blue.svg" alt="MSRV 1.88" align="center">
 </p>
 
 <p align="center"><img src="assets/gifs/galaxy.gif" width="100%" alt="The galaxy example running: about 3,000 glyphs on four spiral arms, each on its own circular orbit, with a hot core and dim red outer arms, seen at an angle as the camera circles."></p>
@@ -176,6 +178,8 @@ Windowing and OpenGL come from [winit](https://crates.io/crates/winit), [glutin]
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+Source, issues and stars: [GitHub](https://github.com/Mattbusel/proof-engine). Mirror and release downloads: [GitLab](https://gitlab.com/mattbusel/proof-engine). More open-source Rust from the same author: [tensorust.com/open-source](https://tensorust.com/open-source/).
 
 ## Hire the author
 
