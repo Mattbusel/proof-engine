@@ -1,3 +1,11 @@
+<!-- outcome-block -->
+**Make games where everything is built from particles and really breaks: no meshes, no pre-fractured models; destruction, cloth and fluid come from one spring-physics system.**
+
+**Why this over the alternatives:** Mesh engines need a separate system for every kind of damage. Here it's one particle substrate with different spring constants. It powers CHAOS RPG and O'BLOCK (free on Steam).
+
+**Guarantee:** if it doesn't do what this README says, [open an issue](https://github.com/Mattbusel/proof-engine/issues) and I'll fix it.
+<!-- outcome-block -->
+
 <h1 align="center">Proof Engine</h1>
 
 <p align="center">English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a></p>
