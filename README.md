@@ -17,6 +17,7 @@
 <p align="center">
   <a href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-lorenz.exe"><b>Download for Windows (.exe)</b></a> &nbsp;&middot;&nbsp;
   <a href="#download">macOS and Linux</a> &nbsp;&middot;&nbsp;
+  <a href="https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine-links"><b>Shipped game: O'BLOCK on Steam</b></a> &nbsp;&middot;&nbsp;
   <a href="https://proof-engine-rs.vercel.app/">Site</a> &nbsp;&middot;&nbsp;
   <a href="https://docs.rs/proof-engine">docs.rs</a> &nbsp;&middot;&nbsp;
   <a href="https://crates.io/crates/proof-engine"><img src="https://img.shields.io/crates/v/proof-engine.svg" alt="crates.io version" align="center"></a>
@@ -28,6 +29,14 @@
 <p align="center"><sub>The <code>galaxy</code> demo, recorded from the engine's own framebuffer.</sub></p>
 
 Proof Engine is a real-time generative art and math visualization engine written in Rust on OpenGL. Points and glyphs are moved by differential equations (the Lorenz attractor and six other strange attractors), force fields and physics, then drawn through a half-float HDR pipeline with bloom and an ACES tonemap.
+
+## Shipped on Steam: O'BLOCK
+
+[![O'BLOCK, a sneaker-flipping roguelike that runs on Proof Engine](assets/oblock-street.gif)](https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine)
+
+Proof Engine runs a shipped game: **[O'BLOCK on Steam](https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine)**, a sneaker-flipping roguelike where you haggle with buyers who bluff and build a resale empire without drawing heat. It is free to play, so you can see the engine's glyph rendering, particles and post-processing in a real release before you build on it.
+
+Shipping it meant adding Chinese, Japanese and Korean text to the glyph atlas. How that works: [Adding Chinese, Japanese and Korean text to a Rust OpenGL game engine](https://tensorust.com/articles/rust-game-engine-chinese-japanese-korean-text/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine).
 
 ## Download
 
