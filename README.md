@@ -1,18 +1,18 @@
 <!-- outcome-block -->
-**Make games where everything is built from particles and really breaks: no meshes, no pre-fractured models; destruction, cloth and fluid come from one spring-physics system.**
+**Games where everything is particles and really breaks. No meshes. Destruction, cloth and fluid come from one spring-physics system.**
 
-**Why this over the alternatives:** Mesh engines need a separate system for every kind of damage. Here it's one particle substrate with different spring constants. It powers CHAOS RPG and O'BLOCK (free on Steam).
+Mesh engines need a system per kind of damage. This uses one, with different spring constants. It runs CHAOS RPG and O'BLOCK (free on Steam).
 
-**Guarantee:** if it doesn't do what this README says, [open an issue](https://github.com/Mattbusel/proof-engine/issues) and I'll fix it.
+If it doesn't do what this README says, [open an issue](https://github.com/Mattbusel/proof-engine/issues) and I'll fix it.
 <!-- outcome-block -->
 
 <h1 align="center">Proof Engine</h1>
 
 <p align="center">English | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a></p>
 
-<p align="center"><b>Write the equations, and Proof Engine draws what they do: moving pictures made from math, in real time, with glowing HDR light.</b></p>
+<p align="center"><b>Write the equations. Proof Engine draws what they do, in real time, with HDR glow.</b></p>
 
-<p align="center">A Rust graphics engine and a set of ready-to-run demos. For creative coders, generative artists, and anyone who wants to watch a strange attractor or a physical sky move.</p>
+<p align="center">A Rust graphics engine plus ready-to-run demos.</p>
 
 <p align="center">
   <a href="https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-lorenz.exe"><b>Download for Windows (.exe)</b></a> &nbsp;&middot;&nbsp;
@@ -28,15 +28,15 @@
 <p align="center"><img src="assets/gifs/galaxy.gif" width="100%" alt="The galaxy example running: about 3,000 glyphs on four spiral arms, each on its own circular orbit, with a hot core and dim red outer arms, seen at an angle as the camera circles."></p>
 <p align="center"><sub>The <code>galaxy</code> demo, recorded from the engine's own framebuffer.</sub></p>
 
-Proof Engine is a real-time generative art and math visualization engine written in Rust on OpenGL. Points and glyphs are moved by differential equations (the Lorenz attractor and six other strange attractors), force fields and physics, then drawn through a half-float HDR pipeline with bloom and an ACES tonemap.
+Rust on OpenGL. Points and glyphs move by differential equations (Lorenz and six other strange attractors), force fields and physics. Then a half-float HDR pipeline draws them with bloom and an ACES tonemap.
 
 ## Shipped on Steam: O'BLOCK
 
 [![O'BLOCK, a sneaker-flipping roguelike that runs on Proof Engine](assets/oblock-street.gif)](https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine)
 
-Proof Engine runs a shipped game: **[O'BLOCK on Steam](https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine)**, a sneaker-flipping roguelike where you haggle with buyers who bluff and build a resale empire without drawing heat. It is free to play, so you can see the engine's glyph rendering, particles and post-processing in a real release before you build on it.
+I shipped **[O'BLOCK on Steam](https://store.steampowered.com/app/5357680/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine)** on it. A sneaker-flipping roguelike: haggle with buyers who bluff, build a resale empire, don't draw heat. Free to play, so you can see the engine in a real release.
 
-Shipping it meant adding Chinese, Japanese and Korean text to the glyph atlas. How that works: [Adding Chinese, Japanese and Korean text to a Rust OpenGL game engine](https://tensorust.com/articles/rust-game-engine-chinese-japanese-korean-text/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine).
+Shipping it meant adding Chinese, Japanese and Korean text to the glyph atlas: [Adding Chinese, Japanese and Korean text to a Rust OpenGL game engine](https://tensorust.com/articles/rust-game-engine-chinese-japanese-korean-text/?utm_source=github&utm_medium=readme&utm_campaign=proof-engine).
 
 ## Download
 
@@ -47,31 +47,31 @@ Shipping it meant adding Chinese, Japanese and Korean text to the glyph atlas. H
 | **Linux** (x86_64) | [proof-engine-demos-linux-x64.tar.gz](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-engine-demos-linux-x64.tar.gz) |
 | **Your own Rust program** | `cargo add proof-engine` |
 
-No Rust needed for the downloads, just a GPU with OpenGL 3.3 or newer. Unsigned files: on Windows click *More info*, then *Run anyway*; the macOS and Linux notes are in [docs/INSTALL.md](docs/INSTALL.md).
+No Rust needed. Just a GPU with OpenGL 3.3+. Unsigned: on Windows click *More info*, then *Run anyway*. macOS and Linux notes: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Math screensaver
 
-Ten of the engine's strange attractors as a Windows screensaver, one after another, every point moved by its equations live. Download [**proof-screensaver.scr**](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-screensaver.scr), put it somewhere it can stay, then right-click it and choose **Install** (or copy it into `C:\Windows\System32` and pick *proof-screensaver* in Screen Saver Settings). **Settings...** there opens its own options. More, including uninstalling: [docs/SCREENSAVER.md](docs/SCREENSAVER.md).
+Ten strange attractors as a Windows screensaver, computed live. Download [**proof-screensaver.scr**](https://gitlab.com/mattbusel/proof-engine/-/releases/permalink/latest/downloads/proof-screensaver.scr), put it somewhere it can stay, right-click, **Install** (or copy it into `C:\Windows\System32` and pick *proof-screensaver* in Screen Saver Settings). **Settings...** opens its options. Uninstall and more: [docs/SCREENSAVER.md](docs/SCREENSAVER.md).
 
 ## How it works
 
 <img src="docs/img/how-math-becomes-a-frame.svg" width="100%" alt="Animated diagram, how math becomes a frame, for one frame of the lorenz example. 1 Math: RK4 steps 40,000 Lorenz states on the CPU. 2 Glyphs: each state becomes one glyph instance, placed from x and z and coloured by its speed, all drawn in one instanced call. 3 Light: a half-float HDR buffer where overlaps add up past 1.0, trails keep 55 percent of the last frame, bloom blurs the glow. 4 Frame: exposure, ACES tonemap and vignette, then the HUD text painted sharp on top.">
 
-Every frame: your code moves the points with plain math, the engine turns each point into a glyph, the GPU adds up their light in an HDR buffer, and the composite turns that light into the picture. Here is the same real frame captured after each stage:
+Each frame: your code moves the points. The engine makes each point a glyph. The GPU adds up their light in an HDR buffer. The composite turns light into the picture. One real frame after each stage:
 
 <img src="docs/img/frame-stages.jpg" width="100%" alt="The lorenz example captured by the engine at the same frame three ways: the glyph pass alone, a grainy butterfly of dots; with trails and bloom, the loops fill in and glow; with the tonemap and grade, deeper blacks and warmer highlights.">
 
 ## Examples
 
-Each one is a real capture of `cargo run --release --example <name>` (or the matching `proof-<name>.exe`).
+Real captures of `cargo run --release --example <name>` (or `proof-<name>.exe`).
 
 | `lorenz` | `strange_attractors` |
 | --- | --- |
 | <img src="assets/gifs/lorenz.gif" width="100%" alt="40,000 points circling the two wings of the Lorenz attractor, teal where slow and amber where fast."> | <img src="assets/gifs/strange_attractors.gif" width="100%" alt="Seven strange attractors, Lorenz, Rossler, Chen, Halvorsen, Aizawa, Thomas and Dadras, 1,500 points each, turning slowly."> |
-| 40,000 points riding the Lorenz equations. Nobody drew the wings; the equations put the points there. | Seven chaotic systems side by side, 1,500 points each. Colour is speed. |
+| 40,000 points on the Lorenz equations. Nobody drew the wings. | Seven chaotic systems, 1,500 points each. Colour is speed. |
 | **`sky`** | **`math_rain`** |
 | <img src="assets/gifs/sky.gif" width="100%" alt="The sky example in late afternoon: a blue sky fading to white near the sun over brown mountains."> | <img src="assets/gifs/math_rain.gif" width="100%" alt="A hundred columns of green mathematical symbols falling at different speeds, the leading glyph of each bright white-green."> |
-| A day passing. Every sky cell is a Rayleigh and Mie scattering integral, every frame. | Falling math symbols; speeds from a sine, flicker from a logistic map. |
+| A day passing. Each sky cell is a Rayleigh and Mie scattering integral, every frame. | Falling math symbols. Speed from a sine, flicker from a logistic map. |
 
 All 21 demos and their controls: [docs/DEMOS.md](docs/DEMOS.md).
 
@@ -117,43 +117,43 @@ fn main() {
 }
 ```
 
-**3. Run it** with `cargo run --release`. The points travel together as one streak for about ten seconds, then chaos pulls them apart into the Lorenz butterfly:
+**3. Run it** with `cargo run --release`. The points move as one streak for about ten seconds. Then chaos pulls them into the Lorenz butterfly:
 
 <img src="assets/quickstart-steps.jpg" width="100%" alt="Four real frames of the quickstart program. At 1 second a tiny speck; at 13.5 seconds a thin arc; at 16 seconds the points have split into loops; at 18.5 seconds they fill both wings of the Lorenz butterfly.">
 
 Linux needs the ALSA headers first (`sudo apt install libasound2-dev pkg-config`). Always build with `--release`.
 
-## More you can do without opening a window
+## More
 
-**Record a GIF of any demo.** No screen recorder needed: the engine reads its own frames back and writes the GIF itself. The window stays hidden while it works.
+**Record a GIF of any demo.** The engine reads its own frames and writes the GIF. The window stays hidden.
 
 ```bash
 PROOF_HIDDEN=1 PROOF_FIXED_DT=30 PROOF_SHOT=lorenz.gif PROOF_SHOT_AT=300 \
 PROOF_SHOT_COUNT=120 PROOF_SHOT_WIDTH=480 cargo run --release --example lorenz
 ```
 
-Use `.png` or `.jpg` instead for a single picture. All the settings are in [docs/CAPTURE.md](docs/CAPTURE.md).
+Use `.png` or `.jpg` for one picture. Settings: [docs/CAPTURE.md](docs/CAPTURE.md).
 
-**Try your own equations without recompiling.** Write the system in a few lines of [Rhai](https://rhai.rs), a small scripting language. Here is the whole Thomas attractor:
+**Try your own equations without recompiling.** Write them in [Rhai](https://rhai.rs), a small scripting language. The whole Thomas attractor:
 
 ```text
 let b = 0.208186;
 [sin(y) - b * x, sin(z) - b * y, sin(x) - b * z]
 ```
 
-Then draw it, and keep it redrawing every time you save the file:
+Draw it, and redraw on every save:
 
 ```bash
 cargo run --release --example scripted_attractor -- examples/scripts/thomas.rhai thomas.png --dt 0.05 --map turbo --watch
 ```
 
-If you save a typo, it tells you where and keeps the last picture that worked. In your own program, `math::scripted::ScriptedSystem` does the same inside the frame loop.
+A typo shows where it is and keeps the last good picture. In your own program, `math::scripted::ScriptedSystem` does the same.
 
-**Colour with real colour maps.** `math::color::preset_gradient("viridis")` gives you any of 38 standard maps (viridis, magma, turbo, cubehelix, the ColorBrewer sets), and `Gradient::from_css("#000, deeppink 40%, gold")` takes a CSS gradient.
+**Colour maps.** `math::color::preset_gradient("viridis")` gives any of 38 standard maps (viridis, magma, turbo, cubehelix, ColorBrewer). `Gradient::from_css("#000, deeppink 40%, gold")` takes a CSS gradient.
 
-**Render sound to a file.** `audio::OfflineRenderer` runs the engine's synthesiser with no sound card and `audio::wav::write_wav` saves it. Try `cargo run --release --example audio_bounce`.
+**Sound to a file.** `audio::OfflineRenderer` runs the synth with no sound card. `audio::wav::write_wav` saves it. Try `cargo run --release --example audio_bounce`.
 
-**Use every core.** `math::attractors::rk4_step_all(kind, &mut points, dt)` steps a whole slice; with the `parallel` feature it runs on all cores with rayon. On an i7-13700KF, 40,000 Lorenz points take 1.21 ms per frame on one core and 0.10 ms with `parallel` (`cargo bench --bench attractor_bench`). Results are bit-identical either way.
+**Every core.** `math::attractors::rk4_step_all(kind, &mut points, dt)` steps a whole slice. With `parallel` it uses rayon. On an i7-13700KF, 40,000 Lorenz points take 1.21 ms per frame on one core, 0.10 ms with `parallel` (`cargo bench --bench attractor_bench`). Same bits either way.
 
 ## Cargo features
 
@@ -165,13 +165,13 @@ If you save a typo, it tells you where and keeps the last picture that worked. I
 | `websocket` | off | real `ws://` / `wss://` connections for `networking::websocket` (tungstenite, rustls) |
 | `net` | off | `http` + `websocket` |
 
-Without `http` / `websocket` the networking clients report an error instead of touching the network. No feature pulls in OpenSSL.
+Without `http` / `websocket` the network clients return an error. No feature pulls in OpenSSL.
 
 ## How it compares
 
-- **[nannou](https://crates.io/crates/nannou)** is a general creative-coding framework (wgpu, draw API, audio, OSC). Pick it for general sketches.
-- **[macroquad](https://crates.io/crates/macroquad)** is a small game library that also runs on the web. Pick it for 2D games, especially in the browser.
-- **Proof Engine** is narrower: the scene is glyphs and particles moved by equations, drawn through an HDR bloom pipeline, with attractors, force fields, colour maps, scripted systems and frame capture built in. The equations themselves are checked against the [ode_solvers](https://crates.io/crates/ode_solvers) crate in the test suite (Lorenz, Rossler, Thomas, Aizawa and Chen, written out independently).
+- **[nannou](https://crates.io/crates/nannou)**: general creative coding (wgpu, draw API, audio, OSC). Use it for general sketches.
+- **[macroquad](https://crates.io/crates/macroquad)**: small game library that runs on the web. Use it for 2D browser games.
+- **Proof Engine**: narrower. Glyphs and particles moved by equations, HDR bloom, with attractors, force fields, colour maps, scripts and frame capture built in. Tests check the equations against [ode_solvers](https://crates.io/crates/ode_solvers) (Lorenz, Rossler, Thomas, Aizawa and Chen, written out separately).
 
 ## Documentation
 
@@ -186,18 +186,18 @@ Without `http` / `websocket` the networking clients report an error instead of t
 | [docs.rs](https://docs.rs/proof-engine) | The full API |
 | [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) | Release history and how to send a change |
 
-[chaos-rpg](https://gitlab.com/mattbusel/chaos-rpg) is a roguelike whose graphical frontend runs on Proof Engine; [`CHAOS_RPG_API_CONTRACT.md`](CHAOS_RPG_API_CONTRACT.md) documents what it needs.
+[chaos-rpg](https://gitlab.com/mattbusel/chaos-rpg) is a roguelike with a frontend on Proof Engine. [`CHAOS_RPG_API_CONTRACT.md`](CHAOS_RPG_API_CONTRACT.md) lists what it needs.
 
 ## Built with
 
-Windowing and OpenGL come from [winit](https://crates.io/crates/winit), [glutin](https://crates.io/crates/glutin) and [glow](https://crates.io/crates/glow); maths from [glam](https://crates.io/crates/glam); text from [ab_glyph](https://crates.io/crates/ab_glyph); sound output from [cpal](https://crates.io/crates/cpal). Image files and GIFs are handled by [image](https://crates.io/crates/image), WAV files by [hound](https://crates.io/crates/hound), colour maps by [colorgrad](https://crates.io/crates/colorgrad), scripts by [rhai](https://crates.io/crates/rhai) and save files by [serde_json](https://crates.io/crates/serde_json).
+Windows and OpenGL: [winit](https://crates.io/crates/winit), [glutin](https://crates.io/crates/glutin), [glow](https://crates.io/crates/glow). Math: [glam](https://crates.io/crates/glam). Text: [ab_glyph](https://crates.io/crates/ab_glyph). Sound: [cpal](https://crates.io/crates/cpal). Images and GIFs: [image](https://crates.io/crates/image). WAV: [hound](https://crates.io/crates/hound). Colour maps: [colorgrad](https://crates.io/crates/colorgrad). Scripts: [rhai](https://crates.io/crates/rhai). Saves: [serde_json](https://crates.io/crates/serde_json).
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
 
-Source, issues and stars: [GitHub](https://github.com/Mattbusel/proof-engine). Mirror and release downloads: [GitLab](https://gitlab.com/mattbusel/proof-engine). More open-source Rust from the same author: [tensorust.com/open-source](https://tensorust.com/open-source/).
+Source, issues and stars: [GitHub](https://github.com/Mattbusel/proof-engine). Mirror and release downloads: [GitLab](https://gitlab.com/mattbusel/proof-engine). More of my Rust: [tensorust.com/open-source](https://tensorust.com/open-source/).
 
 ## Hire the author
 
-**Need this kind of engineering on your product?** I take on a small number of client builds: LLM features, iOS apps and performance work, fixed price. [Services and pricing](https://tensorust.com/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
+I build LLM features, iOS apps and performance fixes for clients. Fixed price. [Services and pricing](https://tensorust.com/) · [Email](mailto:mattbusel@gmail.com) · [LinkedIn](https://www.linkedin.com/in/matthewbusel/)
